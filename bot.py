@@ -20,6 +20,12 @@ except ImportError:
     print("❌ ไม่พบไฟล์ config.py — วางไฟล์ config.py ไว้โฟลเดอร์เดียวกับ bot.py")
     raise SystemExit
 
+# TMD_TOKEN (กรมอุตุฯ) — ไม่บังคับ ถ้าไม่มีจะใช้ Open-Meteo แทนอัตโนมัติ
+try:
+    from config import TMD_TOKEN
+except ImportError:
+    TMD_TOKEN = ""
+
 # เช็กว่าใส่ Token จริงแล้วหรือยัง ถ้ายังให้เตือนชัดๆ
 if not DISCORD_TOKEN or DISCORD_TOKEN == "วาง_TOKEN_ของคุณ_ที่นี่":
     print("⚠️ ยังไม่ได้ใส่ Token! เปิดไฟล์ config.py แล้ววาง Token จาก Discord ก่อนนะครับ")
@@ -30,7 +36,7 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 
 # โมเดลที่จะใช้ — เปลี่ยนได้ตามเครื่อง
 #   qwen3:1.7b = เร็วสุด แต่โง่   |   qwen3:8b = สมดุล   |   qwen3:14b = ฉลาดขึ้นแต่ช้า (บนการ์ด 4GB ~1-2 นาที)
-MODEL = "qwen3:14b"
+MODEL = "qwen3:8b"
 
 # 🖨️ ระบบพิมพ์อยู่ในไฟล์ printing.py | 🎵 ระบบเพลงอยู่ในไฟล์ music.py
 # (แก้ตั้งค่าเครื่องพิมพ์ในไฟล์ printing.py, ตั้งค่าโฟลเดอร์เพลงในไฟล์ music.py)
@@ -314,6 +320,143 @@ async def _get_json(url, params):
             return await r.json()
 
 
+# ============================================================
+#  🌦️  เครื่องมืออากาศ — กรมอุตุนิยมวิทยา (TMD) เป็นหลัก, Open-Meteo สำรอง
+# ============================================================
+# รหัสสภาพอากาศของ TMD (field cond) → คำไทย
+TMD_COND = {
+    1: "ท้องฟ้าแจ่มใส", 2: "มีเมฆบางส่วน", 3: "มีเมฆเป็นส่วนมาก", 4: "มีเมฆมาก",
+    5: "ฝนตกเล็กน้อย", 6: "ฝนปานกลาง", 7: "ฝนตกหนัก", 8: "ฝนฟ้าคะนอง",
+    9: "อากาศหนาวจัด", 10: "อากาศหนาว", 11: "อากาศเย็น", 12: "อากาศร้อนจัด",
+}
+
+# แผนที่ชื่อเมืองอังกฤษ/อังกฤษ→จังหวัดไทย (สำหรับส่งให้ TMD ที่รับชื่อจังหวัดไทย)
+EN_TO_TH_PROVINCE = {
+    "bangkok": "กรุงเทพมหานคร", "chumphon": "ชุมพร", "chiang mai": "เชียงใหม่",
+    "chiangmai": "เชียงใหม่", "phuket": "ภูเก็ต", "khon kaen": "ขอนแก่น",
+    "nakhon si thammarat": "นครศรีธรรมราช", "surat thani": "สุราษฎร์ธานี",
+    "songkhla": "สงขลา", "hat yai": "สงขลา", "pattaya": "ชลบุรี", "chonburi": "ชลบุรี",
+    "rayong": "ระยอง", "korat": "นครราชสีมา", "nakhon ratchasima": "นครราชสีมา",
+    "udon thani": "อุดรธานี", "ubon ratchathani": "อุบลราชธานี",
+    "krabi": "กระบี่", "ranong": "ระนอง", "prachuap khiri khan": "ประจวบคีรีขันธ์",
+    "hua hin": "ประจวบคีรีขันธ์", "ayutthaya": "พระนครศรีอยุธยา",
+}
+
+
+async def get_weather_tmd_hourly_today(province_th: str):
+    """ดึงฝนรายชั่วโมงของวันนี้จาก TMD แล้วหา 'ช่วงเวลาที่ฝนน่าจะตก'
+    คืนข้อความช่วงเวลา เช่น '12:00 น. และ 16:00-19:00 น.' หรือ '' ถ้าไม่มีฝน/ดึงไม่ได้"""
+    if not TMD_TOKEN or TMD_TOKEN.startswith("วาง_"):
+        return ""
+    base = "https://data.tmd.go.th/nwpapi/v1/forecast/location/hourly/place"
+    params = {"province": province_th, "fields": "rain", "duration": 18}
+    try:
+        async with aiohttp.ClientSession() as s:
+            headers = {"accept": "application/json", "authorization": f"Bearer {TMD_TOKEN}"}
+            async with s.get(base, params=params, headers=headers, timeout=30) as r:
+                if r.status != 200:
+                    return ""
+                data = await r.json()
+        forecasts = data["WeatherForecasts"][0]["forecasts"]
+    except Exception:
+        return ""
+
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    rainy_hours = []
+    for f in forecasts:
+        ts = f.get("time", "")
+        if not ts.startswith(today):
+            continue
+        try:
+            hour = int(ts[11:13])
+            rain = float(f["data"].get("rain") or 0)
+        except Exception:
+            continue
+        if rain >= 0.5:
+            rainy_hours.append(hour)
+
+    if not rainy_hours:
+        return ""
+
+    # รวมชั่วโมงที่ติดกันเป็นช่วง เช่น [16,17,18,19] -> "16:00-19:00 น."
+    rainy_hours.sort()
+    ranges = []
+    start = prev = rainy_hours[0]
+    for h in rainy_hours[1:]:
+        if h == prev + 1:
+            prev = h
+        else:
+            ranges.append((start, prev))
+            start = prev = h
+    ranges.append((start, prev))
+
+    parts = []
+    for a, b in ranges:
+        parts.append(f"{a:02d}:00 น." if a == b else f"{a:02d}:00-{b:02d}:00 น.")
+    return " และ ".join(parts)
+
+
+async def get_weather_tmd(province_th: str) -> str:
+    """ดึงพยากรณ์อากาศ 3 วันจากกรมอุตุนิยมวิทยา (TMD) — แม่นสำหรับไทย
+    คืนข้อความสรุป หรือ None ถ้าดึงไม่ได้ (ให้ตัวเรียกไปใช้ Open-Meteo สำรอง)"""
+    if not TMD_TOKEN or TMD_TOKEN.startswith("วาง_"):
+        return None
+    base = "https://data.tmd.go.th/nwpapi/v1/forecast/location/daily/place"
+    params = {"province": province_th, "fields": "tc_max,tc_min,rh,cond,rain", "duration": 7}
+    try:
+        async with aiohttp.ClientSession() as s:
+            headers = {"accept": "application/json", "authorization": f"Bearer {TMD_TOKEN}"}
+            async with s.get(base, params=params, headers=headers, timeout=30) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+    except Exception:
+        return None
+
+    try:
+        fc = data["WeatherForecasts"][0]
+        name = fc["location"].get("province", province_th)
+        days = fc["forecasts"]
+    except Exception:
+        return None
+    if not days:
+        return None
+
+    from datetime import datetime
+    THAI_DOW = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
+    labels = ["วันนี้", "พรุ่งนี้", "มะรืนนี้"]
+    out = [f"พยากรณ์อากาศ {name} (ข้อมูลจากกรมอุตุนิยมวิทยา):"]
+    for i, day in enumerate(days[:7]):
+        d = day.get("data", {})
+        date = day.get("time", "")[:10]
+        cond = TMD_COND.get(d.get("cond"), "ไม่ทราบสภาพ")
+        tmax = d.get("tc_max")
+        tmin = d.get("tc_min")
+        rain = d.get("rain")
+        rh = d.get("rh")
+        if i < len(labels):
+            lbl = labels[i]
+        else:
+            try:
+                lbl = "วัน" + THAI_DOW[datetime.strptime(date, "%Y-%m-%d").weekday()]
+            except Exception:
+                lbl = date
+        line = f"- {lbl} ({date}): {cond} อุณหภูมิ {tmin}-{tmax}°C"
+        if rain is not None:
+            line += f" ปริมาณฝนรวม {rain} มม."
+        if rh is not None:
+            line += f" ความชื้น {round(rh)}%"
+        out.append(line)
+
+    # เพิ่มช่วงเวลาที่ฝนน่าจะตกวันนี้ (ถ้ามี)
+    rain_time = await get_weather_tmd_hourly_today(province_th)
+    if rain_time:
+        out.append(f"วันนี้ฝนน่าจะตกช่วง: {rain_time}")
+
+    return "\n".join(out)
+
+
 async def get_weather(city: str) -> str:
     """ดึงพยากรณ์อากาศ 3 วัน + แยกโอกาสฝนเป็นช่วงเวลา (เช้า/เที่ยง/เย็น/กลางคืน)"""
     try:
@@ -371,11 +514,11 @@ async def get_weather(city: str) -> str:
 
 
 async def extract_city(user_message: str) -> str:
-    """ให้โมเดลดึงชื่อเมือง/จังหวัดจากคำถาม (เป็นอังกฤษ) ถ้าไม่ระบุใช้ Bangkok"""
+    """ให้โมเดลดึงชื่อเมือง/จังหวัดจากคำถาม (เป็นอังกฤษ) ถ้าไม่ระบุใช้ Chumphon"""
     prompt = [
         {"role": "system", "content":
             "ผู้ใช้ถามเรื่องอากาศ จงตอบเฉพาะชื่อเมือง/จังหวัดเป็นภาษาอังกฤษคำเดียว "
-            "เช่น Bangkok, Nakhon Si Thammarat, Chiang Mai ถ้าผู้ใช้ไม่ได้ระบุเมือง ให้ตอบ Bangkok "
+            "เช่น Bangkok, Nakhon Si Thammarat, Chiang Mai ถ้าผู้ใช้ไม่ได้ระบุเมือง ให้ตอบ Chumphon "
             "ห้ามมีคำอธิบายอื่น"},
         {"role": "user", "content": user_message},
     ]
@@ -387,9 +530,9 @@ async def extract_city(user_message: str) -> str:
         if "</think>" in c:
             c = c.rsplit("</think>", 1)[-1]
         c = c.strip().strip('"').splitlines()[0].strip()
-        return c or "Bangkok"
+        return c or "Chumphon"
     except Exception:
-        return "Bangkok"
+        return "Chumphon"
 
 
 async def _get_json_post(payload):
@@ -459,6 +602,80 @@ def parse_oil_html(html: str, only_brand: str = "ptt") -> str:
 
 
 # ============================================================
+#  🔌  เครื่องมือแจ้งตัดไฟ — ดึงจากการไฟฟ้าส่วนภูมิภาค (PEA)
+# ============================================================
+HOME_PROVINCE_ID = 69          # ชุมพร (เปลี่ยนเป็นจังหวัดอื่นได้)
+HOME_PROVINCE_NAME = "ชุมพร"
+
+
+def _parse_pea_date(s):
+    """แปลง '/Date(1782781200000)/' เป็น datetime (หรือ None)"""
+    import re as _re
+    from datetime import datetime, timezone, timedelta
+    if not s:
+        return None
+    m = _re.search(r"(\d+)", s)
+    if not m:
+        return None
+    try:
+        # PEA ส่งเป็น epoch milliseconds (เขตเวลาไทย UTC+7)
+        ts = int(m.group(1)) / 1000
+        return datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=7)))
+    except Exception:
+        return None
+
+
+async def get_power_outage(province_id=HOME_PROVINCE_ID, province_name=HOME_PROVINCE_NAME) -> str:
+    """ดึงประกาศตัดไฟของจังหวัด (เฉพาะที่ยังไม่ผ่าน) จาก PEA
+    คืนข้อความสรุป หรือข้อความว่าไม่มี"""
+    url = "https://eservice.pea.co.th/PowerOutage/Home/GetOutages"
+    post_data = b"draw=1&start=0&length=500"
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, data=post_data, headers=headers, timeout=30) as r:
+                if r.status != 200:
+                    return f"ตอนนี้ดึงข้อมูลตัดไฟไม่ได้ค่ะ (สถานะ {r.status})"
+                data = await r.json(content_type=None)
+    except Exception:
+        return "ตอนนี้เชื่อมต่อระบบแจ้งตัดไฟของการไฟฟ้าไม่ได้ค่ะ ลองใหม่อีกทีนะคะ"
+
+    items = data.get("data", []) if isinstance(data, dict) else []
+    # กรองเฉพาะจังหวัดที่ต้องการ
+    mine = [x for x in items
+            if x.get("PROVINCE_ID") == province_id or x.get("PROVINCE") == province_name]
+
+    # เก็บเฉพาะที่ยังไม่จบ (เวลาจบ >= ตอนนี้) แล้วเรียงตามเวลาเริ่ม
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(tz=timezone(timedelta(hours=7)))
+    upcoming = []
+    for x in mine:
+        end = _parse_pea_date(x.get("END_DATE"))
+        if end is None or end >= now:
+            upcoming.append(x)
+    upcoming.sort(key=lambda x: _parse_pea_date(x.get("START_DATE")) or now)
+
+    if not upcoming:
+        return (f"ตอนนี้ยังไม่มีประกาศตัดไฟที่กำลังจะถึงในจังหวัด{province_name}นะคะ "
+                "(ข้อมูลจากการไฟฟ้าส่วนภูมิภาค)")
+
+    out = [f"ประกาศตัดไฟจังหวัด{province_name} ที่กำลังจะถึง (ข้อมูลจากการไฟฟ้าส่วนภูมิภาค):"]
+    for x in upcoming[:6]:
+        area = x.get("AREA", "").strip()
+        start = x.get("START_DATE_DISPLAY", "?")
+        end = x.get("END_DATE_DISPLAY", "?")
+        # END_DATE_DISPLAY มักเป็น 'dd/mm/yyyy hh:mm' เอาเฉพาะเวลาท้าย
+        end_time = end.split(" ")[-1] if " " in end else end
+        out.append(f"- {start} ถึง {end_time} | บริเวณ {area}")
+    return "\n".join(out)
+
+
+# ============================================================
 #  🧭  ตัวจัดเส้นทาง — ดูว่าคำถามต้องดึง "ข้อมูลจริง" แบบไหน (เวลา/อากาศ/น้ำมัน/ค้นเว็บ)
 # ============================================================
 async def get_realtime_context(user_message: str):
@@ -475,12 +692,38 @@ async def get_realtime_context(user_message: str):
     if any(k in t for k in ("อากาศ", "ฝน", "ฝนตก", "พยากรณ์", "ร้อนไหม", "หนาว",
                             "weather", "อุณหภูมิ", "กี่องศา")):
         city = await extract_city(user_message)
-        print(f"   🌦️ ดึงอากาศ: {city!r}")
-        info = await get_weather(city)
-        return ("[ระบบ: ข้อมูลพยากรณ์อากาศจริง สรุปให้ผู้ใช้แบบเป็นกันเอง "
-                "บอกแนวโน้มฝน/อากาศของวันที่ถาม แล้วเพิ่มคำแนะนำสั้นๆ ตามสภาพ "
-                "เช่น ถ้าฝนน่าจะตกให้เตือนพกร่ม/อุปกรณ์กันฝน ถ้าแจ่มใสให้บอกว่าเหมาะออกไปข้างนอก "
-                "ตัวเลข % บอกได้แต่ไม่ต้องท่องทุกวัน เน้นสรุปให้เข้าใจง่าย ห้ามแต่งตัวเลขเพิ่ม]\n" + info)
+        # ลองกรมอุตุฯ (TMD) ก่อน — แม่นสำหรับไทย
+        province_th = EN_TO_TH_PROVINCE.get(city.lower().strip())
+        info = None
+        if province_th:
+            print(f"   🌦️ ดึงอากาศ (TMD): {province_th!r}")
+            info = await get_weather_tmd(province_th)
+        # ถ้า TMD ไม่ได้ (ไม่มีในแผนที่จังหวัด/ดึงพลาด) ใช้ Open-Meteo สำรอง
+        if not info:
+            print(f"   🌦️ ดึงอากาศ (Open-Meteo สำรอง): {city!r}")
+            info = await get_weather(city)
+        return ("[ข้อมูลพยากรณ์อากาศจริงด้านล่างนี้เป็นข้อมูลภายในสำหรับรอสเต้ใช้อ้างอิง "
+                "ห้ามลอกมาแสดงเป็นลิสต์หรือท่องตัวเลขทุกค่า ให้รอสเต้ 'เล่า' ด้วยน้ำเสียงตัวเองแบบเป็นกันเอง "
+                "เหมือนเพื่อนเล่าให้ฟัง โดยเน้นวันหรือช่วงที่ผู้ใช้ถามเป็นหลัก "
+                "ถ้าถามแค่วันนี้ ตอบสั้นๆ 2-4 ประโยค ถ้าถามหลายวัน/ทั้งสัปดาห์ ให้สรุปภาพรวมแนวโน้มหลายวัน "
+                "(เช่น วันไหนฝน วันไหนแดดดี) แบบกระชับ ไม่ต้องไล่ทีละวันครบทุกค่า "
+                "บอกสภาพอากาศและช่วงฝน (ถ้ามี) แบบเป็นธรรมชาติ เช่น 'วันนี้น่าจะมีฝนช่วงบ่ายถึงค่ำนะคะ' "
+                "สำคัญมาก: ใช้คำบรรยายสภาพอากาศตามข้อมูลเป๊ะ ห้ามเติมคำที่ขัดกันเอง "
+                "(ถ้าข้อมูลบอก 'มีเมฆเป็นส่วนมาก' ห้ามพูดว่า 'แจ่มใส' เด็ดขาด — เลือกพูดอย่างใดอย่างหนึ่งตามข้อมูล) "
+                "ปรับน้ำเสียงตามสภาพ: ฝนตก→ห่วงเรื่องพกร่ม, ร้อน→เตือนดื่มน้ำ/กันแดด, เย็นสบาย→ชวนออกไปข้างนอก "
+                "ห้ามแต่งตัวเลขเอง และปิดท้ายบอกแบบแนบเนียนว่าอ้างอิงข้อมูลกรมอุตุนิยมวิทยา]\n\n[ข้อมูลภายใน]\n" + info)
+
+    # 🔌 ตัดไฟ — ดึงประกาศจากการไฟฟ้าส่วนภูมิภาค (PEA)
+    if any(k in t for k in ("ตัดไฟ", "ดับไฟ", "ไฟดับ", "งดจ่ายไฟ", "หยุดจ่ายไฟ",
+                            "ไฟจะดับ", "ประกาศดับไฟ", "ไฟฟ้าดับ")):
+        print(f"   🔌 ดึงประกาศตัดไฟ {HOME_PROVINCE_NAME} (PEA)")
+        info = await get_power_outage()
+        return ("[ข้อมูลประกาศตัดไฟจริงจากการไฟฟ้าส่วนภูมิภาคด้านล่างเป็นข้อมูลภายใน "
+                "ให้รอสเต้เล่าด้วยน้ำเสียงตัวเองแบบเป็นกันเองและห่วงใย ไม่ใช่อ่านลิสต์ดิบ "
+                "บอกวัน เวลา และบริเวณที่จะตัดไฟ เรียงจากใกล้สุด ถ้ามีหลายรายการสรุปให้กระชับ "
+                "เตือนให้เตรียมตัว (ชาร์จแบต/สำรองน้ำ) แบบสั้นๆ "
+                "ถ้าไม่มีประกาศก็บอกตามนั้น ห้ามแต่งวันเวลาหรือสถานที่เพิ่มเอง "
+                "ปิดท้ายบอกว่าข้อมูลจากการไฟฟ้าส่วนภูมิภาค]\n\n[ข้อมูลภายใน]\n" + info)
 
     # ⛽ ราคาน้ำมัน — ดึงตารางจริงจาก Kapook (ยึด ปตท. เว้นแต่ระบุยี่ห้ออื่น)
     if any(k in t for k in ("น้ำมัน", "ดีเซล", "เบนซิน", "แก๊สโซฮอล", "gasohol",
