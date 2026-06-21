@@ -26,6 +26,16 @@ try:
 except ImportError:
     TMD_TOKEN = ""
 
+# SERPAPI_KEY (ค้นผ่าน Google จริง) — ไม่บังคับ ถ้าไม่มีจะใช้ ddg (ddgs) แทนอัตโนมัติ
+# สมัครฟรีที่ https://serpapi.com (free plan 250 ครั้ง/เดือน) แล้ววาง key ใน config.py
+try:
+    from config import SERPAPI_KEY
+except ImportError:
+    SERPAPI_KEY = ""
+# ถ้ายังเป็นค่าตัวอย่าง (ยังไม่ใส่ key จริง) ให้ถือว่าไม่ได้ตั้ง — จะได้ fallback ไป ddg
+if not SERPAPI_KEY or SERPAPI_KEY.startswith("วาง_"):
+    SERPAPI_KEY = ""
+
 # เช็กว่าใส่ Token จริงแล้วหรือยัง ถ้ายังให้เตือนชัดๆ
 if not DISCORD_TOKEN or DISCORD_TOKEN == "วาง_TOKEN_ของคุณ_ที่นี่":
     print("⚠️ ยังไม่ได้ใส่ Token! เปิดไฟล์ config.py แล้ววาง Token จาก Discord ก่อนนะครับ")
@@ -160,7 +170,8 @@ def build_author_note():
         f"[เตือนก่อนตอบ: ตอบให้ \"มีเนื้อหาและเป็นประโยชน์จริง\" เป็นหลักก่อน "
         "ตรงคำถาม มีรายละเอียด/ตัวอย่างที่จับต้องได้ ไม่พูดลอยๆ กว้างๆ หรือพรรณนาความรู้สึกจนไม่มีสาระ "
         f"แล้วค่อยแต่งน้ำเสียงรอสเต้ (อารมณ์ตอนนี้: {mood}) เป็นส่วนเสริมเล็กน้อยท้ายๆ "
-        "เป็นผู้หญิง ลงท้าย \"ค่ะ/นะคะ\" ห้ามใช้ \"ครับ\" ภาษาไทยล้วน ไม่แนะนำตัว ไม่ขึ้นต้นซ้ำคำเดิม ห้ามแต่งข้อมูล/ตัวเลข]"
+        "เป็นผู้หญิง ลงท้าย \"ค่ะ/นะคะ\" ห้ามใช้ \"ครับ\" ภาษาไทยล้วน ไม่แนะนำตัว ไม่ขึ้นต้นซ้ำคำเดิม "
+        "ห้ามแต่งข้อมูล/ตัวเลข/ชื่อร้าน/ชื่อคน/สถานที่ ถ้าไม่มีข้อมูลจริงให้บอกตรงๆ ว่าไม่แน่ใจ ดีกว่าเดา]"
     )
 
 
@@ -203,11 +214,126 @@ def save_memory(user_id, mem):
 
 # ============================================================
 #  🔎  เครื่องมือค้นเว็บ — ให้รอสเต้ดึงข้อมูลจริงแทนการเดา
-#      ใช้ไลบรารี ddgs (ค้นเว็บฟรี ไม่ต้องใช้ API key)
-#      ติดตั้งด้วย:  pip install ddgs
+#      มี 2 ทาง: SerpApi (Google จริง ถ้าตั้ง SERPAPI_KEY) หรือ ddgs (ฟรี สำรอง)
+#      ติดตั้ง:  pip install ddgs requests
 # ============================================================
+
+# 🗃️ cache ผลค้นง่ายๆ ในหน่วยความจำ (กันยิง API ซ้ำเปลือง quota) — เก็บ 1 ชม.
+import time
+_SEARCH_CACHE = {}          # key: (kind, query) -> (เวลาที่เก็บ, ผลลัพธ์)
+_CACHE_TTL = 3600           # 1 ชั่วโมง
+
+
+def _cache_get(kind: str, query: str):
+    item = _SEARCH_CACHE.get((kind, query))
+    if item and (time.time() - item[0] < _CACHE_TTL):
+        print(f"   💾 ใช้ผลจาก cache ({kind})")
+        return item[1]
+    return None
+
+
+def _cache_set(kind: str, query: str, value: str):
+    _SEARCH_CACHE[(kind, query)] = (time.time(), value)
+
+
+def _serpapi_get(params: dict):
+    """ยิงคำขอไป SerpApi แล้วคืน dict ผลลัพธ์ (หรือ None ถ้าพลาด)"""
+    import requests
+    params = dict(params, api_key=SERPAPI_KEY)
+    try:
+        r = requests.get("https://serpapi.com/search", params=params, timeout=30)
+        if r.status_code != 200:
+            print(f"   ⚠️ SerpApi คืนสถานะ {r.status_code}")
+            return None
+        return r.json()
+    except Exception as e:
+        print(f"   ⚠️ SerpApi ผิดพลาด: {e}")
+        return None
+
+
+def search_web_serpapi(query: str, max_results: int = 5) -> str:
+    """ค้นเว็บผ่าน Google จริง (SerpApi) — คืนผลเป็นข้อความ หรือ '' ถ้าพลาด (ให้ fallback)"""
+    cached = _cache_get("web", query)
+    if cached is not None:
+        return cached
+    data = _serpapi_get({"engine": "google", "q": query, "hl": "th", "gl": "th", "num": max_results})
+    if not data:
+        return ""
+    organic = data.get("organic_results") or []
+    if not organic:
+        return ""
+    lines = []
+    for r in organic[:max_results]:
+        title = r.get("title", "")
+        snippet = (r.get("snippet", "") or "")[:200]
+        link = r.get("link", "")
+        lines.append(f"- {title}\n  {snippet}\n  ที่มา: {link}")
+    out = "\n".join(lines) if lines else "ไม่พบผลการค้นหาที่เกี่ยวข้อง"
+    _cache_set("web", query, out)
+    return out
+
+
+def search_places_serpapi(query: str, location: str) -> str:
+    """ค้นร้าน/สถานที่ผ่าน Google Maps จริง (SerpApi) — คืนข้อมูลร้านมีโครงสร้าง
+    คืน '' ถ้าพลาด (ให้ fallback ไป ddg)"""
+    cache_key = f"{query}|{location}"
+    cached = _cache_get("maps", cache_key)
+    if cached is not None:
+        return cached
+    # ใส่ชื่อจังหวัดลงใน q โดยตรง (วิธีที่ SerpApi แนะนำ — ไม่ต้องใช้ location/z ที่ยุ่ง)
+    full_q = f"{query} {location}".strip()
+    data = _serpapi_get({
+        "engine": "google_maps", "type": "search",
+        "q": full_q, "hl": "th",
+    })
+    if not data:
+        return ""
+    # ปกติผลอยู่ใน local_results แต่บางครั้ง Google คืน place_results (สถานที่เดียว)
+    places = data.get("local_results") or []
+    if not places and data.get("place_results"):
+        places = [data["place_results"]]
+    if not places:
+        return ""
+    # กรอง: ตัดร้านรีวิวน้อย (<10) ทิ้ง แล้วเรียงตามเรตติ้ง (บทเรียนจากคอมมู)
+    scored = []
+    for p in places:
+        rating = p.get("rating") or 0
+        reviews = p.get("reviews") or 0
+        if reviews < 10:
+            continue
+        scored.append((rating, reviews, p))
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    use = scored[:5] if scored else [(0, 0, p) for p in places[:5]]
+    lines = []
+    for rating, reviews, p in use:
+        name = p.get("title", "")
+        addr = p.get("address", "")
+        rating_txt = f" ⭐{rating} ({reviews} รีวิว)" if rating else ""
+        hours = p.get("open_state") or p.get("hours") or ""
+        ptype = p.get("type", "")
+        line = f"- {name}{rating_txt}"
+        if ptype:
+            line += f" | ประเภท: {ptype}"
+        if addr:
+            line += f"\n  ที่อยู่: {addr}"
+        if hours:
+            line += f"\n  เวลา: {hours}"
+        lines.append(line)
+    out = "\n".join(lines) if lines else ""
+    if out:
+        _cache_set("maps", cache_key, out)
+    return out
+
+
 def search_web(query: str, max_results: int = 5, region: str = "th-th") -> str:
-    """ค้นเว็บแล้วคืนผลเป็นข้อความ (region th-th = เน้นผลจากไทย)"""
+    """ค้นเว็บแล้วคืนผลเป็นข้อความ — ใช้ SerpApi ถ้ามี key ไม่งั้นใช้ ddgs (region th-th = เน้นไทย)"""
+    # ทางหลัก: SerpApi (Google จริง) ถ้าตั้ง key ไว้
+    if SERPAPI_KEY:
+        result = search_web_serpapi(query, max_results)
+        if result:
+            return result
+        print("   ↳ SerpApi ไม่ได้ผล ลองใช้ ddg สำรอง")
+    # ทางสำรอง: ddgs (ฟรี)
     try:
         from ddgs import DDGS
     except ImportError:
@@ -269,7 +395,82 @@ SEARCH_TRIGGERS = (
     "เมื่อไหร่", "เมื่อไร", "กี่บาท", "รีวิว", "เปรียบเทียบรุ่น", "สเปก", "spec",
     "เวอร์ชันล่าสุด", "version", "release", "ออกปี", "ปี 20",
     "2024", "2025", "2026", "2567", "2568", "2569",
+    # 🍜 ร้าน/อาหาร/สถานที่ — โมเดลมักไม่รู้ข้อมูลเฉพาะถิ่น จึงต้องค้นก่อนเสมอ
+    "ร้าน", "ร้านอาหาร", "ของกิน", "กิน", "อร่อย", "เมนู", "คาเฟ่", "คาเฟه",
+    "ที่เที่ยว", "เที่ยว", "ที่พัก", "โรงแรม", "รีสอร์ท", "แนะนำร้าน",
+    "ใกล้ฉัน", "แถวนี้", "ในจังหวัด", "ในอำเภอ", "ตำบล", "พิกัด", "เปิดกี่โมง",
 )
+
+# 🍜 คำที่บ่งว่าเป็น "การหาร้าน/สถานที่" โดยเฉพาะ (ต้องมีตำแหน่งก่อนค้น)
+PLACE_HINTS = (
+    "ร้าน", "ร้านอาหาร", "ของกิน", "กิน", "น่ากิน", "หิว", "อร่อย", "คาเฟ่",
+    "ที่เที่ยว", "เที่ยว", "ที่พัก", "โรงแรม", "รีสอร์ท", "ใกล้ฉัน", "แถวนี้",
+    "เปิดกี่โมง", "แนะนำร้าน", "หาร้าน",
+)
+
+# บริบทที่มีคำว่า "กิน" แต่ "ไม่ใช่" การหาร้านอาหาร — กันจับผิด
+PLACE_EXCLUDE = (
+    "กินยา", "กินเจคือ", "กินเจมี", "การกิน", "กินอะไรได้", "กินได้ไหม",
+    "ลดน้ำหนัก", "ลดความอ้วน", "แพ้อาหาร", "กินยังไง", "วิธีกิน", "กินตอนไหน",
+    "หมากิน", "แมวกิน", "สุนัขกิน", "ห้ามกิน", "กินแล้ว",
+)
+
+# รายชื่อ 77 จังหวัดไทย — ไว้ตรวจว่าผู้ใช้ระบุจังหวัดมาในข้อความหรือยัง
+THAI_PROVINCES = {
+    "กรุงเทพ", "กรุงเทพมหานคร", "กระบี่", "กาญจนบุรี", "กาฬสินธุ์", "กำแพงเพชร",
+    "ขอนแก่น", "จันทบุรี", "ฉะเชิงเทรา", "ชลบุรี", "ชัยนาท", "ชัยภูมิ", "ชุมพร",
+    "เชียงราย", "เชียงใหม่", "ตรัง", "ตราด", "ตาก", "นครนายก", "นครปฐม",
+    "นครพนม", "นครราชสีมา", "นครศรีธรรมราช", "นครสวรรค์", "นนทบุรี", "นราธิวาส",
+    "น่าน", "บึงกาฬ", "บุรีรัมย์", "ปทุมธานี", "ประจวบคีรีขันธ์", "ปราจีนบุรี",
+    "ปัตตานี", "พระนครศรีอยุธยา", "อยุธยา", "พะเยา", "พังงา", "พัทลุง", "พิจิตร",
+    "พิษณุโลก", "เพชรบุรี", "เพชรบูรณ์", "แพร่", "ภูเก็ต", "มหาสารคาม", "มุกดาหาร",
+    "แม่ฮ่องสอน", "ยโสธร", "ยะลา", "ร้อยเอ็ด", "ระนอง", "ระยอง", "ราชบุรี",
+    "ลพบุรี", "ลำปาง", "ลำพูน", "เลย", "ศรีสะเกษ", "สกลนคร", "สงขลา", "หาดใหญ่",
+    "สตูล", "สมุทรปราการ", "สมุทรสงคราม", "สมุทรสาคร", "สระแก้ว", "สระบุรี",
+    "สิงห์บุรี", "สุโขทัย", "สุพรรณบุรี", "สุราษฎร์ธานี", "สุรินทร์", "หนองคาย",
+    "หนองบัวลำภู", "อ่างทอง", "อำนาจเจริญ", "อุดรธานี", "อุตรดิตถ์", "อุทัยธานี",
+    "อุบลราชธานี",
+}
+
+
+def is_place_query(text: str) -> bool:
+    """คำถามนี้เป็นการหาร้าน/สถานที่ไหม (ของกิน/ที่เที่ยว/ที่พัก ฯลฯ)
+    ระวังคำว่า 'กิน' ที่อาจไม่ใช่การหาร้าน เช่น 'กินยา' 'หมากินอะไรได้'"""
+    t = text.lower()
+    if any(ex in t for ex in PLACE_EXCLUDE):
+        return False
+    return any(h in t for h in PLACE_HINTS)
+
+
+def find_province_in_text(text: str) -> str:
+    """หาว่าในข้อความมีชื่อจังหวัดไทยไหม คืนชื่อจังหวัด หรือ '' ถ้าไม่เจอ"""
+    for prov in THAI_PROVINCES:
+        if prov in text:
+            return prov
+    return ""
+
+
+def find_saved_location(mem: dict) -> str:
+    """หา 'จังหวัดประจำตัว' ของผู้ใช้จากความจำ (facts) — เผื่อไม่ได้พิมพ์มาในข้อความ
+    มองหา fact ที่มีชื่อจังหวัด เช่น 'อยู่ชุมพร' / 'อาศัยที่นครศรีธรรมราช'"""
+    for fact in mem.get("facts", []):
+        prov = find_province_in_text(fact)
+        if prov:
+            return prov
+    return ""
+
+
+def is_bare_province(text: str) -> str:
+    """ข้อความนี้เป็น 'ชื่อจังหวัดล้วนๆ' ไหม (เช่นตอบ 'ชุมพร' หลังถูกถามว่าแถวไหน)
+    คืนชื่อจังหวัดถ้าใช่ (ข้อความสั้นและมีแต่จังหวัด) หรือ '' ถ้าไม่ใช่"""
+    prov = find_province_in_text(text)
+    if not prov:
+        return ""
+    # ข้อความสั้นๆ (ไม่ใช่ประโยคยาว) ที่มีจังหวัดอยู่ → ถือว่าเป็นการตอบจังหวัด
+    cleaned = text.strip()
+    if len(cleaned) <= len(prov) + 12:  # เผื่อคำเล็กน้อย เช่น "ที่ชุมพรค่ะ"
+        return prov
+    return ""
 
 # คำ/รูปแบบที่บ่งว่าเป็นการทักทาย/บ่นความรู้สึก — ไม่ต้องค้นเว็บ
 CHITCHAT_HINTS = (
@@ -678,8 +879,45 @@ async def get_power_outage(province_id=HOME_PROVINCE_ID, province_name=HOME_PROV
 # ============================================================
 #  🧭  ตัวจัดเส้นทาง — ดูว่าคำถามต้องดึง "ข้อมูลจริง" แบบไหน (เวลา/อากาศ/น้ำมัน/ค้นเว็บ)
 # ============================================================
-async def get_realtime_context(user_message: str):
+async def _search_places(place_query: str, province: str):
+    """ค้นร้าน/สถานที่จริงตามจังหวัด แล้วคืนข้อความสั่งรอสเต้ให้เล่าจากข้อมูลจริง
+    ลำดับ: Google Maps (ถ้ามี SerpApi key, ข้อมูลร้านสะอาดสุด) → ค้นเว็บธรรมดา (สำรอง)"""
+    # ทางหลัก: Google Maps ผ่าน SerpApi — ได้ชื่อร้าน/เรตติ้ง/ที่อยู่/เวลาเปิด สะอาด
+    if SERPAPI_KEY:
+        # ตัดคำบอกตำแหน่งออกจาก query เพราะใส่ใน location แล้ว (เลี่ยงซ้ำซ้อน)
+        maps_q = place_query.replace(province, "").strip() or place_query
+        print(f"   🗺️ ค้นร้านผ่าน Google Maps: q={maps_q!r} location={province!r}")
+        maps_result = await asyncio.to_thread(search_places_serpapi, maps_q, province)
+        if maps_result:
+            return (f"[ระบบ: ผลค้นร้าน/สถานที่จริงจาก Google Maps แถว{province} ด้านล่างเป็นข้อมูลภายใน "
+                    "มีชื่อร้าน เรตติ้ง ที่อยู่ เวลาเปิด (ตามที่มี) "
+                    "ให้รอสเต้เลือกแนะนำ 2-4 ร้านที่น่าสนใจ เล่าด้วยน้ำเสียงตัวเองแบบเป็นกันเอง "
+                    "อ้างชื่อร้าน/เรตติ้งตามข้อมูลเป๊ะ ห้ามแต่งเพิ่ม ถ้าไม่มีข้อมูลบางอย่างก็ไม่ต้องใส่ "
+                    "ปิดท้ายชวนให้ผู้ใช้บอกถ้าอยากได้เจาะจงขึ้น]\n\n[ข้อมูลภายใน]\n" + maps_result)
+        print("   ↳ Maps ไม่ได้ผล ลองค้นเว็บธรรมดาสำรอง")
+
+    # ทางสำรอง: ค้นเว็บธรรมดา (ddg หรือ SerpApi web)
+    query = await make_search_query(f"{place_query} {province}")
+    if province not in query:
+        query = f"{query} {province}"  # กันคำค้นหลุดจังหวัด
+    print(f"   🍜 ค้นหาร้าน/สถานที่ (เว็บ): {query!r}")
+    results = await asyncio.to_thread(search_web, query, 6, "th-th")
+    failed = (not results) or results.startswith(("ไม่พบผลการค้นหา", "ค้นเว็บไม่"))
+    if failed:
+        return (f"[ระบบ: ค้นหาร้านแถว{province}แล้วไม่พบข้อมูลที่ชัดเจน "
+                "ให้บอกตรงๆ ว่าหาร้านที่แน่ใจไม่ได้ตอนนี้ อาจชวนผู้ใช้ระบุให้เจาะจงขึ้น "
+                "(เช่น อำเภอ หรือชนิดอาหาร) ห้ามเดาชื่อร้านเอง]")
+    return (f"[ระบบ: ผลค้นหาร้าน/สถานที่จริงแถว{province} ด้านล่างเป็นข้อมูลภายในสำหรับรอสเต้อ้างอิง "
+            "ให้เลือกแนะนำ 2-4 ที่ที่ดูน่าสนใจ เล่าด้วยน้ำเสียงตัวเองแบบเป็นกันเอง "
+            "บอกชื่อร้านตามข้อมูลเป๊ะ ห้ามแต่งชื่อหรือรายละเอียดเพิ่มเอง "
+            "ถ้าข้อมูลไม่มีรายละเอียด (เวลาเปิด/เมนู) ก็ไม่ต้องแต่งใส่ "
+            "ปิดท้ายชวนให้ผู้ใช้บอกถ้าอยากได้แบบเจาะจงขึ้น]\n\n[ข้อมูลภายใน]\n" + results)
+
+
+async def get_realtime_context(user_message: str, mem: dict = None):
     """คืนข้อความข้อมูลจริงสำหรับแปะเข้ากับคำถาม (หรือ None ถ้าไม่ต้อง)"""
+    if mem is None:
+        mem = {}
     t = user_message.lower()
 
     # 🕐 เวลา/วันที่
@@ -742,6 +980,29 @@ async def get_realtime_context(user_message: str):
                 "ตอบโดยจับคู่ชนิดน้ำมันกับราคาให้ตรง บอกวันที่อัปเดตด้วย ใช้เฉพาะตัวเลขในตารางนี้ ห้ามแต่งเอง "
                 "ปิดท้ายด้วยความเห็นสั้นๆ แบบเป็นกันเองได้ เช่นความรู้สึกต่อราคา แต่ห้ามเปลี่ยน/เพิ่มตัวเลข]\n" + info)
 
+    # 🍜 หาร้าน/สถานที่ (ของกิน/ที่เที่ยว/ที่พัก) — ต้องรู้จังหวัดก่อนถึงจะค้นได้
+    #    ลำดับ: หาจังหวัดในข้อความ → ถ้าไม่มีดูจากความจำ → ถ้ายังไม่มีให้ถามกลับ
+    #    กรณีพิเศษ: ถ้าเพิ่งถามจังหวัดไป แล้วผู้ใช้ตอบจังหวัดล้วนๆ → เอามารวมกับคำถามเดิม
+    pending = mem.get("pending_place_query", "")
+    bare_prov = is_bare_province(user_message)
+    if pending and bare_prov:
+        # ผู้ใช้ตอบจังหวัดมาตามที่รอสเต้ถาม → รวมคำถามร้านเดิม + จังหวัด แล้วค้นเลย
+        print(f"   🍜 ผู้ใช้ตอบจังหวัด {bare_prov!r} ต่อจากคำถามร้านที่ค้างไว้")
+        mem["pending_place_query"] = ""  # เคลียร์สถานะค้าง
+        return await _search_places(f"{pending} {bare_prov}", bare_prov)
+
+    if is_place_query(user_message):
+        province = find_province_in_text(user_message) or find_saved_location(mem)
+        if not province:
+            # ไม่รู้ว่าผู้ใช้อยู่ไหน → จำคำถามนี้ไว้ แล้วสั่งให้รอสเต้ถามกลับ (กันเดามั่ว)
+            print("   🍜 คำถามหาร้านแต่ไม่รู้จังหวัด → จำไว้ + ให้ถามกลับ")
+            mem["pending_place_query"] = user_message  # จำคำถามร้านไว้รอจังหวัด
+            return ("[ระบบ: ผู้ใช้อยากให้แนะนำร้าน/สถานที่ แต่ยังไม่รู้ว่าจะหาแถวไหน "
+                    "ให้รอสเต้ถามกลับสั้นๆ ด้วยน้ำเสียงตัวเองว่าอยากหาแถวจังหวัด/อำเภอไหน "
+                    "ห้ามแนะนำชื่อร้านใดๆ ทั้งสิ้นในตอนนี้ เพราะยังไม่ได้ค้นข้อมูลจริง ห้ามเดาชื่อร้านเด็ดขาด]")
+        mem["pending_place_query"] = ""  # มีจังหวัดแล้ว เคลียร์สถานะค้าง
+        return await _search_places(user_message, province)
+
     # 🔎 คำถามข้อเท็จจริงทั่วไป → ค้นเว็บ
     if needs_search(user_message):
         query = await make_search_query(user_message)
@@ -766,15 +1027,20 @@ intents.message_content = True  # ต้องเปิด MESSAGE CONTENT INTEN
 client = discord.Client(intents=intents)
 
 
-async def _chat_once(messages):
-    """ยิงคำขอไปที่ Ollama หนึ่งครั้ง (พร้อมเครื่องมือ) แล้วคืน message dict"""
+async def _chat_once(messages, temperature: float = 0.8):
+    """ยิงคำขอไปที่ Ollama หนึ่งครั้ง (พร้อมเครื่องมือ) แล้วคืน message dict
+    temperature ต่ำ (~0.5) = แม่นยำ เดาน้อย (ใช้ตอนตอบข้อมูลจริง)
+    temperature สูง (~0.8) = มีชีวิตชีวา (ใช้ตอนคุยเล่น)"""
     payload = {
         "model": MODEL,
         "messages": messages,
         "stream": False,
         "think": False,
         "tools": TOOLS,
-        "options": {"temperature": 0.8},
+        "options": {
+            "temperature": temperature,
+            "repeat_penalty": 1.12,  # ลดการพูดซ้ำคำ/ประโยคแพทเทิร์นเดิม (กันฟังดูหุ่นยนต์)
+        },
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(OLLAMA_URL, json=payload, timeout=300) as resp:
@@ -833,9 +1099,13 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
     # 🧭 ดึง "ข้อมูลจริง" ตามชนิดคำถาม (เวลา/อากาศ/น้ำมัน/ค้นเว็บ) แล้วแปะติดคำถาม
     # (แปะติดคำถามโดยตรง ชัวร์กว่าการแทรก system message แยก เพราะโมเดลเห็นแน่นอน)
     augmented_message = user_message
-    realtime = await get_realtime_context(user_message)
+    realtime = await get_realtime_context(user_message, mem)
     if realtime:
         augmented_message = f"{user_message}\n\n{realtime}"
+
+    # มีข้อมูลจริงแปะมา → ใช้ temperature ต่ำ (แม่นยำ เดาน้อย)
+    # คุยเล่นปกติ → ใช้ค่าสูงกว่า (มีชีวิตชีวา คาแร็กเตอร์ออก)
+    reply_temp = 0.5 if realtime else 0.8
 
     messages = (
         [{"role": "system", "content": system_text}]
@@ -848,7 +1118,7 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
     # 🔁 ลูปเรียกเครื่องมือ: ถ้าโมเดลขอค้นเว็บ ให้ค้นแล้วส่งผลกลับ วนได้สูงสุด 3 รอบ
     msg = {}
     for _ in range(3):
-        msg = await _chat_once(messages)
+        msg = await _chat_once(messages, temperature=reply_temp)
         tool_calls = msg.get("tool_calls")
         if not tool_calls:
             break  # ไม่ขอเครื่องมือแล้ว = ได้คำตอบสุดท้าย
