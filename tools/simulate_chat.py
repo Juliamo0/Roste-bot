@@ -34,6 +34,9 @@ MESSAGES = [
 def hr(char="─", w=62):
     print(char * w)
 
+def _sum_text(s) -> str:
+    return s["text"] if isinstance(s, dict) else s
+
 def snapshot(mem_module, label=""):
     m = mem_module.load_memory(TEST_USER_ID)
     h = len(m.get("history", []))
@@ -116,7 +119,7 @@ async def main():
     if summaries:
         print()
         for s in summaries:
-            print(f"    📝  {s}")
+            print(f"    📝  {_sum_text(s)}")
     else:
         print("    (ยังไม่มี — อาจเกิดจาก: โมเดลตอบว่างเปล่า / background task ยังไม่เสร็จ)")
     hr("═")

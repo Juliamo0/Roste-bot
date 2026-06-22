@@ -27,9 +27,9 @@ class TestBuildSummaryPrompt:
         assert "ผู้ใช้: อยากกินก๋วยเตี๋ยว" in result
         assert "รอสเต้: แถวไหนดีคะ" in result
 
-    def test_instruction_asks_for_one_sentence(self):
+    def test_instruction_asks_for_one_line(self):
         result = memory.build_summary_prompt([{"role": "user", "content": "สวัสดี"}])
-        assert "1 ประโยค" in result
+        assert "1 บรรทัด" in result
 
     def test_missing_content_key_does_not_crash(self):
         result = memory.build_summary_prompt([{"role": "user"}])
