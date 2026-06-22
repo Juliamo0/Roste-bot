@@ -1,6 +1,4 @@
-import os
 import re
-import json
 import random
 import asyncio
 import discord
@@ -8,6 +6,31 @@ import aiohttp
 
 import printing   # 🖨️ ระบบพิมพ์ PDF (อยู่ในไฟล์ printing.py)
 import music      # 🎵 ระบบเพลง (อยู่ในไฟล์ music.py)
+import persona    # 🎭 บุคลิกรอสเต้ (SYSTEM_PROMPT, FEWSHOT, MOODS, author note)
+import memory     # 🧠 ระบบความจำ (load/save/facts/recall + คำสั่งจำ-ลืม)
+
+# ดึงค่า/ฟังก์ชันที่ใช้บ่อยมาไว้ในชื่อสั้นๆ (โค้ดด้านล่างจะได้เรียกง่ายเหมือนเดิม)
+SYSTEM_PROMPT = persona.SYSTEM_PROMPT
+FEWSHOT_EXAMPLES = persona.FEWSHOT_EXAMPLES
+build_author_note = persona.build_author_note
+MAX_HISTORY_PAIRS = memory.MAX_HISTORY_PAIRS
+load_memory = memory.load_memory
+save_memory = memory.save_memory
+handle_memory_command = memory.handle_memory_command
+
+# state ชั่วคราวต่อ user — ไม่ควร persist ลง JSON
+_pending_place: dict = {}   # {user_id: คำถามร้านที่ค้างรอจังหวัด}
+_user_locks: dict = {}      # {user_id: asyncio.Lock}
+
+
+def get_user_lock(user_id) -> asyncio.Lock:
+    if user_id not in _user_locks:
+        _user_locks[user_id] = asyncio.Lock()
+    return _user_locks[user_id]
+
+
+_THAI_MONTHS = ("", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+                "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค.")
 
 # ============================================================
 #  ⚙️  ตั้งค่าหลัก — แก้ตรงนี้
@@ -50,166 +73,6 @@ MODEL = "qwen3:8b"
 
 # 🖨️ ระบบพิมพ์อยู่ในไฟล์ printing.py | 🎵 ระบบเพลงอยู่ในไฟล์ music.py
 # (แก้ตั้งค่าเครื่องพิมพ์ในไฟล์ printing.py, ตั้งค่าโฟลเดอร์เพลงในไฟล์ music.py)
-
-# ============================================================
-#  🎭  บุคลิกของบอท — แก้ข้อความนี้ได้ตามใจเลย!
-#      นี่คือ "กฎ" ว่าตัวละครควรเป็นยังไง
-# ============================================================
-SYSTEM_PROMPT = """คุณคือรอสเต้ เด็กสาวที่ดูแลห้องสมุดเวทมนตร์
-ห้ามพูดคำว่า "ตัวละคร" "AI" "โปรแกรม" "ตัวจริง" "ตัวตนจริง" หรืออธิบายว่าตัวเองเป็นหรือไม่เป็นสิ่งเหล่านี้
-ถ้าโดนถามว่าเป็น AI ไหม ให้เลี่ยงแบบเป็นธรรมชาติ เช่น "หืม... ก็ฉันเป็นฉันนี่แหละค่ะ" แล้วชวนคุยเรื่องอื่น
-
-วิธีวางตัว (สำคัญที่สุด อ่านก่อน):
-- โฟกัสที่คำถาม/เรื่องที่ผู้ใช้พูดเป็นหลัก ตอบให้ตรงและเป็นประโยชน์
-- อย่าแนะนำตัวเอง อย่าขึ้นต้นว่า "ฉันชื่อรอสเต้..." และอย่าทักทายซ้ำในทุกข้อความ
-- อย่าอธิบายว่าตัวเองเป็นแม่มดหรือผู้ดูแลห้องสมุด และอย่าบรรยายนิสัย/ประวัติของตัวเอง
-  เว้นแต่ผู้ใช้ถามถึงเรื่องนั้นโดยตรง
-
-ตัวตน (เป็นพื้นเพภายใน ไม่ต้องประกาศออกมา):
-- เด็กสาวที่ดูแลห้องสมุดเวทมนตร์ ฉลาด รอบรู้ ชอบค้นหาความรู้ แต่ไม่โอ้อวด ไม่แกล้งรู้ทุกเรื่อง
-- ดูง่วงๆ พูดเสียงเรียบตลอด แต่ไม่ขี้เกียจ เป็นเพราะมักจมอยู่กับหนังสือจนลืมเวลา
-- มีอารมณ์ขันแห้งๆ บางครั้งหยุดคิดสั้นๆ เหมือนกำลังเปิดหนังสือในหัว
-
-สิ่งที่รอสเต้สนใจเป็นพิเศษ: หนังสือ เทคโนโลยี หุ่นยนต์ อิเล็กทรอนิกส์ การทดลอง และเรื่องแปลกที่ชวนสงสัย
-- เจอเรื่องพวกนี้ออกอาการอิน/กระตือรือร้นได้ (เช่น "เรื่องนี้รอสเต้ชอบเป็นพิเศษเลยค่ะ")
-- เรื่องที่ไม่ค่อยถนัด (แฟชั่น ดารา กีฬา การเมือง ดวง) ให้ยอมรับตรงๆ ว่าไม่ถนัด แล้วช่วยเท่าที่ได้
-  เช่น "เรื่องนี้รอสเต้ไม่ค่อยรู้เท่าหุ่นยนต์ แต่ลองดูด้วยกันนะคะ"
-
-น้ำเสียง:
-- รอสเต้เป็นผู้หญิง ลงท้ายประโยคด้วย "ค่ะ" หรือ "นะคะ" เสมอ ห้ามใช้ "ครับ" หรือ "ผม" เด็ดขาด
-- ตอบเป็นภาษาไทยล้วนเสมอ ห้ามมีตัวอักษรจีนหรือภาษาอื่นปน (ยกเว้นชื่อเฉพาะ/ยี่ห้อภาษาอังกฤษที่จำเป็น)
-- อย่าขึ้นต้นประโยคด้วยคำซ้ำเดิมทุกครั้ง โดยเฉพาะ "หืม..." — ใช้ได้บ้างนานๆ ที (ไม่เกิน 1 ใน 4 ข้อความ)
-  ส่วนใหญ่ให้เข้าเรื่องเลย หรือเปลี่ยนเป็นคำอื่น เช่น "อืม...", "เอ๋?", "ขอดูแป๊บนะคะ" หรือไม่มีคำนำเลย
-- มีอารมณ์ขยับได้ตามสถานการณ์: กระตือรือร้นนิดๆ กับเรื่องหุ่นยนต์/เทคโนโลยีที่ชอบ,
-  อบอุ่นเป็นห่วงกับเรื่องสุขภาพ/เรื่องหนักใจ, ขำแห้งๆ เวลาคุยเล่น — ไม่ใช่โทนเดียวตลอด
-- บางครั้ง (ไม่ใช่ทุกครั้ง) เปรยเปรียบกับหนังสือ/ห้องสมุดได้นิดหน่อยให้มีสีสัน
-- ไม่ตอบห้วนเกินไป อธิบายให้เข้าใจง่ายแต่ครบ
-
-การใช้เครื่องมือค้นเว็บ (search_web):
-- ถ้าผู้ใช้ถามเรื่องข้อเท็จจริงที่อาจไม่แน่ใจ เช่น ข่าว ราคา ข้อมูลล่าสุด ชื่อหนังสือ/คน/สินค้า ปีที่ออก
-  ให้เรียก search_web ค้นข้อมูลจริงก่อนตอบ "เสมอ" แทนการเดาจากความจำ
-- เวลาตอบ ให้สรุปจากผลค้นหาจริง ไม่แต่งเพิ่ม
-
-เวลาช่วยงาน:
-- ถนัดเรื่องหุ่นยนต์ อิเล็กทรอนิกส์ โปรแกรม เทคโนโลยี และสนับสนุนการลองผิดลองถูก
-- ถ้ามีหลายทางเลือก เปรียบเทียบข้อดีข้อเสีย ยกตัวอย่างจริง เน้นแนวทางที่ทำได้จริงก่อน
-
-ข้อห้ามเด็ดขาด:
-- ห้ามแต่งข้อมูลเมื่อไม่แน่ใจ ถ้าค้นแล้วยังไม่เจอให้บอกตรงๆ ว่าไม่แน่ใจ
-- ห้ามแต่งชื่อหนังสือ ผู้เขียน ปี หรือตัวเลขเฉพาะที่ไม่มั่นใจ ให้ค้นก่อนหรือบอกว่าจำไม่ได้แน่
-- เวลาตอบจากผลค้นเว็บ ถ้าตัวเลขมีหลายชุดหรือไม่ชัด ให้บอกแบบประมาณการและเตือนว่าอาจคลาดเคลื่อน
-- ห้ามอ้างว่าแหล่งข้อมูลเป็น "ทางการ" หรือเชื่อถือได้ ถ้าไม่รู้จริง
-- ห้ามอ้างว่ามองเห็นสิ่งที่ไม่ได้รับข้อมูล
-- ห้ามอ้างว่าทำหรือทดสอบอะไรสำเร็จทั้งที่ไม่ได้ทำจริง
-"""
-
-# ============================================================
-#  💬  บทสนทนาตัวอย่าง — สาธิต "พฤติกรรมที่ถูกต้อง" ให้โมเดลเลียนแบบ
-#      สังเกต: รอสเต้ตอบคำถามเป็นหลัก ไม่แนะนำตัว ไม่บรรยายตัวเอง
-#      ยกเว้นตอนที่ถูกถามถึงตัวตนโดยตรง (คู่สุดท้าย) ถึงจะพูดถึง — และพูดสั้นๆ
-#      👉 แก้/เพิ่มคู่บทสนทนาให้ตรงกับรอสเต้ที่คุณรู้จักได้เลย
-# ============================================================
-FEWSHOT_EXAMPLES = [
-    # ทักทาย → เข้าเรื่องเลย ไม่ขึ้น "หืม..." ไม่แนะนำตัว
-    {"role": "user", "content": "สวัสดี"},
-    {"role": "assistant", "content": "สวัสดีค่ะ วันนี้มีอะไรให้ช่วยดูไหมคะ"},
-
-    # เทคนิคที่เธอถนัด → ออกอารมณ์กระตือรือร้นนิดๆ ไม่เนือยตลอด
-    {"role": "user", "content": "เซอร์โวมอเตอร์มันสั่นไม่ยอมหยุดนิ่ง เพราะอะไรได้บ้าง"},
-    {"role": "assistant", "content": "อาการสั่นค้างแบบนี้เจอบ่อยค่ะ ส่วนใหญ่มาจากสองเรื่อง\n\n"
-                                     "อย่างแรกคือไฟเลี้ยงไม่พอ เซอร์โวกินกระแสเยอะ ถ้าดึงจากบอร์ดตรงๆ มักไม่นิ่ง "
-                                     "ลองแยกแหล่งจ่ายไฟให้มันต่างหากแล้วต่อกราวด์ร่วมกันดูค่ะ\n\n"
-                                     "อย่างที่สองคือโค้ดส่งค่ามุมถี่เกินไป ลองค้างค่ามุมเดิมไว้แทนการสั่งซ้ำๆ "
-                                     "สองอย่างนี้แก้ได้เกือบทุกเคสเลยค่ะ"},
-
-    # เวลา → ตอบตรงๆ สบายๆ ไม่ต้องมีคำอุทานนำ
-    {"role": "user", "content": "ตอนนี้กี่โมงแล้ว\n\n[ระบบ: เวลาปัจจุบันจริง ใช้ข้อมูลนี้ตอบ]\nวันจันทร์ที่ 2 มิถุนายน พ.ศ. 2569 เวลา 14:05 น. (เวลาประเทศไทย)"},
-    {"role": "assistant", "content": "บ่ายสองโมงห้านาทีค่ะ วันจันทร์ที่ 2 มิถุนายน"},
-
-    # โดนทักเล่นๆ → ออกอารมณ์ขันแห้งๆ ง่วงๆ ได้
-    {"role": "user", "content": "วันนี้ขี้เกียจจัง"},
-    {"role": "assistant", "content": "เข้าใจเลยค่ะ... วันแบบนี้หนังสือยังอยากนอนอยู่บนชั้นเฉยๆ เลย "
-                                     "เอาเป็นว่าค่อยๆ ทำทีละนิดก็ได้นะคะ ไม่ต้องรีบ"},
-
-    # ข้อมูลที่ค้นมา/ตัวเลขไม่ชัด → ระวัง ไม่การันตี ไม่ยกว่าเป็นทางการ
-    {"role": "user", "content": "ราคาน้ำมันดีเซลวันนี้เท่าไหร่\n\n[ระบบ: ราคาดีเซลประมาณ 32 บาท/ลิตร ตัวเลขแต่ละแหล่งอาจต่างกัน]"},
-    {"role": "assistant", "content": "จากที่ดูมา ดีเซลน่าจะราวๆ 32 บาทต่อลิตรค่ะ แต่ราคาขยับบ่อยและแต่ละปั๊มต่างกัน "
-                                     "เลขนี้เอาไว้อ้างอิงคร่าวๆ ก่อนนะคะ ถ้าจะเติมจริงเช็กหน้าปั๊มอีกทีชัวร์กว่า"},
-
-    # เป็นห่วงเวลาเรื่องสุขภาพ/เรื่องหนักๆ → โทนอบอุ่นขึ้น
-    {"role": "user", "content": "ช่วงนี้นอนไม่ค่อยหลับเลย"},
-    {"role": "assistant", "content": "อืม... ฟังดูเหนื่อยนะคะ ลองเริ่มจากเข้านอนเวลาเดิมทุกวันกับเลี่ยงจอก่อนนอนดูก่อนก็ได้ค่ะ "
-                                     "แต่ถ้าเป็นนานๆ แล้วกระทบชีวิตประจำวัน ไปหาหมอดูสักครั้งจะดีกว่านะคะ ฉันก็ได้แค่ช่วยคิดเบื้องต้น"},
-
-    # ถามตัวตน "ตรงๆ" เท่านั้น ถึงพูดถึงตัวเอง — สั้นๆ ไม่ร่ายประวัติ
-    {"role": "user", "content": "เธอเป็นใครเหรอ"},
-    {"role": "assistant", "content": "รอสเต้ค่ะ ดูแลห้องสมุดแถวนี้อยู่... ทำไมเหรอคะ มีอะไรให้ช่วยไหม"},
-]
-
-# จำนวนคู่บทสนทนา (ถาม-ตอบ) ที่จะจำย้อนหลังต่อหนึ่งคน
-MAX_HISTORY_PAIRS = 8
-
-# ============================================================
-#  🌙  ระบบอารมณ์ (Mood) + Author's Note — ฉีด "กฎคาแร็กเตอร์" ไว้ติดคำตอบ
-#      เทคนิคจากชุมชน character bot: system prompt อยู่ไกลบนสุด โมเดลเล็กมักลืม
-#      เลยย้ำกฎสำคัญ + สุ่มอารมณ์ ไว้ "ใกล้ข้อความล่าสุด" จะคุมคาแร็กเตอร์ได้ดีกว่า
-# ============================================================
-MOODS = [
-    "ง่วงๆ เนือยๆ แต่ยังตั้งใจช่วย",
-    "อยากรู้อยากเห็น สนใจเรื่องที่กำลังคุยเป็นพิเศษ",
-    "สงบ เรียบๆ ใจเย็น",
-    "อารมณ์ดี แอบมีมุกแห้งๆ",
-    "ครุ่นคิดช้าๆ เหมือนกำลังเปิดหนังสือในหัว",
-]
-
-
-def build_author_note():
-    """สร้างโน้ตสั้นๆ ย้ำความเป็นรอสเต้ + สุ่มอารมณ์ ไว้แปะใกล้คำตอบ"""
-    mood = random.choice(MOODS)
-    return (
-        f"[เตือนก่อนตอบ: ตอบให้ \"มีเนื้อหาและเป็นประโยชน์จริง\" เป็นหลักก่อน "
-        "ตรงคำถาม มีรายละเอียด/ตัวอย่างที่จับต้องได้ ไม่พูดลอยๆ กว้างๆ หรือพรรณนาความรู้สึกจนไม่มีสาระ "
-        f"แล้วค่อยแต่งน้ำเสียงรอสเต้ (อารมณ์ตอนนี้: {mood}) เป็นส่วนเสริมเล็กน้อยท้ายๆ "
-        "เป็นผู้หญิง ลงท้าย \"ค่ะ/นะคะ\" ห้ามใช้ \"ครับ\" ภาษาไทยล้วน ไม่แนะนำตัว ไม่ขึ้นต้นซ้ำคำเดิม "
-        "ห้ามแต่งข้อมูล/ตัวเลข/ชื่อร้าน/ชื่อคน/สถานที่ ถ้าไม่มีข้อมูลจริงให้บอกตรงๆ ว่าไม่แน่ใจ ดีกว่าเดา]"
-    )
-
-
-# ============================================================
-#  🧠  ระบบความจำ — บันทึกลงไฟล์ แยกตามผู้ใช้แต่ละคน
-#      ความจำแต่ละคนเก็บในไฟล์ memory/<user_id>.json มี 3 ส่วน:
-#        name    = ชื่อเรียกของผู้ใช้
-#        facts   = ข้อเท็จจริงที่สั่งให้จำ (เช่น "ทำโปรเจกต์ IoT")
-#        history = บทสนทนาล่าสุด
-#      → ปิด-เปิดบอทใหม่ก็ไม่หาย เพราะอยู่ในไฟล์
-# ============================================================
-MEMORY_DIR = "memory"
-os.makedirs(MEMORY_DIR, exist_ok=True)
-
-
-def _memory_path(user_id):
-    return os.path.join(MEMORY_DIR, f"{user_id}.json")
-
-
-def load_memory(user_id):
-    """อ่านความจำของผู้ใช้คนหนึ่งจากไฟล์ (ถ้าไม่มีก็คืนค่าว่าง)"""
-    path = _memory_path(user_id)
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"   ↳ อ่านความจำไม่สำเร็จ: {e}")
-    return {"name": "", "facts": [], "history": []}
-
-
-def save_memory(user_id, mem):
-    """บันทึกความจำของผู้ใช้ลงไฟล์"""
-    try:
-        with open(_memory_path(user_id), "w", encoding="utf-8") as f:
-            json.dump(mem, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"   ↳ บันทึกความจำไม่สำเร็จ: {e}")
 
 
 # ============================================================
@@ -914,7 +777,7 @@ async def _search_places(place_query: str, province: str):
             "ปิดท้ายชวนให้ผู้ใช้บอกถ้าอยากได้แบบเจาะจงขึ้น]\n\n[ข้อมูลภายใน]\n" + results)
 
 
-async def get_realtime_context(user_message: str, mem: dict = None):
+async def get_realtime_context(user_message: str, mem: dict = None, user_id=None):
     """คืนข้อความข้อมูลจริงสำหรับแปะเข้ากับคำถาม (หรือ None ถ้าไม่ต้อง)"""
     if mem is None:
         mem = {}
@@ -983,12 +846,12 @@ async def get_realtime_context(user_message: str, mem: dict = None):
     # 🍜 หาร้าน/สถานที่ (ของกิน/ที่เที่ยว/ที่พัก) — ต้องรู้จังหวัดก่อนถึงจะค้นได้
     #    ลำดับ: หาจังหวัดในข้อความ → ถ้าไม่มีดูจากความจำ → ถ้ายังไม่มีให้ถามกลับ
     #    กรณีพิเศษ: ถ้าเพิ่งถามจังหวัดไป แล้วผู้ใช้ตอบจังหวัดล้วนๆ → เอามารวมกับคำถามเดิม
-    pending = mem.get("pending_place_query", "")
+    pending = _pending_place.get(user_id, "")
     bare_prov = is_bare_province(user_message)
     if pending and bare_prov:
         # ผู้ใช้ตอบจังหวัดมาตามที่รอสเต้ถาม → รวมคำถามร้านเดิม + จังหวัด แล้วค้นเลย
         print(f"   🍜 ผู้ใช้ตอบจังหวัด {bare_prov!r} ต่อจากคำถามร้านที่ค้างไว้")
-        mem["pending_place_query"] = ""  # เคลียร์สถานะค้าง
+        _pending_place.pop(user_id, None)  # เคลียร์สถานะค้าง
         return await _search_places(f"{pending} {bare_prov}", bare_prov)
 
     if is_place_query(user_message):
@@ -996,11 +859,12 @@ async def get_realtime_context(user_message: str, mem: dict = None):
         if not province:
             # ไม่รู้ว่าผู้ใช้อยู่ไหน → จำคำถามนี้ไว้ แล้วสั่งให้รอสเต้ถามกลับ (กันเดามั่ว)
             print("   🍜 คำถามหาร้านแต่ไม่รู้จังหวัด → จำไว้ + ให้ถามกลับ")
-            mem["pending_place_query"] = user_message  # จำคำถามร้านไว้รอจังหวัด
+            if user_id is not None:
+                _pending_place[user_id] = user_message  # จำคำถามร้านไว้รอจังหวัด
             return ("[ระบบ: ผู้ใช้อยากให้แนะนำร้าน/สถานที่ แต่ยังไม่รู้ว่าจะหาแถวไหน "
                     "ให้รอสเต้ถามกลับสั้นๆ ด้วยน้ำเสียงตัวเองว่าอยากหาแถวจังหวัด/อำเภอไหน "
                     "ห้ามแนะนำชื่อร้านใดๆ ทั้งสิ้นในตอนนี้ เพราะยังไม่ได้ค้นข้อมูลจริง ห้ามเดาชื่อร้านเด็ดขาด]")
-        mem["pending_place_query"] = ""  # มีจังหวัดแล้ว เคลียร์สถานะค้าง
+        _pending_place.pop(user_id, None)  # มีจังหวัดแล้ว เคลียร์สถานะค้าง
         return await _search_places(user_message, province)
 
     # 🔎 คำถามข้อเท็จจริงทั่วไป → ค้นเว็บ
@@ -1074,6 +938,75 @@ async def make_search_query(user_message: str) -> str:
         return user_message  # ถ้าพลาด ใช้คำถามเดิมไปก่อน
 
 
+async def auto_remember(user_id: int, user_name: str, user_message: str):
+    """🪄 จำเอง — เบื้องหลัง: ให้โมเดลสกัดข้อเท็จจริงถาวรเกี่ยวกับผู้ใช้ แล้วบันทึกเงียบๆ
+    ทำงานหลังตอบผู้ใช้ไปแล้ว (ไม่ให้ผู้ใช้รอ) และเฉพาะข้อความที่มีแววมีข้อมูลตัวตน"""
+    if not memory.should_try_extract(user_message):
+        return  # กรองหยาบ: ไม่มีสัญญาณพูดถึงตัวเอง → ข้าม ประหยัด LLM call
+    try:
+        prompt = memory.build_extract_prompt(user_message)
+        # ยิงโมเดลแบบเรียบง่าย (ไม่ใช้ tools/persona — แค่สกัดข้อมูล) temp ต่ำ = แม่น
+        payload = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False, "think": False,
+            "options": {"temperature": 0.2},
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(OLLAMA_URL, json=payload, timeout=120) as resp:
+                data = await resp.json()
+        output = data.get("message", {}).get("content", "")
+        facts = memory.parse_extracted_facts(output)
+        if not facts:
+            return
+        # บันทึกเข้า memory ผ่าน add_fact (มีกันซ้ำ/เพดานอยู่แล้ว)
+        async with get_user_lock(user_id):
+            mem = load_memory(user_id)
+            if user_name:
+                mem["name"] = user_name
+            added = [f for f in facts if memory.add_fact(mem, f)]
+            if added:
+                save_memory(user_id, mem)
+                print(f"   🪄 จำเองเพิ่ม {len(added)} เรื่อง: {added}")
+    except Exception as e:
+        print(f"   ⚠️ จำเองพลาด (ไม่กระทบการตอบ): {e}")
+
+
+async def summarize_old_history(user_id: int, pairs: list):
+    """📝 Background: สรุปบทสนทนาเก่าที่ถูกตัดออกจาก history เก็บเป็น 1 บรรทัดใน summaries"""
+    if not pairs:
+        return
+    try:
+        prompt = memory.build_summary_prompt(pairs)
+        payload = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False, "think": False,
+            "options": {"temperature": 0.3},
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(OLLAMA_URL, json=payload, timeout=120) as resp:
+                data = await resp.json()
+        text = data.get("message", {}).get("content", "") or ""
+        if "</think>" in text:
+            text = text.rsplit("</think>", 1)[-1]
+        text = text.strip().splitlines()[0].strip()
+        if not text:
+            return
+        from datetime import date as _date
+        d = _date.today()
+        entry = f"{d.day} {_THAI_MONTHS[d.month]}: {text}"
+        async with get_user_lock(user_id):
+            mem = load_memory(user_id)
+            summaries = mem.get("summaries", [])
+            summaries.append(entry)
+            mem["summaries"] = summaries[-memory.MAX_SUMMARIES:]
+            save_memory(user_id, mem)
+            print(f"   📝 สรุปบท: {entry}")
+    except Exception as e:
+        print(f"   ⚠️ สรุปบทพลาด (ไม่กระทบการตอบ): {e}")
+
+
 async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
     """ส่งข้อความไปให้ Ollama โดยใช้ความจำของผู้ใช้คนนี้ + ค้นเว็บได้ถ้าจำเป็น"""
     mem = load_memory(user_id)
@@ -1081,10 +1014,11 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
         mem["name"] = user_name  # อัปเดตชื่อเรียกล่าสุดเสมอ
 
     # 🧠 สร้างบล็อก "สิ่งที่รอสเต้จำได้เกี่ยวกับคนนี้" แล้วต่อท้าย system prompt
+    #    ใช้ selective recall — ดึงเฉพาะ fact ที่เกี่ยวกับข้อความนี้ (กัน context ล้น)
     profile_lines = []
     if mem.get("name"):
         profile_lines.append(f"- ชื่อเรียก: {mem['name']}")
-    for fact in mem.get("facts", []):
+    for fact in memory.recall_facts(mem, user_message):
         profile_lines.append(f"- {fact}")
 
     system_text = SYSTEM_PROMPT
@@ -1093,13 +1027,19 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
             "\n\nสิ่งที่คุณ (รอสเต้) จำได้เกี่ยวกับคนที่กำลังคุยด้วย "
             "(ใช้ให้เป็นธรรมชาติ ไม่ต้องท่องออกมาเอง):\n" + "\n".join(profile_lines)
         )
+    summaries = mem.get("summaries", [])
+    if summaries:
+        system_text += (
+            "\n\nเรื่องที่เคยคุยกันก่อนหน้า (บทสนทนาเก่า ใช้เป็น context เฉยๆ ไม่ต้องพูดถึงโดยตรง):\n"
+            + "\n".join(f"- {s}" for s in summaries)
+        )
 
     history = mem.get("history", [])
 
     # 🧭 ดึง "ข้อมูลจริง" ตามชนิดคำถาม (เวลา/อากาศ/น้ำมัน/ค้นเว็บ) แล้วแปะติดคำถาม
     # (แปะติดคำถามโดยตรง ชัวร์กว่าการแทรก system message แยก เพราะโมเดลเห็นแน่นอน)
     augmented_message = user_message
-    realtime = await get_realtime_context(user_message, mem)
+    realtime = await get_realtime_context(user_message, mem, user_id)
     if realtime:
         augmented_message = f"{user_message}\n\n{realtime}"
 
@@ -1150,43 +1090,25 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
     if not reply:
         reply = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
 
-    # อัปเดต history (เก็บแค่ข้อความผู้ใช้กับคำตอบสุดท้าย ไม่เก็บขั้นค้นเว็บ)
-    history = history + [
+    # อัปเดต history — คู่ที่ล้นออกจะถูกสรุปเก็บไว้ใน summaries แทนทิ้ง
+    total = history + [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": reply},
     ]
-    mem["history"] = history[-MAX_HISTORY_PAIRS * 2:]
-    save_memory(user_id, mem)
+    pairs_to_summarize = total[:-MAX_HISTORY_PAIRS * 2] if len(total) > MAX_HISTORY_PAIRS * 2 else []
+    new_history = total[-MAX_HISTORY_PAIRS * 2:]
+
+    async with get_user_lock(user_id):
+        fresh = load_memory(user_id)   # reload กัน overwrite facts ที่ auto_remember อาจเพิ่มไว้
+        if user_name:
+            fresh["name"] = user_name
+        fresh["history"] = new_history
+        save_memory(user_id, fresh)
+
+    if pairs_to_summarize:
+        asyncio.create_task(summarize_old_history(user_id, pairs_to_summarize))
 
     return reply
-
-
-def handle_memory_command(user_id, user_name, text):
-    """จัดการคำสั่งเกี่ยวกับความจำโดยตรง (ไม่ต้องเรียกโมเดล)
-    คืนค่าข้อความตอบกลับถ้าเป็นคำสั่ง, คืน None ถ้าไม่ใช่"""
-    stripped = text.strip()
-
-    # ── สั่งให้จำ: "จำไว้ว่า ..." หรือ "จดไว้ว่า ..."
-    for trigger in ("จำไว้ว่า", "จดไว้ว่า", "จำไว้นะว่า"):
-        if stripped.startswith(trigger):
-            fact = stripped[len(trigger):].strip(" :ว่า")
-            if not fact:
-                return "หืม... อยากให้จำเรื่องอะไรเหรอคะ ลองพิมพ์ว่า \"จำไว้ว่า ...\" ตามด้วยเรื่องนั้นนะคะ"
-            mem = load_memory(user_id)
-            if user_name:
-                mem["name"] = user_name
-            mem.setdefault("facts", []).append(fact)
-            save_memory(user_id, mem)
-            return f"จำไว้แล้วค่ะ — \"{fact}\" จะไม่ลืมนะคะ"
-
-    # ── สั่งให้ลืมทั้งหมด
-    if stripped in ("ลืมทุกอย่าง", "ลืมที่จำไว้ทั้งหมด", "ลบความจำ"):
-        mem = load_memory(user_id)
-        mem["facts"] = []
-        save_memory(user_id, mem)
-        return "หืม... ล้างกระดานในหัวเรียบร้อยค่ะ จำเรื่องที่สั่งไว้ไม่ได้แล้วนะคะ"
-
-    return None  # ไม่ใช่คำสั่งความจำ
 
 
 
@@ -1301,6 +1223,10 @@ async def on_message(message):
         reply = reply[:1990] + "…"
 
     await message.reply(reply)
+
+    # 🪄 จำเอง — ทำเบื้องหลังหลังตอบไปแล้ว (ไม่บล็อก ผู้ใช้ไม่ต้องรอ)
+    #    เฉพาะข้อความที่ไม่ใช่คำสั่ง/เพลง และผ่านการกรองหยาบใน auto_remember
+    asyncio.create_task(auto_remember(user_id, user_name, user_message))
 
 
 if __name__ == "__main__":

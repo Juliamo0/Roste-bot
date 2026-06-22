@@ -44,6 +44,31 @@
 
 ---
 
+## 🔧 ปรับปรุงโค้ดภายใน (ไม่ได้อยู่ใน roadmap หลัก)
+
+งานต่อไปนี้ทำเพื่อให้โค้ดสะอาด แข็งแกร่ง และต่อยอดได้ง่ายขึ้น
+ไม่ใช่ feature ใหม่ตามวิสัยทัศน์ แต่เป็นพื้นฐานที่จำเป็น
+
+### 🗂️ Refactor โครงสร้าง
+- [x] แยก `persona.py` — SYSTEM_PROMPT, few-shot, moods, author note ออกจาก bot.py
+- [x] แยก `memory.py` — load/save/facts/recall + คำสั่งจำ-ลืม ออกจาก bot.py
+
+### 🧠 ระบบความจำ (ปรับปรุงจากของเดิม)
+- [x] Selective recall — ดึงเฉพาะ fact ที่เกี่ยวกับข้อความปัจจุบัน (กัน context ล้น)
+- [x] Auto-remember — สกัดข้อเท็จจริงจากบทสนทนาเบื้องหลังอัตโนมัติ (ไม่บล็อกการตอบ)
+- [x] Conversation summaries — บทสนทนาที่ล้น history แทนที่จะทิ้ง สรุปเป็น 1 บรรทัดเก็บไว้
+- [x] แก้ race condition — `asyncio.Lock` ต่อ user_id ครอบ critical section load→save
+- [x] `pending_place_query` ย้ายออกจาก JSON ไปเก็บใน RAM (`_pending_place` dict)
+- [x] แก้ SELF_REFERENCE_HINTS — ลบ `"มี"` เดี่ยว ใส่รูปผูกสรรพนาม (`"ผมมี"`, `"ฉันมี"` ฯลฯ)
+
+### 🧪 Testing
+- [x] Unit tests สำหรับ memory.py — 35 tests (pytest)
+- [x] Unit tests สำหรับ bot.py — 18 tests (mock Ollama)
+- [x] `simulate_chat.py` — จำลอง 9 รอบต่อ Ollama จริง ทดสอบ trigger สรุปครั้งแรก
+- [x] `simulate_chat_long.py` — จำลอง 18 รอบ 3 หัวข้อ ดู summaries สะสม
+
+---
+
 ## ⏳ กำลังค้างอยู่ (เริ่มแล้ว ยังไม่จบ)
 
 ### 🔊 น้ำเสียง — ให้รอสเต้พูดได้ (TTS)
