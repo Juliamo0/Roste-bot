@@ -4,7 +4,7 @@
 ควบคุมอุปกรณ์ IoT ในบ้านได้ ตัดสินใจบางอย่างได้ และทำงานในโลกจริงได้
 โดยใช้ LLM ที่รันในเครื่องตัวเอง (local)
 
-> อัปเดตล่าสุด: มิถุนายน 2569
+> อัปเดตล่าสุด: 22 มิถุนายน 2569
 
 ---
 
@@ -19,9 +19,11 @@
 
 ### 🌐 ดึงข้อมูลจริง
 - [x] เวลา/วันที่ (เขตไทย, พ.ศ.)
-- [x] พยากรณ์อากาศ (แยกช่วงเช้า/เที่ยง/เย็น/กลางคืน + แนะนำพกร่ม)
-- [x] ราคาน้ำมัน (ดึงจาก Kapook)
-- [x] ค้นเว็บ (กรองคำหยาบ/เนื้อหาไม่เหมาะสม)
+- [x] พยากรณ์อากาศ — TMD กรมอุตุฯ (รายวัน + รายชั่วโมง) + Open-Meteo สำรอง
+- [x] ราคาน้ำมัน (ดึงจาก Kapook ทุกยี่ห้อ ทุกชนิด)
+- [x] ประกาศตัดไฟ (การไฟฟ้าส่วนภูมิภาค PEA — กรองเฉพาะจังหวัดที่ตั้ง)
+- [x] ค้นเว็บ (Google ผ่าน SerpApi + DuckDuckGo สำรอง, กรองเนื้อหาไม่เหมาะสม)
+- [x] หาร้าน/สถานที่ (Google Maps ผ่าน SerpApi — เรตติ้ง/ที่อยู่/เวลาเปิด)
 
 ### 🖨️ IoT จริงชิ้นแรก — สั่งพิมพ์ PDF
 - [x] รับไฟล์ PDF จาก Discord แล้วสั่งเครื่องพิมพ์จริง (Canon E3300)
@@ -60,12 +62,17 @@
 - [x] แก้ race condition — `asyncio.Lock` ต่อ user_id ครอบ critical section load→save
 - [x] `pending_place_query` ย้ายออกจาก JSON ไปเก็บใน RAM (`_pending_place` dict)
 - [x] แก้ SELF_REFERENCE_HINTS — ลบ `"มี"` เดี่ยว ใส่รูปผูกสรรพนาม (`"ผมมี"`, `"ฉันมี"` ฯลฯ)
+- [x] asyncio Queue + bg worker — serialize งาน Ollama background (แก้ TimeoutError เมื่อ summarize + auto-remember ชนกัน)
+- [x] ย้าย `_last_had_summary_notice` state เข้า `_maybe_append_summary_notice` (แก้ notice ไม่แสดง)
 
 ### 🧪 Testing
 - [x] Unit tests สำหรับ memory.py — 35 tests (pytest)
-- [x] Unit tests สำหรับ bot.py — 18 tests (mock Ollama)
-- [x] `simulate_chat.py` — จำลอง 9 รอบต่อ Ollama จริง ทดสอบ trigger สรุปครั้งแรก
-- [x] `simulate_chat_long.py` — จำลอง 18 รอบ 3 หัวข้อ ดู summaries สะสม
+- [x] Unit tests สำหรับ bot.py — 34 tests (mock Ollama)
+- [x] Unit tests สำหรับ realtime functions — 61 tests (mock HTTP ทุกระบบ)
+- [x] Integration test `test_all_systems.py` — ยิง HTTP จริง 9 ระบบ รายงานตาราง ✅/⚠️/❌
+- [x] จัดไฟล์ทดสอบ — pytest ไว้ root, diagnostic scripts ย้ายไป `tools/`
+- [x] `tools/simulate_chat_long.py` — จำลอง 18 รอบ 3 หัวข้อ ดู summaries สะสม
+- [x] `tools/simulate_recall.py` — จำลองดึง fact + recall หลัง auto-remember
 
 ---
 
