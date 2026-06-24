@@ -29,3 +29,7 @@ test*.mp3
 
 # ===== ผลลัพธ์จากสคริปต์จำลอง =====
 sim_out*.txt
+
+# ===== RVC (venv + output แยกต่างหาก) =====
+rvc_venv/
+rvc_out/
