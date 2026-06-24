@@ -23,6 +23,7 @@
   - 🍜 หาร้าน/สถานที่ (Google Maps ผ่าน SerpApi)
 - 🖨️ **สั่งพิมพ์ PDF** — แนบไฟล์ใน Discord แล้วให้รอสเต้สั่งเครื่องพิมพ์จริง
 - 🎵 **เล่นเพลง** — เล่นไฟล์ mp3 ในห้อง voice ตามที่ขอ
+- 🎙️ **ระบบเสียงรอสเต้ (pipeline พร้อม ยังไม่เข้าบอท)** — ข้อความ → edge-tts → ffmpeg adjust → RVC (Laibaht model) → เสียงรอสเต้ — ทดสอบ standalone แล้ว รอ integrate เข้าบอทในเฟส 3
 
 ## 🗂️ โครงสร้างไฟล์
 
@@ -38,6 +39,8 @@
 | `config.py` | Discord Token + API keys (สร้างเองจาก `config.example.py` — ไม่อยู่ใน repo) |
 | `start.bat` | ดับเบิลคลิกเพื่อรันบอท |
 | `setup.bat` | ดับเบิลคลิกเพื่อติดตั้งไลบรารี |
+| `voice.py` | voice pipeline — `text_to_roste_voice(text, worker=w)` |
+| `voice_rvc_worker.py` | subprocess worker ที่รันใน rvc_venv — โหลด RVC ครั้งเดียว รับงานผ่าน JSON stdin |
 
 ### ไฟล์ทดสอบ (root)
 
@@ -65,6 +68,11 @@
 | `test_serpapi.py` | ทดสอบ SerpApi key (web + maps) |
 | `test_printer.py` | อ่านสถานะเครื่องพิมพ์ Windows |
 | `test_nlt.py` / `test_nlt2.py` | สำรวจ API หอสมุดแห่งชาติ (NLT) |
+| `make_tts_raw.py` | สร้างไฟล์เสียง TTS ดิบ (edge-tts) → `tts_raw/` |
+| `adjust_raw.py` | ปรับ pitch/speed ของไฟล์ wav ด้วย ffmpeg → `tts_adjusted/` |
+| `test_rvc_local.py` | ทดสอบ RVC GPU — วัด warm timing + VRAM (รันใน rvc_venv) |
+| `test_speech_tone.py` | ทดสอบโทนภาษาพูด Ollama + pipeline เสียง standalone |
+| `test_voice_pipeline.py` | ทดสอบ `voice.py` pipeline เต็ม (edge-tts → adjust → RVC warm) |
 
 ## 🚀 วิธีติดตั้ง
 
@@ -155,6 +163,51 @@ python test_all_systems.py
 python tools/simulate_chat_long.py   # 18 รอบ — ดู summaries สะสม 3 หัวข้อ
 python tools/simulate_recall.py      # ดู fact + recall หลัง auto-remember
 ```
+
+## 🎙️ ระบบเสียงรอสเต้
+
+### สถานะ
+
+| เฟส | รายละเอียด | สถานะ |
+|-----|-----------|-------|
+| เฟส 1 | RVC รันในเครื่องได้ (GPU, warm ~1–2s/ประโยค) | ✅ เสร็จ |
+| เฟส 2 | pipeline เสียงทำงาน standalone (`voice.py`) | ✅ เสร็จ |
+| เฟส 3 | integrate เข้า bot.py — รอสเต้พูดใน Discord จริง | ⬜ ยังไม่ทำ |
+
+### pipeline
+
+```
+ข้อความ → edge-tts (th-TH-PremwadeeNeural) → ffmpeg (+5.292 semitones, speed 0.9×) → RVC (Laibaht model) → .wav
+```
+
+RVC ทำงานใน subprocess แยก (`rvc_venv`, Python 3.10) เพื่อไม่ให้ dependency ชนกับบอทหลัก
+warm inference: โหลดโมเดลครั้งเดียว ~8s จากนั้น ~1–2s ต่อประโยค
+
+### ติดตั้ง rvc_venv (ต้องทำเอง — ไม่มีใน repo)
+
+`rvc_venv/` และ `rvc_out/` อยู่ใน `.gitignore` — ต้องสร้างใหม่หลัง clone
+
+**ต้องการก่อน:** [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (สำหรับ fairseq)
+
+```bash
+# สร้าง venv Python 3.10
+py -3.10 -m venv rvc_venv
+
+# ติดตั้ง torch CUDA (RTX 30xx — CUDA 12.1)
+rvc_venv\Scripts\pip install torch==2.1.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+
+# ติดตั้ง RVC
+rvc_venv\Scripts\pip install rvc-python==0.1.5
+```
+
+**โมเดล:** วาง `.pth` และ `.index` ที่ `D:\LaibahtMaLaew\` (path ตั้งค่าใน `voice.py` → `MODEL_DIR`)
+
+ทดสอบ pipeline:
+```bash
+python tools/test_voice_pipeline.py
+```
+
+> **Known issue:** ความเป็นธรรมชาติของเสียงขึ้นอยู่กับ edge-tts (Microsoft Azure TTS) — แผนอนาคตอาจทดสอบ F5-TTS-THAI
 
 ## 📝 หมายเหตุ
 
