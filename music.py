@@ -14,6 +14,7 @@ import discord
 # โฟลเดอร์เก็บไฟล์เพลงที่รอสเต้ "ร้องได้" — หย่อนไฟล์ .mp3 ไว้ที่นี่
 # ตั้งชื่อไฟล์ตามชื่อเพลง เช่น songs/วิมานดิน.mp3 แล้วสั่ง "@Roste ร้องเพลงวิมานดิน"
 SONGS_DIR = "songs"
+KARAOKE_DIR = "karaoke"
 
 # ไฟล์บันทึกว่าใครขอเพลงอะไรบ้าง (ไว้ดูว่าควรเตรียมเพลงไหนเพิ่ม)
 SONG_REQUESTS_LOG = "song_requests.json"
@@ -26,7 +27,7 @@ SONG_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".ogg")
 # คำขึ้นต้น/คำเสริม ที่ตัดออกเพื่อให้เหลือ "ชื่อเพลง"
 SONG_STRIP = ("ร้องเพลง", "เปิดเพลง", "เล่นเพลง", "ขอเพลง", "เปิดให้ฟัง",
               "ร้อง", "เปิด", "เล่น", "ขอ", "เพลง", "หน่อย", "ให้", "ที",
-              "ด้วย", "นะ", "คะ", "ครับ", "ค่ะ")
+              "ด้วย", "นะ", "คะ", "ครับ", "ค่ะ", "ฟัง")
 
 NOT_FOUND_LINES = [
     "เพลง \"{q}\" เหรอคะ... รอสเต้ยังไม่เคยได้ยินเพลงนี้เลย ยังร้องไม่ได้ค่ะ ขอไปหัดฟังก่อนนะคะ",
@@ -63,6 +64,42 @@ def find_song(query):
         if nn and (nn in qn or qn in nn):
             return os.path.join(SONGS_DIR, f), name
     return None
+
+
+def find_karaoke(query: str):
+    """หาไฟล์ใน karaoke/ ที่ match query (บางส่วน ไม่สนตัวพิมพ์) คืน (path, stem) หรือ None"""
+    if not query or not os.path.isdir(KARAOKE_DIR):
+        return None
+    qn = _normalize_song(query)
+    if not qn:
+        return None
+    for f in os.listdir(KARAOKE_DIR):
+        if not f.lower().endswith(SONG_EXTS):
+            continue
+        stem = os.path.splitext(f)[0]
+        sn = _normalize_song(stem)
+        if sn and (qn in sn or sn in qn):
+            return os.path.join(KARAOKE_DIR, f), stem
+    return None
+
+
+def get_random_karaoke():
+    """สุ่ม 1 เพลงจาก karaoke/ คืน (path, stem) หรือ None"""
+    if not os.path.isdir(KARAOKE_DIR):
+        return None
+    files = [f for f in os.listdir(KARAOKE_DIR) if f.lower().endswith(SONG_EXTS)]
+    if not files:
+        return None
+    f = random.choice(files)
+    return os.path.join(KARAOKE_DIR, f), os.path.splitext(f)[0]
+
+
+def prettify_song_name(stem: str) -> str:
+    """monster_yoasobi → 'Monster', blinding_lights_weeknd → 'Blinding Lights'"""
+    parts = stem.split("_")
+    if len(parts) > 1:
+        parts = parts[:-1]  # ตัดส่วนสุดท้าย (ชื่อศิลปิน) ออก
+    return " ".join(p.capitalize() for p in parts)
 
 
 def log_song_request(user_name, query, found):
