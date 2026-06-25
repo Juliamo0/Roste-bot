@@ -4,7 +4,7 @@
 ควบคุมอุปกรณ์ IoT ในบ้านได้ ตัดสินใจบางอย่างได้ และทำงานในโลกจริงได้
 โดยใช้ LLM ที่รันในเครื่องตัวเอง (local)
 
-> อัปเดตล่าสุด: 24 มิถุนายน 2569
+> อัปเดตล่าสุด: 25 มิถุนายน 2569
 
 ---
 
@@ -39,13 +39,17 @@
 - [x] บันทึกประวัติการขอเพลง (รู้ว่าควรเตรียมเพลงไหนเพิ่ม)
 - [ ] เตรียมไฟล์เพลง mp3 จริงมาใส่ (ยังไม่มีไฟล์)
 
-### 🎙️ ระบบเสียงรอสเต้ — pipeline (standalone, เฟส 1–2)
+### 🎙️ ระบบเสียงรอสเต้ — pipeline + integrate (เฟส 1–3)
 - [x] ยืนยันว่า qwen3:8b + RVC อยู่บน 4GB VRAM พร้อมกันได้ (qwen ~2.4GB + RVC peak ~0.9GB)
 - [x] RVC รันในเครื่อง (GPU, warm ~1–2s/ประโยค) — รัน inference ผ่าน rvc_venv (Python 3.10) แยก
 - [x] pipeline: ข้อความ → edge-tts (PremwadeeNeural) → ffmpeg (pitch +5.292, speed 0.9×) → RVC (Laibaht model) → .wav
 - [x] `voice.py` + `voice_rvc_worker.py` — warm worker subprocess (JSON stdin/stdout, โหลดโมเดลครั้งเดียว)
 - [x] ทดสอบ standalone ครบ (`tools/test_voice_pipeline.py`) — warm ~1–2s/ประโยค หลัง cold load ~8s
-- [ ] **เฟส 3 ยังไม่ทำ** — ยังไม่ integrate เข้า bot.py รอสเต้ยังไม่พูดในบอทจริง
+- [x] **เฟส 3a** — wire `RvcWorker` เข้า bot.py, gen TTS file หลังตอบ, โหลด worker เบื้องหลังตอน startup
+- [x] **เฟส 3b** — join ห้อง voice, ทักทายเมื่อเข้าครั้งแรก (cache), เล่นคำตอบ, ค้างห้อง
+- [x] **เฟส 3c** — leave timer: ออกห้องอัตโนมัติเมื่อว่าง 15s, cancel ได้ถ้าคนกลับมา
+- [x] เล่นทักทาย + ทำ TTS คำตอบ **concurrent** (ทักทายไม่รอ TTS คำตอบ — ลด latency)
+- [x] upgrade `discord.py` → 2.7.1 + `davey` (แก้ WebSocket close code 4017 จาก DAVE protocol)
 
 ### 🛠️ โครงสร้าง/เครื่องมือ
 - [x] แยกโค้ดเป็นไฟล์ (bot.py / printing.py / music.py)
@@ -86,12 +90,8 @@
 
 ## ⏳ กำลังค้างอยู่ (เริ่มแล้ว ยังไม่จบ)
 
-### 🔊 เฟส 3 — integrate เสียงเข้าบอทจริง
-pipeline พร้อมแล้ว (`voice.py`) รอขั้นตอนต่อไป:
-- [ ] เรียก `text_to_roste_voice()` หลัง Ollama ตอบ → ส่งไฟล์เสียงเข้าห้อง voice Discord
-- [ ] จัดการ warm worker — เริ่ม `RvcWorker` ตอน bot startup ค้างไว้ตลอด session
-- [ ] รับมือ edge cases: edge-tts ล้มเหลว / VRAM เต็ม / ห้อง voice ว่าง
-- [ ] วัด latency จริง (ต้นทาง edge-tts + network ~2–8s) และยืนยันว่าประสบการณ์ใช้งานรับได้
+### 🔊 เฟส 3d — move logic
+- [ ] รอสเต้ย้ายตามคน ถ้าถูก @mention จากห้อง voice อื่น → `move_to(new_channel)`
 
 ---
 
@@ -155,7 +155,7 @@ pipeline พร้อมแล้ว (`voice.py`) รอขั้นตอนต
 
 ## 🧭 ลำดับที่แนะนำต่อไป
 
-1. **เฟส 3 — integrate เสียงเข้าบอทจริง** — pipeline พร้อมแล้ว (`voice.py`) เชื่อม bot.py + รับมือ latency
+1. **เฟส 3d — move logic** — รอสเต้ย้ายตามคนถ้าถูกเรียกจากห้องอื่น (เล็กน้อย)
 2. **IoT เปิด-ปิดไฟ (จำลองก่อน)** — เป้าหมายหลักที่ตั้งใจ ทำได้จริงด้วยกลไกเดิม
 3. **ทดสอบ TTS ที่มีอารมณ์** — Gemini TTS (ลองฟรีที่ AI Studio) ก่อนตัดสินใจว่าควร upgrade จาก edge-tts ไหม
 4. ที่เหลือ (STT / ร้องเพลง / ตัดสินใจเอง) — งานใหญ่ ค่อยทำทีละขั้น

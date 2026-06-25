@@ -1388,8 +1388,8 @@ async def _get_greeting_wav() -> str | None:
 
 
 async def _speak_in_voice(message, reply_text: str) -> None:
-    """Join ห้อง voice ของ user → ทักทาย (ถ้าเพิ่งเข้า) → เล่น reply → ค้างห้อง
-    ค้างในห้องหลังเล่นจบ — leave timer ทำ step ต่อไป"""
+    """Join voice → just_joined: เล่นทักทายทันที + TTS คำตอบ concurrent → เล่นคำตอบ
+    not_just_joined: TTS คำตอบ → เล่นคำตอบ  ค้างห้อง — leave timer ทำ step ต่อไป"""
     user_vc = getattr(message.author, "voice", None)
     if not user_vc or not user_vc.channel:
         return
@@ -1415,40 +1415,50 @@ async def _speak_in_voice(message, reply_text: str) -> None:
 
     print(f"   🎙️ voice — {'เพิ่งเข้า' if just_joined else 'อยู่แล้ว'} ห้อง {channel.name!r}")
 
-    # ทำ TTS ก่อนจอง voice_lock (กัน block music นานเกิน)
+    # ดึง greeting (cache instantaneous ยกเว้นครั้งแรกของ session ~8-10s)
     greeting_wav = await _get_greeting_wav() if just_joined else None
-    reply_wav    = await _generate_tts(reply_text, message.author.id)
 
-    # ถ้าทั้งคู่ไม่มี → ออกไปเลย
-    if not greeting_wav and not reply_wav:
-        return
-
-    # เช็คอีกครั้ง — อาจมี music เริ่มระหว่างรอ TTS
     if music.voice_lock.locked():
-        print("   🎙️ TTS skip (race) — music เริ่มระหว่างรอ TTS")
+        print("   🎙️ TTS skip (race) — music เริ่มระหว่างรอ")
         return
-
-    # Re-check หลัง TTS (TTS ใช้เวลา ~15s — bot_vc อาจหลุดระหว่างรอ)
-    if not bot_vc.is_connected():
-        print("   🎙️ reconnect — bot_vc หลุดระหว่าง TTS")
-        fresh_vc = getattr(message.author, "voice", None)
-        if not fresh_vc or not fresh_vc.channel:
-            print("   🎙️ skip — user ออก voice แล้ว")
-            return
-        try:
-            bot_vc = await fresh_vc.channel.connect()
-        except Exception as e:
-            print(f"   ⚠️ reconnect error ({type(e).__name__}: {e})")
-            return
 
     async with music.voice_lock:
         try:
+            reply_wav: str | None = None
+
             if greeting_wav:
+                # เริ่ม TTS คำตอบ concurrent กับ เล่นทักทาย
+                # _generate_tts ใช้ asyncio.to_thread → รันใน thread ขณะ _play_wav รอ done event
+                tts_task = asyncio.create_task(
+                    _generate_tts(reply_text, message.author.id)
+                )
                 print("   🎙️ เล่นทักทาย")
                 await _play_wav(bot_vc, greeting_wav)
-            if reply_wav:
-                print("   🎙️ เล่นคำตอบ")
-                await _play_wav(bot_vc, reply_wav)
+                # รอ TTS เสร็จ — อาจจบระหว่างเล่นทักทายแล้ว
+                reply_wav = await tts_task
+            else:
+                # ไม่มีทักทาย → TTS คำตอบ แล้วเล่น
+                reply_wav = await _generate_tts(reply_text, message.author.id)
+
+            if not reply_wav:
+                return
+
+            # Re-check connection (bot_vc อาจหลุดระหว่าง TTS/greeting)
+            if not bot_vc.is_connected():
+                print("   🎙️ reconnect — bot_vc หลุดระหว่าง TTS")
+                fresh_vc = getattr(message.author, "voice", None)
+                if not fresh_vc or not fresh_vc.channel:
+                    print("   🎙️ skip — user ออก voice แล้ว")
+                    return
+                try:
+                    bot_vc = await fresh_vc.channel.connect()
+                except Exception as e:
+                    print(f"   ⚠️ reconnect error ({type(e).__name__}: {e})")
+                    return
+
+            print("   🎙️ เล่นคำตอบ")
+            await _play_wav(bot_vc, reply_wav)
+
         except Exception as e:
             print(f"   ⚠️ voice play error ({type(e).__name__}: {e})")
     # ไม่ disconnect — ค้างห้อง (leave timer ทำ step ต่อไป)

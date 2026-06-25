@@ -23,7 +23,7 @@
   - 🍜 หาร้าน/สถานที่ (Google Maps ผ่าน SerpApi)
 - 🖨️ **สั่งพิมพ์ PDF** — แนบไฟล์ใน Discord แล้วให้รอสเต้สั่งเครื่องพิมพ์จริง
 - 🎵 **เล่นเพลง** — เล่นไฟล์ mp3 ในห้อง voice ตามที่ขอ
-- 🎙️ **ระบบเสียงรอสเต้ (pipeline พร้อม ยังไม่เข้าบอท)** — ข้อความ → edge-tts → ffmpeg adjust → RVC (Laibaht model) → เสียงรอสเต้ — ทดสอบ standalone แล้ว รอ integrate เข้าบอทในเฟส 3
+- 🎙️ **รอสเต้พูดได้** — join ห้อง voice, ทักทายเมื่อเข้า, ตอบด้วยเสียง RVC จริง, ออกอัตโนมัติเมื่อห้องว่าง 15 วินาที
 
 ## 🗂️ โครงสร้างไฟล์
 
@@ -88,7 +88,7 @@
 1. โคลนโปรเจกต์นี้ หรือดาวน์โหลด ZIP
 2. ติดตั้งไลบรารี — ดับเบิลคลิก `setup.bat`
    ```
-   pip install discord.py aiohttp ddgs requests pypdf pywin32 PyNaCl
+   pip install "discord.py[voice]>=2.7.1" aiohttp ddgs requests pypdf pywin32
    ```
 3. โหลดโมเดล
    ```
@@ -172,7 +172,8 @@ python tools/simulate_recall.py      # ดู fact + recall หลัง auto-re
 |-----|-----------|-------|
 | เฟส 1 | RVC รันในเครื่องได้ (GPU, warm ~1–2s/ประโยค) | ✅ เสร็จ |
 | เฟส 2 | pipeline เสียงทำงาน standalone (`voice.py`) | ✅ เสร็จ |
-| เฟส 3 | integrate เข้า bot.py — รอสเต้พูดใน Discord จริง | ⬜ ยังไม่ทำ |
+| เฟส 3 (3a–3c) | integrate เข้า bot.py — join, ทักทาย, พูดตอบ, leave timer | ✅ เสร็จ |
+| เฟส 3 (3d) | move logic — ย้ายตามคนถ้าถูกเรียกจากห้องอื่น | ⬜ ถัดไป |
 
 ### pipeline
 
