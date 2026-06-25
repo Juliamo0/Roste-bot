@@ -6,6 +6,7 @@ import aiohttp
 
 import printing   # 🖨️ ระบบพิมพ์ PDF (อยู่ในไฟล์ printing.py)
 import music      # 🎵 ระบบเพลง (อยู่ในไฟล์ music.py)
+import voice      # 🎙️ voice pipeline (edge-tts → ffmpeg → RVC subprocess)
 import persona    # 🎭 บุคลิกรอสเต้ (SYSTEM_PROMPT, FEWSHOT, MOODS, author note)
 import memory     # 🧠 ระบบความจำ (load/save/facts/recall + คำสั่งจำ-ลืม)
 
@@ -23,6 +24,10 @@ _pending_place: dict = {}          # {user_id: คำถามร้านที
 _user_locks: dict = {}             # {user_id: asyncio.Lock}
 _active_users: set = set()         # ติดตาม user ที่คุยในเซสชันนี้ (ใช้ flush history ตอนปิดบอท)
 _last_had_summary_notice: set = set()  # user_ids ที่รอบก่อนมีประโยคบอกสรุปแล้ว (กันพูดซ้ำ)
+
+# state ระบบเสียง
+_voice_worker: voice.RvcWorker | None = None  # RVC warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
+_tts_lock = asyncio.Lock()                    # serialize TTS — กัน 2 user ยิง convert() พร้อมกัน
 
 # ── background Ollama queue ────────────────────────────────────────────────────
 # summarize_and_verify และ auto_remember ทำทีละตัวเพื่อกัน Ollama timeout
@@ -1309,11 +1314,51 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
 
 
 
+async def _start_voice_worker() -> None:
+    """โหลด RVC worker ใน thread แยก (readline blocks ~8s) — ไม่บล็อก event loop"""
+    global _voice_worker
+    try:
+        await asyncio.to_thread(_voice_worker.start)
+        print(f"🎙️ RVC worker พร้อม — โหลดเสร็จใน {_voice_worker.load_time:.1f}s")
+    except Exception as e:
+        print(f"⚠️ RVC worker เริ่มไม่ได้ ({type(e).__name__}: {e}) — TTS ถูกปิดใช้งาน")
+        _voice_worker = None
+
+
+async def _generate_tts(text: str, uid: int) -> str | None:
+    """สร้างไฟล์เสียง TTS ใน thread แยก แล้ว log ผล (step 3a — ยังไม่เล่น)
+    คืน path ไฟล์ .wav หรือ None ถ้า skip/error"""
+    # worker.load_time > 0 = start() เสร็จแล้ว (ready)
+    if _voice_worker is None or _voice_worker.load_time == 0.0 or not _voice_worker.alive:
+        if _voice_worker is not None and _voice_worker.load_time == 0.0:
+            print("   🎙️ TTS skip — worker ยังโหลดอยู่")
+        return None
+    try:
+        t0 = time.perf_counter()
+        async with _tts_lock:   # serialize — กัน 2 user ยิง convert() พร้อมกัน
+            wav_path = await asyncio.to_thread(
+                voice.text_to_roste_voice,
+                text,
+                worker=_voice_worker,
+                out_dir=str(voice._OUT_DIR / "bot"),
+            )
+        elapsed = time.perf_counter() - t0
+        print(f"   🎙️ TTS เสร็จใน {elapsed:.1f}s → {wav_path}")
+        return wav_path
+    except Exception as e:
+        print(f"   ⚠️ TTS error ({type(e).__name__}: {e})")
+        return None
+
+
 @client.event
 async def on_ready():
+    global _voice_worker
     _ensure_bg_worker()   # เริ่ม background queue worker
+    _voice_worker = voice.RvcWorker()
+    asyncio.create_task(_start_voice_worker())   # โหลด RVC เบื้องหลัง ไม่บล็อก startup
     print(f"✅ ล็อกอินสำเร็จในชื่อ: {client.user}")
     print(f"🖨️ ระบบพิมพ์: {'โหมดจริง' if printing.PRINT_REAL_MODE else 'โหมดจำลอง (ยังไม่สั่งเครื่องจริง)'}")
+    print("🎙️ RVC worker กำลังโหลดในเบื้องหลัง (warm inference พร้อมหลัง ~8s)...")
     print("บอทพร้อมทำงานแล้ว! ลอง @ ชื่อบอทในเซิร์ฟเวอร์ หรือทักผ่าน DM ได้เลย")
 
 
@@ -1325,6 +1370,9 @@ async def on_close():
         for uid in list(_active_users):   # sequential — กัน Ollama timeout จากหลาย user พร้อมกัน
             await flush_user_history(uid)
         print("   ✅ flush เสร็จ")
+    if _voice_worker is not None:
+        _voice_worker.stop()
+        print("   🎙️ RVC worker ปิดแล้ว")
 
 
 @client.event
@@ -1431,6 +1479,10 @@ async def on_message(message):
         reply = reply[:1990] + "…"
 
     await message.reply(reply)
+
+    # 🎙️ TTS — ทำไฟล์เสียง (step 3a: สร้างไฟล์เท่านั้น ยังไม่เล่นในห้อง voice)
+    if message.author.voice and message.author.voice.channel:
+        asyncio.create_task(_generate_tts(reply, user_id))
 
     # 🪄 จำเอง — ทำเบื้องหลังหลังตอบไปแล้ว (ไม่บล็อก ผู้ใช้ไม่ต้องรอ)
     #    เฉพาะข้อความที่ไม่ใช่คำสั่ง/เพลง และผ่านการกรองหยาบใน auto_remember
