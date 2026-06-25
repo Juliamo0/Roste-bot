@@ -1669,7 +1669,7 @@ async def on_message(message):
             await message.reply(f"🎵 รอสเต้จะร้องเพลง \"{pretty}\" ให้ฟังนะคะ~")
             asyncio.create_task(_play_karaoke(message, song_path, pretty))
         else:
-            not_found = (f"เพลง \"{query}\" รอสเต้ไม่เคยฟังมาก่อนเลยค่ะ เดี๋ยวไปหัดร้องก่อนนะคะ~"
+            not_found = ("รอสเต้ไม่เคยฟังเพลงนั้นมาก่อนเลยค่ะ เดี๋ยวไปหัดร้องก่อนนะคะ~"
                          if query else "รอสเต้ยังไม่มีเพลงในคลังเลยค่ะ ยังต้องเตรียมให้ค่ะ~")
             print(f"   🎵 karaoke ไม่เจอ: {query!r} (ขอโดย {user_name})")
             await message.reply(not_found)
