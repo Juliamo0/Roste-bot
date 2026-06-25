@@ -1490,6 +1490,61 @@ async def _leave_after_idle(vc: discord.VoiceClient) -> None:
     await vc.disconnect()
 
 
+async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
+    """Join voice → TTS เกริ่น → เล่นเพลง karaoke → disconnect หลังจบ"""
+    user_vc = getattr(message.author, "voice", None)
+    if not user_vc or not user_vc.channel:
+        return
+    channel = user_vc.channel
+    bot_vc = message.guild.voice_client
+    try:
+        if bot_vc is None or not bot_vc.is_connected():
+            bot_vc = await channel.connect()
+        elif bot_vc.channel.id != channel.id:
+            await bot_vc.move_to(channel)
+    except Exception as e:
+        print(f"   🎵 karaoke connect error ({type(e).__name__}: {e})")
+        return
+
+    intro_wav = await _generate_tts(
+        f"รอสเต้จะร้องเพลง {pretty_name} ให้ฟังนะคะ", message.author.id)
+
+    if music.voice_lock.locked():
+        print("   🎵 karaoke skip — voice_lock ถูกจอง")
+        return
+
+    async with music.voice_lock:
+        try:
+            if intro_wav and bot_vc.is_connected():
+                await _play_wav(bot_vc, intro_wav)
+            if not bot_vc.is_connected():
+                try:
+                    bot_vc = await channel.connect()
+                except Exception:
+                    return
+            loop = asyncio.get_running_loop()
+            done = asyncio.Event()
+
+            def after_karaoke(err):
+                loop.call_soon_threadsafe(done.set)
+
+            bot_vc.play(discord.FFmpegPCMAudio(song_path), after=after_karaoke)
+            print(f"   🎵 เล่น karaoke: {pretty_name}")
+            await asyncio.wait_for(done.wait(), timeout=900)
+            if bot_vc.is_playing():
+                bot_vc.stop()
+        except Exception as e:
+            print(f"   🎵 karaoke play error ({type(e).__name__}: {e})")
+
+    try:
+        if bot_vc.is_connected():
+            await bot_vc.disconnect()
+    except Exception:
+        pass
+    await message.channel.send(
+        f"{message.author.mention} ร้องจบแล้วค่ะ เป็นไงบ้างคะ เพราะไหม~ 🎶")
+
+
 @client.event
 async def on_ready():
     global _voice_worker
@@ -1594,30 +1649,31 @@ async def on_message(message):
         await printing.start_print_request(message, user_id, user_name, pdf_attach, user_message)
         return
 
-    # ===== 🎵 ระบบเพลง (อยู่ในไฟล์ music.py) =====
+    # ===== 🎵 ระบบเพลง karaoke =====
     wants_song = ("เพลง" in user_message and
                   any(w in user_message for w in ("ร้อง", "เปิด", "เล่น", "ขอ")))
     if wants_song:
         if music.voice_lock.locked():
             await message.reply("ตอนนี้รอสเต้กำลังร้องเพลงอยู่ รอเพลงนี้จบก่อนนะคะ")
             return
-        # ผู้สั่งต้องอยู่ในห้อง voice ก่อน
         if not message.author.voice or not message.author.voice.channel:
-            await message.reply("เข้าห้อง voice ก่อนนะคะ แล้วรอสเต้จะตามเข้าไปร้องให้ค่ะ~")
+            await message.reply("เข้าห้อง voice ก่อนนะคะ เดี๋ยวรอสเต้ร้องให้ฟัง~")
             return
         query = music.extract_song_query(user_message)
-        if not query:
-            await message.reply("อยากให้ร้องเพลงไหนเหรอคะ? บอกชื่อเพลงมาได้เลยค่ะ")
-            return
-        result = music.find_song(query)
-        music.log_song_request(user_name, query, found=bool(result))
+        result = music.find_karaoke(query) if query else music.get_random_karaoke()
+        music.log_song_request(user_name, query or "(สุ่ม)", found=bool(result))
         if result:
-            song_path, song_name = result
-            print(f"   🎵 เล่นเพลง: {song_name} (ขอโดย {user_name})")
-            await music.play_song_in_voice(message, song_path, song_name)
+            song_path, stem = result
+            pretty = music.prettify_song_name(stem)
+            print(f"   🎵 karaoke: {pretty!r} (ขอโดย {user_name})")
+            await message.reply(f"🎵 รอสเต้จะร้องเพลง \"{pretty}\" ให้ฟังนะคะ~")
+            asyncio.create_task(_play_karaoke(message, song_path, pretty))
         else:
-            print(f"   🎵 ไม่มีเพลง: {query!r} (ขอโดย {user_name})")
-            await message.reply(random.choice(music.NOT_FOUND_LINES).format(q=query))
+            not_found = (f"เพลง \"{query}\" รอสเต้ไม่เคยฟังมาก่อนเลยค่ะ เดี๋ยวไปหัดร้องก่อนนะคะ~"
+                         if query else "รอสเต้ยังไม่มีเพลงในคลังเลยค่ะ ยังต้องเตรียมให้ค่ะ~")
+            print(f"   🎵 karaoke ไม่เจอ: {query!r} (ขอโดย {user_name})")
+            await message.reply(not_found)
+            asyncio.create_task(_speak_in_voice(message, not_found))
         return
 
     # เช็กก่อนว่าเป็น "คำสั่งความจำ" ไหม (เช่น จำไว้ว่า...) ถ้าใช่ตอบเลยไม่ต้องเรียกโมเดล
