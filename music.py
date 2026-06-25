@@ -70,15 +70,16 @@ def find_karaoke(query: str):
     """หาไฟล์ใน karaoke/ ที่ match query (บางส่วน ไม่สนตัวพิมพ์) คืน (path, stem) หรือ None"""
     if not query or not os.path.isdir(KARAOKE_DIR):
         return None
-    qn = _normalize_song(query)
-    if not qn:
+    # แยก query เป็นคำๆ ก่อน normalize — กัน "รอสเต้ monster" จับคำว่า "monster" ได้ถูก
+    words = [_normalize_song(w) for w in query.split() if len(_normalize_song(w)) >= 2]
+    if not words:
         return None
     for f in os.listdir(KARAOKE_DIR):
         if not f.lower().endswith(SONG_EXTS):
             continue
         stem = os.path.splitext(f)[0]
         sn = _normalize_song(stem)
-        if sn and (qn in sn or sn in qn):
+        if sn and any(w in sn for w in words):
             return os.path.join(KARAOKE_DIR, f), stem
     return None
 
