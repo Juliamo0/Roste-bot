@@ -1,8 +1,12 @@
+import sys
 import re
 import random
 import asyncio
 import discord
 import aiohttp
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 import printing   # 🖨️ ระบบพิมพ์ PDF (อยู่ในไฟล์ printing.py)
 import music      # 🎵 ระบบเพลง (อยู่ในไฟล์ music.py)
