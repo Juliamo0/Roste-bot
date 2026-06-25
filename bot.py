@@ -32,6 +32,8 @@ _last_had_summary_notice: set = set()  # user_ids ที่รอบก่อน
 # state ระบบเสียง
 _voice_worker: voice.RvcWorker | None = None  # RVC warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
 _tts_lock = asyncio.Lock()                    # serialize TTS — กัน 2 user ยิง convert() พร้อมกัน
+_leave_timer: asyncio.Task | None = None       # leave timer task (cancel ได้ถ้าคนกลับมา)
+LEAVE_IDLE_SEC = 15                            # วินาทีที่รอก่อน disconnect เมื่อห้องว่าง
 
 # ── background Ollama queue ────────────────────────────────────────────────────
 # summarize_and_verify และ auto_remember ทำทีละตัวเพื่อกัน Ollama timeout
@@ -1330,8 +1332,7 @@ async def _start_voice_worker() -> None:
 
 
 async def _generate_tts(text: str, uid: int) -> str | None:
-    """สร้างไฟล์เสียง TTS ใน thread แยก แล้ว log ผล (step 3a — ยังไม่เล่น)
-    คืน path ไฟล์ .wav หรือ None ถ้า skip/error"""
+    """สร้างไฟล์เสียง TTS ใน thread แยก — คืน path .wav หรือ None ถ้า skip/error"""
     # worker.load_time > 0 = start() เสร็จแล้ว (ready)
     if _voice_worker is None or _voice_worker.load_time == 0.0 or not _voice_worker.alive:
         if _voice_worker is not None and _voice_worker.load_time == 0.0:
@@ -1352,6 +1353,131 @@ async def _generate_tts(text: str, uid: int) -> str | None:
     except Exception as e:
         print(f"   ⚠️ TTS error ({type(e).__name__}: {e})")
         return None
+
+
+async def _play_wav(vc: discord.VoiceClient, wav_path: str) -> None:
+    """เล่นไฟล์ .wav รอจนจบ — pattern เดียวกับ music.py"""
+    loop = asyncio.get_running_loop()
+    done = asyncio.Event()
+
+    def _after(err):
+        if err:
+            print(f"   ⚠️ audio playback error: {err}")
+        loop.call_soon_threadsafe(done.set)
+
+    vc.play(discord.FFmpegPCMAudio(wav_path), after=_after)
+    try:
+        await asyncio.wait_for(done.wait(), timeout=120)
+    except asyncio.TimeoutError:
+        if vc.is_playing():
+            vc.stop()
+
+
+_GREETING_WAV: str | None = None   # cache ทักทายตลอด session
+_GREETING_TEXT = "รอสเต้เข้ามาแล้วนะคะ"
+
+
+async def _get_greeting_wav() -> str | None:
+    """คืน path ไฟล์ทักทาย — gen ครั้งแรกแล้ว cache ไว้"""
+    global _GREETING_WAV
+    if _GREETING_WAV is not None:
+        return _GREETING_WAV
+    wav = await _generate_tts(_GREETING_TEXT, 0)
+    _GREETING_WAV = wav
+    return wav
+
+
+async def _speak_in_voice(message, reply_text: str) -> None:
+    """Join ห้อง voice ของ user → ทักทาย (ถ้าเพิ่งเข้า) → เล่น reply → ค้างห้อง
+    ค้างในห้องหลังเล่นจบ — leave timer ทำ step ต่อไป"""
+    user_vc = getattr(message.author, "voice", None)
+    if not user_vc or not user_vc.channel:
+        return
+    if music.voice_lock.locked():
+        print("   🎙️ TTS skip — music กำลังเล่น")
+        return
+
+    channel = user_vc.channel
+    bot_vc  = message.guild.voice_client
+
+    # Join / move ห้อง — ติดตามว่าเพิ่งเข้าหรือไม่
+    just_joined = False
+    try:
+        if bot_vc is None or not bot_vc.is_connected():
+            bot_vc = await channel.connect()
+            just_joined = True
+        elif bot_vc.channel.id != channel.id:
+            await bot_vc.move_to(channel)
+            just_joined = True
+    except Exception as e:
+        print(f"   ⚠️ voice connect error ({type(e).__name__}: {e})")
+        return
+
+    print(f"   🎙️ voice — {'เพิ่งเข้า' if just_joined else 'อยู่แล้ว'} ห้อง {channel.name!r}")
+
+    # ทำ TTS ก่อนจอง voice_lock (กัน block music นานเกิน)
+    greeting_wav = await _get_greeting_wav() if just_joined else None
+    reply_wav    = await _generate_tts(reply_text, message.author.id)
+
+    # ถ้าทั้งคู่ไม่มี → ออกไปเลย
+    if not greeting_wav and not reply_wav:
+        return
+
+    # เช็คอีกครั้ง — อาจมี music เริ่มระหว่างรอ TTS
+    if music.voice_lock.locked():
+        print("   🎙️ TTS skip (race) — music เริ่มระหว่างรอ TTS")
+        return
+
+    # Re-check หลัง TTS (TTS ใช้เวลา ~15s — bot_vc อาจหลุดระหว่างรอ)
+    if not bot_vc.is_connected():
+        print("   🎙️ reconnect — bot_vc หลุดระหว่าง TTS")
+        fresh_vc = getattr(message.author, "voice", None)
+        if not fresh_vc or not fresh_vc.channel:
+            print("   🎙️ skip — user ออก voice แล้ว")
+            return
+        try:
+            bot_vc = await fresh_vc.channel.connect()
+        except Exception as e:
+            print(f"   ⚠️ reconnect error ({type(e).__name__}: {e})")
+            return
+
+    async with music.voice_lock:
+        try:
+            if greeting_wav:
+                print("   🎙️ เล่นทักทาย")
+                await _play_wav(bot_vc, greeting_wav)
+            if reply_wav:
+                print("   🎙️ เล่นคำตอบ")
+                await _play_wav(bot_vc, reply_wav)
+        except Exception as e:
+            print(f"   ⚠️ voice play error ({type(e).__name__}: {e})")
+    # ไม่ disconnect — ค้างห้อง (leave timer ทำ step ต่อไป)
+
+
+# ── leave timer helpers ────────────────────────────────────────────────────────
+
+def _human_count_in_channel(channel: discord.VoiceChannel) -> int:
+    return sum(1 for m in channel.members if not m.bot)
+
+
+async def _leave_after_idle(vc: discord.VoiceClient) -> None:
+    """รอ LEAVE_IDLE_SEC วิ ถ้าห้องยังว่างอยู่ → รอเสียงจบ → disconnect"""
+    await asyncio.sleep(LEAVE_IDLE_SEC)
+    if not vc.is_connected():
+        return
+    channel = vc.channel
+    if _human_count_in_channel(channel) > 0:
+        return
+    # รอเสียงเล่นจบก่อน ไม่ตัดกลางคัน (max 120s)
+    for _ in range(240):
+        if not vc.is_playing():
+            break
+        await asyncio.sleep(0.5)
+    # re-check หลังเสียงจบ
+    if _human_count_in_channel(channel) > 0:
+        return
+    print(f"   🎙️ ว่างมา {LEAVE_IDLE_SEC}s — disconnect จากห้อง {channel.name!r}")
+    await vc.disconnect()
 
 
 @client.event
@@ -1377,6 +1503,32 @@ async def on_close():
     if _voice_worker is not None:
         _voice_worker.stop()
         print("   🎙️ RVC worker ปิดแล้ว")
+
+
+@client.event
+async def on_voice_state_update(member, before, after):
+    global _leave_timer
+    # ข้าม event ของบอทเอง (join/leave ของรอสเต้เอง ไม่นับ)
+    if member.id == client.user.id:
+        return
+    bot_vc = member.guild.voice_client
+    if bot_vc is None or not bot_vc.is_connected():
+        return
+    bot_channel = bot_vc.channel
+    # มีคน join ห้องที่รอสเต้อยู่ → ยกเลิก leave timer
+    if after.channel is not None and after.channel.id == bot_channel.id:
+        if _leave_timer is not None and not _leave_timer.done():
+            _leave_timer.cancel()
+            _leave_timer = None
+            print(f"   🎙️ leave timer ยกเลิก — {member.display_name} กลับเข้าห้อง")
+        return
+    # มีคน leave ห้องที่รอสเต้อยู่ → เช็คว่าว่างไหม
+    if before.channel is not None and before.channel.id == bot_channel.id:
+        if _human_count_in_channel(bot_channel) == 0:
+            if _leave_timer is not None and not _leave_timer.done():
+                _leave_timer.cancel()
+            _leave_timer = asyncio.create_task(_leave_after_idle(bot_vc))
+            print(f"   🎙️ ห้องว่าง — เริ่ม leave timer {LEAVE_IDLE_SEC}s")
 
 
 @client.event
@@ -1484,9 +1636,8 @@ async def on_message(message):
 
     await message.reply(reply)
 
-    # 🎙️ TTS — ทำไฟล์เสียง (step 3a: สร้างไฟล์เท่านั้น ยังไม่เล่นในห้อง voice)
-    if message.author.voice and message.author.voice.channel:
-        asyncio.create_task(_generate_tts(reply, user_id))
+    # 🎙️ TTS — join voice + ทักทาย (ถ้าเพิ่งเข้า) + เล่นคำตอบ + ค้างห้อง
+    asyncio.create_task(_speak_in_voice(message, reply))
 
     # 🪄 จำเอง — ทำเบื้องหลังหลังตอบไปแล้ว (ไม่บล็อก ผู้ใช้ไม่ต้องรอ)
     #    เฉพาะข้อความที่ไม่ใช่คำสั่ง/เพลง และผ่านการกรองหยาบใน auto_remember
