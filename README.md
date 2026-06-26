@@ -228,10 +228,13 @@ python tools/test_voice_pipeline.py
 
 ```
 เพลงต้นฉบับ
-  └─▶ UVR (Ultimate Vocal Remover) — แยกเสียงร้องออกจากดนตรี
-        └─▶ RVC Laibaht (GPU) — แปลงเสียงร้องเป็นเสียงรอสเต้ (~15s)
-              └─▶ karaoke/[ชื่อเพลง]_[ศิลปิน].wav
+  └─▶ UVR (Ultimate Vocal Remover) — แยกเสียงร้องออกจากดนตรี → vocals.wav
+        └─▶ RVC Laibaht (GPU) — แปลงเสียงร้องเป็นเสียงรอสเต้ (~15s) → roste_vocals.wav
+              └─▶ mix (Audacity/ffmpeg) — ผสม roste_vocals + instrumental (optional)
+                    └─▶ karaoke/[ชื่อเพลง]_[ศิลปิน].wav
 ```
+
+> mix กับ instrumental ทำให้เสียงอิ่มขึ้น แต่ถ้าใช้แค่ vocals ก็ฟังได้
 
 ### วิธีเพิ่มเพลงใหม่
 
@@ -248,6 +251,15 @@ python tools/test_voice_pipeline.py
 | ไฟล์ | ชื่อเพลง | ศิลปิน |
 |------|---------|--------|
 | `monster_yoasobi.wav` | Monster | YOASOBI |
+
+## 🔧 Troubleshooting
+
+| ปัญหา | สาเหตุ | วิธีแก้ |
+|--------|--------|---------|
+| WebSocket close 4017 / reconnect loop | Discord DAVE protocol (E2EE audio) — discord.py เก่าไม่รองรับ | `pip install "discord.py[voice]>=2.7.1"` |
+| `RuntimeError: PyNaCl library needed` | PyNaCl ไม่ได้ติดตั้งใน venv ที่บอทรัน | `pip install PyNaCl` ใน venv ที่รันบอทจริง |
+| RVC ไม่ทำงาน / CUDA error | Python version หรือ torch mismatch | ใช้ Python 3.10 + torch CUDA ตรงกับ GPU ใน `rvc_venv` แยก |
+| `.gitignore` ไม่ทำงาน | git ไม่รองรับ inline comment ท้าย pattern line | ย้าย comment ขึ้นบรรทัดก่อน pattern แยกต่างหาก |
 
 ## 📝 หมายเหตุ
 
