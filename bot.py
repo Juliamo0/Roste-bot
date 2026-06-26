@@ -35,6 +35,10 @@ _tts_lock = asyncio.Lock()                    # serialize TTS — กัน 2 us
 _leave_timer: asyncio.Task | None = None       # leave timer task (cancel ได้ถ้าคนกลับมา)
 LEAVE_IDLE_SEC = 15                            # วินาทีที่รอก่อน disconnect เมื่อห้องว่าง
 
+# dedup — กัน gateway resume replay ส่ง message event ซ้ำ
+from collections import deque
+_seen_msg_ids: deque[int] = deque(maxlen=200)
+
 # ── background Ollama queue ────────────────────────────────────────────────────
 # summarize_and_verify และ auto_remember ทำทีละตัวเพื่อกัน Ollama timeout
 _bg_queue: asyncio.Queue = asyncio.Queue()
@@ -1601,6 +1605,10 @@ async def on_message(message):
     # ไม่ตอบข้อความของตัวเอง (กันลูป)
     if message.author == client.user:
         return
+    # กัน gateway resume replay ส่ง event ซ้ำ → ตอบ 2 ครั้ง
+    if message.id in _seen_msg_ids:
+        return
+    _seen_msg_ids.append(message.id)
 
     # 🔍 รายงานทุกข้อความที่บอทเห็น (ไว้ดีบัก ดูที่หน้าต่าง PowerShell)
     is_dm = message.guild is None
