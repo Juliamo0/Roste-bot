@@ -100,12 +100,28 @@
 
 ---
 
-## ⚠️ Known Issue — เสียงขาดอารมณ์
+## ⚠️ Known Issues
 
+### เสียงพูด — ติดเพดาน edge-tts
 - **edge-tts เป็น TTS อ่านข่าว** ไม่มีท่วงทำนอง/อารมณ์ — เสียงมีความเป็นหุ่นยนต์แม้ผ่าน RVC แล้ว
 - **จูนข้อความให้ "ลากเสียง" ไม่ช่วย** — ทดลองใส่ตัวอักษรยืด (ค่าา~) แล้วพบว่าแย่ลง edge-tts ยืดโทนเดียวไม่มีอารมณ์ อย่ากลับไปทางนี้
 - **บทเรียน:** Neuro-sama ก็ใช้ TTS แบนๆ (Azure Ashley) — อารมณ์มาจาก LLM + อวตาร + บริบท ไม่ใช่เสียงล้วน ระดับ edge-tts ใช้งานได้จริงในบริบทนี้
 - ถ้าต้องการเสียงที่มีอารมณ์กว่านี้ → ดูส่วน "อัปเกรด TTS" ด้านล่าง
+
+### เพลง cover — คุณภาพขึ้นกับต้นฉบับ
+- ถ้าไฟล์ต้นฉบับคุณภาพต่ำหรือ UVR แยกไม่สะอาด เสียงร้องที่ได้จะ flat/mono
+- แนะนำ: หาไฟล์คุณภาพสูง + ฟัง vocals หลัง UVR ก่อน ถ้าผ่าน ค่อย RVC
+
+---
+
+## 🔧 เทคนิคที่เจอระหว่างพัฒนา (จดไว้กัน debug ซ้ำ)
+
+| ปัญหา | สาเหตุ | วิธีแก้ |
+|--------|--------|---------|
+| WebSocket close code **4017** (loop reconnect) | Discord เปิดใช้ DAVE protocol (E2EE audio) แต่ discord.py 2.6.x ยังไม่รองรับ | upgrade เป็น `discord.py[voice]>=2.7.1` (มี `davey` bundled) |
+| `RuntimeError: PyNaCl library needed` | PyNaCl ไม่ได้ติดตั้งใน venv ที่บอทรัน (testomise myenv) | `pip install PyNaCl` ใน venv ที่รันบอทจริง ไม่ใช่ System Python |
+| RVC worker ไม่โหลด / CUDA error | Python version หรือ torch CUDA mismatch | RVC ต้องรันใน `rvc_venv` (Python 3.10 + torch CUDA 12.1) แยกจาก main env |
+| `.gitignore` ไม่ ignore ไฟล์ | git ไม่รองรับ inline comment (`pattern  # comment`) | ย้าย comment ขึ้นบรรทัดก่อน pattern แยกต่างหาก |
 
 ---
 
