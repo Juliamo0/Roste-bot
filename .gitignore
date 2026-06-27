@@ -40,5 +40,9 @@ sim_out*.txt
 # ===== RVC (venv + output แยกต่างหาก) =====
 rvc_venv/
 rvc_out/
+
+# ===== F5-TTS (venv + output แยกต่างหาก) =====
+f5_venv/
+f5_out/
 # ไฟล์เสียง TTS ดิบ (ใหญ่ + สร้างใหม่ได้)
 tts_raw/
