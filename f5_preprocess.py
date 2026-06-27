@@ -48,9 +48,16 @@ def numbers_to_thai(text: str) -> str:
     text = re.sub(r'(\d),(\d{3})', r'\1\2', text)  # 1,500 → 1500
     return re.sub(r'\d+(?:\.\d+)?', _num_match, text)
 
-def remove_mai_yamok(text: str) -> str:
-    """ลบ ๆ ออก (ไม่ expand — F5 loop ถ้า expand)"""
-    return re.sub(r'\s*ๆ', '', text)
+_MAI_YAMOK_RE = re.compile(r'([เ-ไ]?[ก-ฮ][ะ-ฺ็-๎อ]*[ก-ฮ]?)ๆ')
+
+def expand_mai_yamok(text: str) -> str:
+    """ขยาย ๆ → ซ้ำคำสุดท้ายหน้า ๆ (Thai syllable regex — ไม่ซ้ำทั้ง phrase)
+    เร็วๆ → เร็วเร็ว  |  น่าสนใจมากๆ → น่าสนใจมากมาก  |  ค่อยๆ → ค่อยค่อย
+    ถ้าจับ syllable ไม่ได้ → ลบ ๆ ทิ้ง (F5 loop ถ้าส่ง ๆ ตรงๆ)
+    """
+    result = _MAI_YAMOK_RE.sub(r'\1\1', text)
+    # ๆ ที่เหลือ (จับ syllable ไม่ได้) → ลบออก
+    return re.sub(r'\s*ๆ', '', result)
 
 def reduce_naka(text: str) -> str:
     """ลด 'นะคะ' ซ้ำ — เก็บแค่ตัวสุดท้าย"""
@@ -68,7 +75,7 @@ def preprocess_for_f5(text: str) -> tuple:
     """
     warnings = []
     t = numbers_to_thai(text)
-    t = remove_mai_yamok(t)
+    t = expand_mai_yamok(t)
     t = reduce_naka(t)
     t = re.sub(r' +', ' ', t).strip()
 
