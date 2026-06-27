@@ -31,6 +31,7 @@ _last_had_summary_notice: set = set()  # user_ids ที่รอบก่อน
 
 # state ระบบเสียง
 _voice_worker: voice.RvcWorker | None = None  # RVC warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
+_f5_worker: voice.F5Worker | None = None      # F5 warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
 _tts_lock = asyncio.Lock()                    # serialize TTS — กัน 2 user ยิง convert() พร้อมกัน
 _leave_timer: asyncio.Task | None = None       # leave timer task (cancel ได้ถ้าคนกลับมา)
 LEAVE_IDLE_SEC = 15                            # วินาทีที่รอก่อน disconnect เมื่อห้องว่าง
@@ -1335,6 +1336,17 @@ async def _start_voice_worker() -> None:
         _voice_worker = None
 
 
+async def _start_f5_worker() -> None:
+    """โหลด F5 worker ใน thread แยก (~14s boot) — ไม่บล็อก event loop"""
+    global _f5_worker
+    try:
+        await asyncio.to_thread(_f5_worker.start)
+        print(f"🎙️ F5 worker พร้อม — โหลดเสร็จใน {_f5_worker.load_time:.1f}s")
+    except Exception as e:
+        print(f"⚠️ F5 worker เริ่มไม่ได้ ({type(e).__name__}: {e}) — ใช้ edge-tts แทน")
+        _f5_worker = None
+
+
 async def _generate_tts(text: str, uid: int) -> str | None:
     """สร้างไฟล์เสียง TTS ใน thread แยก — คืน path .wav หรือ None ถ้า skip/error"""
     # worker.load_time > 0 = start() เสร็จแล้ว (ready)
@@ -1349,6 +1361,7 @@ async def _generate_tts(text: str, uid: int) -> str | None:
                 voice.text_to_roste_voice,
                 text,
                 worker=_voice_worker,
+                f5_worker=_f5_worker,
                 out_dir=str(voice._OUT_DIR / "bot"),
             )
         elapsed = time.perf_counter() - t0
@@ -1561,13 +1574,15 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
 
 @client.event
 async def on_ready():
-    global _voice_worker
+    global _voice_worker, _f5_worker
     _ensure_bg_worker()   # เริ่ม background queue worker
     _voice_worker = voice.RvcWorker()
+    _f5_worker = voice.F5Worker()
     asyncio.create_task(_start_voice_worker())   # โหลด RVC เบื้องหลัง ไม่บล็อก startup
+    asyncio.create_task(_start_f5_worker())      # โหลด F5 เบื้องหลัง ไม่บล็อก startup
     print(f"✅ ล็อกอินสำเร็จในชื่อ: {client.user}")
     print(f"🖨️ ระบบพิมพ์: {'โหมดจริง' if printing.PRINT_REAL_MODE else 'โหมดจำลอง (ยังไม่สั่งเครื่องจริง)'}")
-    print("🎙️ RVC worker กำลังโหลดในเบื้องหลัง (warm inference พร้อมหลัง ~8s)...")
+    print("🎙️ RVC+F5 workers กำลังโหลดในเบื้องหลัง (RVC ~8s, F5 ~14s)...")
     print("บอทพร้อมทำงานแล้ว! ลอง @ ชื่อบอทในเซิร์ฟเวอร์ หรือทักผ่าน DM ได้เลย")
 
 
@@ -1582,6 +1597,9 @@ async def on_close():
     if _voice_worker is not None:
         _voice_worker.stop()
         print("   🎙️ RVC worker ปิดแล้ว")
+    if _f5_worker is not None:
+        _f5_worker.stop()
+        print("   🎙️ F5 worker ปิดแล้ว")
 
 
 @client.event

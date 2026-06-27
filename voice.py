@@ -2,14 +2,18 @@
 voice.py — Roste voice pipeline
 
 text_to_roste_voice(text) -> wav_path:
-  strip_emoji → edge-tts (th-TH-PremwadeeNeural) → ffmpeg adjust → RVC subprocess
+  F5 pipeline (ถ้าส่ง f5_worker):
+    strip_emoji → preprocess → F5 (warm) → RVC (warm/oneshot)
+  fallback pipeline:
+    strip_emoji → edge-tts → ffmpeg adjust → RVC (warm/oneshot)
 
 RVC warm worker (โหลดโมเดลครั้งเดียว):
   with RvcWorker() as w:
       path = text_to_roste_voice("...", worker=w)
 
-RVC one-shot (cold, ถ้าไม่ส่ง worker):
-  path = text_to_roste_voice("...")
+F5 warm worker:
+  with F5Worker() as f5:
+      path = text_to_roste_voice("...", worker=rvc_w, f5_worker=f5)
 """
 
 import asyncio
@@ -42,6 +46,14 @@ _ROOT        = Path(__file__).parent
 _RVC_VENV_PY = _ROOT / "rvc_venv" / "Scripts" / "python.exe"
 _WORKER_PY   = _ROOT / "voice_rvc_worker.py"
 _OUT_DIR     = _ROOT / "rvc_out"
+
+# ── F5-TTS constants ───────────────────────────────────────────────────────────
+_F5_VENV_PY   = _ROOT / "f5_venv" / "Scripts" / "python.exe"
+_F5_WORKER_PY = _ROOT / "f5_worker.py"
+F5_REF_AUDIO  = str(_ROOT / "f5_out" / "ref_laibaht.wav")
+F5_REF_TEXT   = "กลิ่นอะไรเอ่ย เพราะว่านอนเล่นอยู่ตั้งนานไม่ได้กลิ่นไง"
+F5_SPEED      = 1.0
+F5_STEPS      = 32
 
 # ── emoji strip ────────────────────────────────────────────────────────────────
 _EMOJI_RE = re.compile(
@@ -247,6 +259,112 @@ class RvcWorker:
         self.stop()
 
 
+# ── F5 warm worker ────────────────────────────────────────────────────────────
+
+class F5Worker:
+    """
+    F5-TTS subprocess ที่โหลดโมเดลครั้งเดียว รับ job ผ่าน stdin/stdout
+    warm inference ~3-5s/ไฟล์ (vs ~20s cold)
+    Protocol: stdin JSON → stdout "OK:<path>|time=Xs|dur=Ys" หรือ "ERR:<msg>"
+    """
+
+    def __init__(self):
+        self._proc: subprocess.Popen | None = None
+        self.load_time: float = 0.0
+
+    @property
+    def alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def start(self) -> None:
+        if self.alive:
+            return
+        if not _F5_VENV_PY.exists():
+            raise RuntimeError(f"ไม่พบ f5_venv: {_F5_VENV_PY}")
+        if not _F5_WORKER_PY.exists():
+            raise RuntimeError(f"ไม่พบ f5_worker.py: {_F5_WORKER_PY}")
+
+        t0 = time.perf_counter()
+        self._proc = subprocess.Popen(
+            [str(_F5_VENV_PY), str(_F5_WORKER_PY)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        while True:
+            line = self._proc.stdout.readline()
+            if not line:
+                err = self._proc.stderr.read()
+                raise RuntimeError(f"F5 worker died before ready.\nstderr:\n{err}")
+            if line.strip().startswith("F5_WORKER_READY"):
+                break
+        self.load_time = time.perf_counter() - t0
+
+    def generate(
+        self,
+        ref_audio: str,
+        ref_text: str,
+        gen_text: str,
+        out_path: str,
+        speed: float = 1.0,
+        steps: int = 32,
+    ) -> float:
+        """สร้างเสียง คืน duration seconds"""
+        if not self.alive:
+            raise RuntimeError("F5Worker not running (call start() first)")
+        job = json.dumps({
+            "ref_audio": ref_audio,
+            "ref_text":  ref_text,
+            "gen_text":  gen_text,
+            "out_path":  out_path,
+            "speed":     speed,
+            "steps":     steps,
+        })
+        self._proc.stdin.write(job + "\n")
+        self._proc.stdin.flush()
+        while True:
+            line = self._proc.stdout.readline()
+            if not line:
+                raise RuntimeError("F5 worker closed unexpectedly")
+            line = line.strip()
+            if line.startswith("OK:") or line.startswith("ERR:"):
+                break
+        if line.startswith("ERR:"):
+            raise RuntimeError(f"F5 error: {line[4:]}")
+        dur = 0.0
+        for part in line[3:].split("|"):
+            if part.startswith("dur="):
+                try:
+                    dur = float(part[4:].rstrip("s"))
+                except ValueError:
+                    pass
+        return dur
+
+    def stop(self) -> None:
+        if self._proc:
+            try:
+                self._proc.stdin.write("EXIT\n")
+                self._proc.stdin.flush()
+                self._proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                self._proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            self._proc = None
+
+    def __enter__(self) -> "F5Worker":
+        self.start()
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.stop()
+
+
 # ── RVC one-shot (cold fallback) ───────────────────────────────────────────────
 
 def _find_model_files() -> tuple[str | None, str | None]:
@@ -308,6 +426,7 @@ def text_to_roste_voice(
     text: str,
     *,
     worker: RvcWorker | None = None,
+    f5_worker: F5Worker | None = None,
     out_dir: str | None = None,
     filename: str | None = None,
 ) -> str:
@@ -315,11 +434,12 @@ def text_to_roste_voice(
     ข้อความ → ไฟล์ .wav เสียงรอสเต้
 
     Args:
-        text:     ข้อความ (strip_emoji อัตโนมัติ)
-        worker:   RvcWorker ที่ start() แล้ว สำหรับ warm inference
-                  ถ้า None จะโหลดโมเดลใหม่ทุกครั้ง (~8s)
-        out_dir:  โฟลเดอร์ output (default: rvc_out/)
-        filename: ชื่อไฟล์ไม่รวม .wav (default: uuid สั้น)
+        text:      ข้อความ (strip_emoji อัตโนมัติ)
+        worker:    RvcWorker ที่ start() แล้ว สำหรับ warm RVC inference
+        f5_worker: F5Worker ที่ start() แล้ว → ใช้ F5 pipeline
+                   ถ้า None → fallback edge-tts pipeline
+        out_dir:   โฟลเดอร์ output (default: rvc_out/)
+        filename:  ชื่อไฟล์ไม่รวม .wav (default: uuid สั้น)
 
     Returns:
         absolute path ไฟล์ .wav
@@ -333,21 +453,48 @@ def text_to_roste_voice(
 
     uid     = filename or uuid.uuid4().hex[:8]
     tmp_dir = tempfile.mkdtemp(prefix="roste_")
-    raw_wav = os.path.join(tmp_dir, f"{uid}_raw.wav")
-    adj_wav = os.path.join(tmp_dir, f"{uid}_adj.wav")
-    rvc_wav = os.path.join(out_dir,  f"{uid}_rvc.wav")
+    rvc_wav = os.path.join(out_dir, f"{uid}_rvc.wav")
+
+    def _rvc(in_wav: str) -> None:
+        if worker:
+            worker.convert(in_wav, rvc_wav)
+        else:
+            _rvc_oneshot(in_wav, rvc_wav)
 
     try:
-        _edge_tts(text, raw_wav)
-        _adjust(raw_wav, adj_wav)
-        if worker:
-            worker.convert(adj_wav, rvc_wav)
-        else:
-            _rvc_oneshot(adj_wav, rvc_wav)
-    finally:
-        for f in (raw_wav, adj_wav):
+        if f5_worker and f5_worker.alive:
+            from f5_preprocess import preprocess_for_f5
+            preprocessed, warns = preprocess_for_f5(text)
+            for w in warns:
+                print(f"   ⚠️ F5 preprocess: {w}")
+            f5_wav = os.path.join(tmp_dir, f"{uid}_f5.wav")
             try:
-                os.remove(f)
+                f5_worker.generate(
+                    ref_audio=F5_REF_AUDIO,
+                    ref_text=F5_REF_TEXT,
+                    gen_text=preprocessed,
+                    out_path=f5_wav,
+                    speed=F5_SPEED,
+                    steps=F5_STEPS,
+                )
+                _rvc(f5_wav)
+            except Exception as e:
+                print(f"   ⚠️ F5 failed ({e}) — fallback edge-tts")
+                raw_wav = os.path.join(tmp_dir, f"{uid}_raw.wav")
+                adj_wav = os.path.join(tmp_dir, f"{uid}_adj.wav")
+                _edge_tts(text, raw_wav)
+                _adjust(raw_wav, adj_wav)
+                _rvc(adj_wav)
+        else:
+            raw_wav = os.path.join(tmp_dir, f"{uid}_raw.wav")
+            adj_wav = os.path.join(tmp_dir, f"{uid}_adj.wav")
+            _edge_tts(text, raw_wav)
+            _adjust(raw_wav, adj_wav)
+            _rvc(adj_wav)
+    finally:
+        for fn in os.listdir(tmp_dir):
+            try:
+                os.remove(os.path.join(tmp_dir, fn))
             except OSError:
                 pass
         try:
