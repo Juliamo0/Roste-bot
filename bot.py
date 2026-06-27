@@ -1408,6 +1408,11 @@ async def _speak_in_voice(message, reply_text: str) -> None:
     just_joined = False
     try:
         if bot_vc is None or not bot_vc.is_connected():
+            if bot_vc is not None:
+                try:
+                    await bot_vc.disconnect(force=True)
+                except Exception:
+                    pass
             bot_vc = await channel.connect()
             just_joined = True
         elif bot_vc.channel.id != channel.id:
@@ -1503,6 +1508,11 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
     bot_vc = message.guild.voice_client
     try:
         if bot_vc is None or not bot_vc.is_connected():
+            if bot_vc is not None:
+                try:
+                    await bot_vc.disconnect(force=True)
+                except Exception:
+                    pass
             bot_vc = await channel.connect()
         elif bot_vc.channel.id != channel.id:
             await bot_vc.move_to(channel)
