@@ -41,12 +41,14 @@ for line in sys.stdin:
         break
     try:
         job = json.loads(line)
-        ref_audio = job["ref_audio"]
-        ref_text  = job["ref_text"]
-        gen_text  = job["gen_text"]
-        out_path  = job["out_path"]
-        speed     = job.get("speed", 1.0)
-        steps     = job.get("steps", 16)
+        ref_audio  = job["ref_audio"]
+        ref_text   = job["ref_text"]
+        gen_text   = job["gen_text"]
+        out_path   = job["out_path"]
+        speed      = job.get("speed", 1.0)
+        steps      = job.get("steps", 16)
+        max_chars  = job.get("max_chars", 200)
+
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
@@ -63,6 +65,7 @@ for line in sys.stdin:
                 step=steps,
                 cfg=2.0,
                 speed=speed,
+                max_chars=max_chars,
             )
         elapsed = time.perf_counter() - t1
         duration = len(wav) / 24000

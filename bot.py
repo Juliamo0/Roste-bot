@@ -1347,8 +1347,6 @@ async def _start_f5_worker() -> None:
         _f5_worker = None
 
 
-TTS_MAX_CHARS = 200   # F5 ~0.075s/char — 200 ตัว ≈ 15s max
-
 async def _generate_tts(text: str, uid: int) -> str | None:
     """สร้างไฟล์เสียง TTS ใน thread แยก — คืน path .wav หรือ None ถ้า skip/error"""
     # worker.load_time > 0 = start() เสร็จแล้ว (ready)
@@ -1356,9 +1354,6 @@ async def _generate_tts(text: str, uid: int) -> str | None:
         if _voice_worker is not None and _voice_worker.load_time == 0.0:
             print("   🎙️ TTS skip — worker ยังโหลดอยู่")
         return None
-    if len(text) > TTS_MAX_CHARS:
-        print(f"   🎙️ TTS ตัดข้อความ {len(text)} → {TTS_MAX_CHARS} ตัวอักษร")
-        text = text[:TTS_MAX_CHARS].rsplit(" ", 1)[0]  # ตัดที่ word boundary
     try:
         t0 = time.perf_counter()
         async with _tts_lock:   # serialize — กัน 2 user ยิง convert() พร้อมกัน
