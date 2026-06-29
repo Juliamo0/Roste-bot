@@ -4,7 +4,7 @@
 ควบคุมอุปกรณ์ IoT ในบ้านได้ ตัดสินใจบางอย่างได้ และทำงานในโลกจริงได้
 โดยใช้ LLM ที่รันในเครื่องตัวเอง (local)
 
-> อัปเดตล่าสุด: 26 มิถุนายน 2569
+> อัปเดตล่าสุด: 29 มิถุนายน 2569
 
 ---
 
@@ -47,8 +47,11 @@
 ### 🎙️ ระบบเสียงรอสเต้ — pipeline + integrate (เฟส 1–3)
 - [x] ยืนยันว่า qwen3:8b + RVC อยู่บน 4GB VRAM พร้อมกันได้ (qwen ~2.4GB + RVC peak ~0.9GB)
 - [x] RVC รันในเครื่อง (GPU, warm ~1–2s/ประโยค) — รัน inference ผ่าน rvc_venv (Python 3.10) แยก
-- [x] pipeline: ข้อความ → edge-tts (PremwadeeNeural) → ffmpeg (pitch +5.292, speed 0.9×) → RVC (Laibaht model) → .wav
-- [x] `voice.py` + `voice_rvc_worker.py` — warm worker subprocess (JSON stdin/stdout, โหลดโมเดลครั้งเดียว)
+- [x] **F5-TTS-THAI v2** — แทนที่ edge-tts ด้วย flow matching TTS ภาษาไทย local ล้วน (clone เสียง Laibaht ด้วย ref audio)
+  - pipeline: `f5_preprocess.py` (ตัวเลข/°C/fuel codes → ไทย) → F5-TTS-THAI v2 → RVC (Laibaht) → .wav
+  - cold load: F5 ~18s / RVC ~9s — warm inference ~3–5s/ประโยค รวม F5+RVC
+  - ๆ expansion, number reading, degree symbols จัดการถูกต้อง
+- [x] `voice.py` + `voice_rvc_worker.py` + `f5_worker.py` + `f5_preprocess.py` — warm worker subprocess (JSON stdin/stdout)
 - [x] ทดสอบ standalone ครบ (`tools/test_voice_pipeline.py`) — warm ~1–2s/ประโยค หลัง cold load ~8s
 - [x] **เฟส 3a** — wire `RvcWorker` เข้า bot.py, gen TTS file หลังตอบ, โหลด worker เบื้องหลังตอน startup
 - [x] **เฟส 3b** — join ห้อง voice, ทักทายเมื่อเข้าครั้งแรก (cache), เล่นคำตอบ, ค้างห้อง
@@ -102,11 +105,10 @@
 
 ## ⚠️ Known Issues
 
-### เสียงพูด — ติดเพดาน edge-tts
-- **edge-tts เป็น TTS อ่านข่าว** ไม่มีท่วงทำนอง/อารมณ์ — เสียงมีความเป็นหุ่นยนต์แม้ผ่าน RVC แล้ว
-- **จูนข้อความให้ "ลากเสียง" ไม่ช่วย** — ทดลองใส่ตัวอักษรยืด (ค่าา~) แล้วพบว่าแย่ลง edge-tts ยืดโทนเดียวไม่มีอารมณ์ อย่ากลับไปทางนี้
-- **บทเรียน:** Neuro-sama ก็ใช้ TTS แบนๆ (Azure Ashley) — อารมณ์มาจาก LLM + อวตาร + บริบท ไม่ใช่เสียงล้วน ระดับ edge-tts ใช้งานได้จริงในบริบทนี้
-- ถ้าต้องการเสียงที่มีอารมณ์กว่านี้ → ดูส่วน "อัปเกรด TTS" ด้านล่าง
+### เสียงพูด — ข้อจำกัด F5-TTS-THAI
+- **cold load ~18s** — บอทรอ F5 worker พร้อมก่อนตอบด้วยเสียงได้ (ตอบแชตได้ก่อน warm เสร็จ)
+- **F5 ออกเสียงผิด** กรณีข้อความมีตัวเลข/หน่วย/โค้ดพิเศษที่ `f5_preprocess.py` ยังไม่ครอบคลุม — แก้ได้โดยเพิ่ม regex ใน `preprocess_for_f5()`
+- **อารมณ์เสียง** ขึ้นกับ ref audio — ปรับได้โดยเลือก ref audio ที่มีน้ำเสียงเหมาะสม
 
 ### เพลง cover — คุณภาพขึ้นกับต้นฉบับ
 - ถ้าไฟล์ต้นฉบับคุณภาพต่ำหรือ UVR แยกไม่สะอาด เสียงร้องที่ได้จะ flat/mono
@@ -143,19 +145,16 @@
 - [x] RVC infrastructure พร้อม (โมเดล Laibaht ใช้กับเสียงพูดได้)
 - [x] Laibaht model ร้องเพลงได้โดยไม่ต้องเทรนแยก — ทดสอบกับ Monster (YOASOBI) สำเร็จ
 - [x] pipeline: UVR แยกเสียงร้อง → RVC Laibaht → `karaoke/` → เล่นในห้อง voice
+- [ ] **อนาคต: Synthesizer V Studio** — สร้างเสียงร้องสังเคราะห์ตรงๆ ด้วยโมเดลเสียงรอสเต้ ไม่ต้องพึ่งต้นฉบับ (UVR stage ไม่จำเป็น)
 
 ### 🎙️ อัปเกรด TTS — เสียงที่มีอารมณ์กว่า edge-tts
-ยังไม่ตัดสินใจ ต้องทดสอบก่อน — flow เหมือนเดิม: TTS → RVC (Laibaht) → เสียงรอสเต้
+✅ **F5-TTS-THAI ใช้งานได้แล้ว** — ถ้าต้องการทดสอบตัวเลือกอื่นในอนาคต:
 
 | ตัวเลือก | ประเภท | ข้อดี | ข้อเสีย |
 |---------|--------|-------|---------|
-| **Gemini TTS** (Google AI Studio) | cloud | audio tags ควบคุมอารมณ์/จังหวะ, ไทยดีมาก (80–90% คุณภาพ ElevenLabs ราคา 25%), ไม่กิน VRAM | พึ่งเน็ต/API key, ใช้เสียงสำเร็จ clone ไม่ได้, เสี่ยง Google ปิด preview |
+| **Gemini TTS** (Google AI Studio) | cloud | audio tags ควบคุมอารมณ์/จังหวะ, ไทยดีมาก, ไม่กิน VRAM | พึ่งเน็ต/API key, clone เสียงไม่ได้, เสี่ยง preview ปิด |
 | **MOSS-TTS** (local) | local | รองรับไทย v1.5, clone เสียงได้, อารมณ์ดี | โมเดล 4B — VRAM 4GB อาจไม่พอ, ตั้งยาก |
-| **F5-TTS-THAI** (local) | local | local ล้วน, ไทยโดยเฉพาะ, clone ได้ | อารมณ์อาจสู้ Gemini/MOSS ไม่ได้ |
-
-**หลักเกณฑ์เลือก:** รับ cloud ได้ → Gemini ง่ายสุด (ไม่กิน VRAM) — อยาก local ล้วน → MOSS หรือ F5 (แต่ VRAM ตึง)
-
-**วิธีทดสอบ Gemini ก่อนตัดสินใจ:** สร้างเสียงไทยใน AI Studio → ผ่าน RVC Laibaht → ฟังว่าเป็นธรรมชาติขึ้นไหม
+| ~~**F5-TTS-THAI**~~ | ✅ ใช้แล้ว | local ล้วน, ไทยโดยเฉพาะ, clone ref audio | — |
 
 ### 🧠 ตัดสินใจเองได้มากขึ้น
 - [ ] ให้รอสเต้เลือกทำ action เองตามสถานการณ์ (เช่น เตือนเมื่อถึงเวลา)
@@ -167,7 +166,7 @@
 
 - **การ์ดจอ 4GB VRAM** — รันโมเดลใหญ่กว่า 14B ไม่ไหว; qwen3:8b + RVC อยู่พร้อมกันได้ (~3.3GB peak), แต่ STT (Whisper) พร้อมกันอีกจะเต็ม
 - **Canon E3300 (USB)** — ไม่รายงานสถานะหมึก/กระดาษให้โปรแกรมอ่าน
-- **เสียงไทย TTS** — edge-tts ฟรีแต่ไม่มีอารมณ์; TTS มีอารมณ์ (Gemini/MOSS/F5) ยังต้องทดสอบว่าผ่าน RVC แล้วได้ผลจริง
+- **เสียงไทย TTS** — F5-TTS-THAI v2 ใช้งานได้แล้ว (local, clone ref audio); ถ้าต้องการอารมณ์กว่านี้ → Gemini TTS (cloud) หรือ MOSS-TTS (local, VRAM ตึง)
 
 > ถ้าอัปเกรดการ์ดจอ (VRAM 8-12GB+) หรือใช้เครื่องพิมพ์/อุปกรณ์ WiFi
 > หลายข้อจำกัดข้างบนจะเปิดทางได้มากขึ้น
@@ -178,5 +177,5 @@
 
 1. **เฟส 3d — move logic** — รอสเต้ย้ายตามคนถ้าถูกเรียกจากห้องอื่น (เล็กน้อย)
 2. **IoT เปิด-ปิดไฟ (จำลองก่อน)** — เป้าหมายหลักที่ตั้งใจ ทำได้จริงด้วยกลไกเดิม
-3. **ทดสอบ TTS ที่มีอารมณ์** — Gemini TTS (ลองฟรีที่ AI Studio) ก่อนตัดสินใจว่าควร upgrade จาก edge-tts ไหม
+3. **ทดสอบ Synthesizer V Studio** — สร้างเพลง karaoke ด้วยเสียงสังเคราะห์โดยตรง แทน UVR+RVC
 4. ที่เหลือ (STT / ตัดสินใจเอง) — งานใหญ่ ค่อยทำทีละขั้น

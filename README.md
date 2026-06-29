@@ -42,6 +42,8 @@
 | `setup.bat` | ดับเบิลคลิกเพื่อติดตั้งไลบรารี |
 | `voice.py` | voice pipeline — `text_to_roste_voice(text, worker=w)` |
 | `voice_rvc_worker.py` | subprocess worker ที่รันใน rvc_venv — โหลด RVC ครั้งเดียว รับงานผ่าน JSON stdin |
+| `f5_worker.py` | subprocess worker ที่รันใน f5_venv — โหลด F5-TTS-THAI v2 ครั้งเดียว รับงานผ่าน JSON stdin |
+| `f5_preprocess.py` | แก้ข้อความก่อนส่ง F5 — ตัวเลข °C fuel codes markdown → ภาษาไทย |
 
 ### ไฟล์ทดสอบ (root)
 
@@ -181,11 +183,28 @@ python tools/simulate_recall.py      # ดู fact + recall หลัง auto-re
 ### pipeline
 
 ```
-ข้อความ → edge-tts (th-TH-PremwadeeNeural) → ffmpeg (+5.292 semitones, speed 0.9×) → RVC (Laibaht model) → .wav
+ข้อความ → f5_preprocess.py (ตัวเลข/°C/fuel codes → ไทย) → F5-TTS-THAI v2 (ref: lai_seg4_160s.wav, local) → RVC (Laibaht model) → .wav
 ```
 
-RVC ทำงานใน subprocess แยก (`rvc_venv`, Python 3.10) เพื่อไม่ให้ dependency ชนกับบอทหลัก
-warm inference: โหลดโมเดลครั้งเดียว ~8s จากนั้น ~1–2s ต่อประโยค
+F5-TTS-THAI และ RVC ทำงานใน subprocess แยก (`f5_venv`, `rvc_venv`) เพื่อไม่ให้ dependency ชนกับบอทหลัก
+cold load: F5 ~18s / RVC ~9s — หลังจากนั้น inference ~3–5s/ประโยค (F5+RVC รวม)
+
+### ติดตั้ง f5_venv (ต้องทำเอง — ไม่มีใน repo)
+
+`f5_venv/` และ `f5_out/` อยู่ใน `.gitignore` — ต้องสร้างใหม่หลัง clone
+
+```bash
+# สร้าง venv (Python 3.11 ขึ้นไป)
+py -3.11 -m venv f5_venv
+
+# ติดตั้ง torch CUDA (RTX 30xx — CUDA 12.1)
+f5_venv\Scripts\pip install torch==2.4.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+
+# ติดตั้ง F5-TTS-THAI
+f5_venv\Scripts\pip install f5-tts-th
+```
+
+**ref audio:** วางไฟล์ `lai_seg4_160s.wav` ใน `f5_out/ref_test/` (path ตั้งค่าใน `voice.py` → `F5_REF_AUDIO`)
 
 ### ติดตั้ง rvc_venv (ต้องทำเอง — ไม่มีใน repo)
 
@@ -211,8 +230,6 @@ rvc_venv\Scripts\pip install rvc-python==0.1.5
 python tools/test_voice_pipeline.py
 ```
 
-> **Known issue:** ความเป็นธรรมชาติของเสียงขึ้นอยู่กับ edge-tts (Microsoft Azure TTS) — แผนอนาคตอาจทดสอบ F5-TTS-THAI
-
 ## 🎤 ระบบ Karaoke
 
 รอสเต้ร้องเพลง cover ด้วยเสียง Laibaht ในห้อง voice
@@ -235,6 +252,8 @@ python tools/test_voice_pipeline.py
 ```
 
 > mix กับ instrumental ทำให้เสียงอิ่มขึ้น แต่ถ้าใช้แค่ vocals ก็ฟังได้
+
+> **อนาคต:** [Synthesizer V Studio](https://dreamtonics.com/synthv/) + โมเดลเสียงรอสเต้ → สร้างเสียงร้องสังเคราะห์ตรงๆ ไม่ต้องพึ่งต้นฉบับ (มีโอกาสสูงกว่า UVR+RVC ในคุณภาพระดับ studio)
 
 ### วิธีเพิ่มเพลงใหม่
 

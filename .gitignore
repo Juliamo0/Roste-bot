@@ -30,9 +30,13 @@ Thumbs.db
 .idea/
 *.log
 
-# ===== ไฟล์เสียงทดสอบ =====
+# ===== ไฟล์เสียงทดสอบ / reference audio =====
 test*.mp3
 *.wav
+# ไฟล์ reference audio สำหรับ F5 (ใหญ่ + อาจมีลิขสิทธิ์)
+1_Lai_ref*
+# โฟลเดอร์ voice model (edge-tts ONNX ขนาดใหญ่)
+voices/
 
 # ===== ผลลัพธ์จากสคริปต์จำลอง =====
 sim_out*.txt

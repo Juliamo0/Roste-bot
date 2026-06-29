@@ -50,8 +50,8 @@ _OUT_DIR     = _ROOT / "rvc_out"
 # ── F5-TTS constants ───────────────────────────────────────────────────────────
 _F5_VENV_PY   = _ROOT / "f5_venv" / "Scripts" / "python.exe"
 _F5_WORKER_PY = _ROOT / "f5_worker.py"
-F5_REF_AUDIO  = str(_ROOT / "f5_out" / "ref_laibaht.wav")
-F5_REF_TEXT   = "กลิ่นอะไรเอ่ย เพราะว่านอนเล่นอยู่ตั้งนานไม่ได้กลิ่นไง"
+F5_REF_AUDIO  = str(_ROOT / "f5_out" / "ref_test" / "lai_seg4_160s.wav")
+F5_REF_TEXT   = "ตีสอง ตีสาม ตีสี่ อะไรทรงเนี้ยแบบก่อนเช้าอ่ะ มันจะเป็นช่วงผีออกอะไรสักอย่างนึง แหลมบาดก็แบบว่า"
 F5_SPEED      = 1.0
 F5_STEPS      = 32
 
@@ -420,6 +420,64 @@ print('done', flush=True)
         raise RuntimeError(f"RVC oneshot failed:\n{r.stderr}")
 
 
+# ── Thai text splitter ────────────────────────────────────────────────────────
+
+def _split_thai_text(text: str, max_chars: int = 300) -> list[str]:
+    """แบ่ง text สำหรับ F5:
+    1. ลอง crfcut ก่อน — ดีสำหรับ conversational text (ประโยคสมบูรณ์)
+    2. ถ้า crfcut ไม่แบ่ง (list data เช่นราคาน้ำมัน) + ยาวเกิน → keyword split
+    """
+    try:
+        from pythainlp.tokenize import sent_tokenize
+        segs = [s.strip() for s in sent_tokenize(text, engine="crfcut") if s.strip()]
+        # merge segment ที่สั้นมาก (< 40c) เข้ากับ segment ก่อนหน้า
+        merged = []
+        for s in segs:
+            if merged and len(s) < 40:
+                merged[-1] = merged[-1] + " " + s
+            else:
+                merged.append(s)
+        # ใช้ crfcut เฉพาะเมื่อ segment สั้นจริง (≤150c) = ประโยคสนทนา
+        # ถ้า segment ยาว = list data → ปล่อยให้ keyword split จัดการ
+        if len(merged) > 1 and all(len(s) <= 150 for s in merged):
+            return merged
+    except Exception:
+        pass
+
+    # crfcut ไม่แบ่ง (1 segment) หรือ error → keyword split ถ้ายาวเกิน
+    if len(text) <= max_chars:
+        return [text]
+    segments, remaining = [], text
+    while len(remaining) > max_chars:
+        chunk = remaining[:max_chars]
+        best = -1
+        for ending in ['ค่ะ ', 'คะ ', 'ครับ ', 'นะ ', 'ลิตร ', '. ']:
+            pos = chunk.rfind(ending)
+            if pos > max_chars // 3 and pos + len(ending) > best:
+                best = pos + len(ending)
+        if best == -1:
+            pos = chunk.rfind(' ')
+            best = pos if pos > 0 else max_chars
+        segments.append(remaining[:best].strip())
+        remaining = remaining[best:].strip()
+    if remaining:
+        segments.append(remaining)
+    return [s for s in segments if s]
+
+
+def _concat_wavs(paths: list[str], out_path: str, silence_ms: int = 150) -> None:
+    """ต่อ wav หลายไฟล์ + เว้น silence ระหว่าง segment"""
+    import numpy as np
+    arrays, sr = [], None
+    for i, p in enumerate(paths):
+        data, file_sr = sf.read(p)
+        sr = file_sr
+        arrays.append(data)
+        if i < len(paths) - 1:
+            arrays.append(np.zeros(int(sr * silence_ms / 1000), dtype=data.dtype))
+    sf.write(out_path, np.concatenate(arrays), sr)
+
+
 # ── public API ─────────────────────────────────────────────────────────────────
 
 def text_to_roste_voice(
@@ -467,17 +525,29 @@ def text_to_roste_voice(
             preprocessed, warns = preprocess_for_f5(text)
             for w in warns:
                 print(f"   ⚠️ F5 preprocess: {w}")
-            f5_wav = os.path.join(tmp_dir, f"{uid}_f5.wav")
+            segments = _split_thai_text(preprocessed, max_chars=300)
+            print(f"   🔤 F5 gen_text ({len(preprocessed)}c, {len(segments)} ส่วน): {preprocessed!r}")
             try:
-                f5_worker.generate(
-                    ref_audio=F5_REF_AUDIO,
-                    ref_text=F5_REF_TEXT,
-                    gen_text=preprocessed,
-                    out_path=f5_wav,
-                    speed=F5_SPEED,
-                    steps=F5_STEPS,
-                )
-                _rvc(f5_wav)
+                seg_rvc_wavs = []
+                for i, seg in enumerate(segments):
+                    label = f"{uid}_{i}"
+                    f5_wav_i  = os.path.join(tmp_dir, f"{label}_f5.wav")
+                    rvc_wav_i = os.path.join(tmp_dir, f"{label}_rvc.wav") if len(segments) > 1 else rvc_wav
+                    f5_worker.generate(
+                        ref_audio=F5_REF_AUDIO,
+                        ref_text=F5_REF_TEXT,
+                        gen_text=seg,
+                        out_path=f5_wav_i,
+                        speed=F5_SPEED,
+                        steps=F5_STEPS,
+                    )
+                    if worker:
+                        worker.convert(f5_wav_i, rvc_wav_i)
+                    else:
+                        _rvc_oneshot(f5_wav_i, rvc_wav_i)
+                    seg_rvc_wavs.append(rvc_wav_i)
+                if len(segments) > 1:
+                    _concat_wavs(seg_rvc_wavs, rvc_wav)
             except Exception as e:
                 print(f"   ⚠️ F5 failed ({e}) — fallback edge-tts")
                 raw_wav = os.path.join(tmp_dir, f"{uid}_raw.wav")
