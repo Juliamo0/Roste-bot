@@ -4,6 +4,12 @@ import: from f5_preprocess import preprocess_for_f5
 """
 import re
 
+try:
+    from pythainlp.tokenize import word_tokenize as _word_tokenize
+    _HAS_PYTHAINLP = True
+except ImportError:
+    _HAS_PYTHAINLP = False
+
 _D = ['ศูนย์','หนึ่ง','สอง','สาม','สี่','ห้า','หก','เจ็ด','แปด','เก้า']
 
 def _int_to_thai(n: int) -> str:
@@ -48,16 +54,37 @@ def numbers_to_thai(text: str) -> str:
     text = re.sub(r'(\d),(\d{3})', r'\1\2', text)  # 1,500 → 1500
     return re.sub(r'\d+(?:\.\d+)?', _num_match, text)
 
-_MAI_YAMOK_RE = re.compile(r'([เ-ไ]?[ก-ฮ][ะ-ฺ็-๎อ]*[ก-ฮ]?)ๆ')
-
 def expand_mai_yamok(text: str) -> str:
-    """ขยาย ๆ → ซ้ำคำสุดท้ายหน้า ๆ (Thai syllable regex — ไม่ซ้ำทั้ง phrase)
-    เร็วๆ → เร็วเร็ว  |  น่าสนใจมากๆ → น่าสนใจมากมาก  |  ค่อยๆ → ค่อยค่อย
-    ถ้าจับ syllable ไม่ได้ → ลบ ๆ ทิ้ง (F5 loop ถ้าส่ง ๆ ตรงๆ)
+    """ขยาย ๆ → ซ้ำคำก่อนหน้า (ซ้ำคำเดียว ไม่ซ้ำทั้งวลี)
+    จริงๆ → จริงจริง  |  ใกล้ๆ → ใกล้ใกล้  |  ค่อยๆ → ค่อยค่อย
+    ใช้ pythainlp word_tokenize + จัดการ token ที่รวม ๆ ไว้ด้วย (เช่น "ค่อยๆ")
     """
-    result = _MAI_YAMOK_RE.sub(r'\1\1', text)
-    # ๆ ที่เหลือ (จับ syllable ไม่ได้) → ลบออก
-    return re.sub(r'\s*ๆ', '', result)
+    if 'ๆ' not in text:
+        return text
+    try:
+        if not _HAS_PYTHAINLP:
+            raise ImportError
+        tokens = _word_tokenize(text, keep_whitespace=True)
+        result = []
+        for tok in tokens:
+            if tok == 'ๆ':
+                # standalone ๆ — หา sub-word สุดท้ายของ compound token ก่อนหน้า
+                for j in range(len(result) - 1, -1, -1):
+                    if result[j].strip():
+                        prev = result[j].strip()
+                        sub = [t for t in _word_tokenize(prev) if t.strip()]
+                        repeat = sub[-1] if len(sub) > 1 else prev
+                        result.append(repeat)
+                        break
+            elif 'ๆ' in tok:
+                # pythainlp รวม "wordๆ" เป็น token เดียว — ซ้ำทั้ง word_part
+                word_part = tok.replace('ๆ', '')
+                result.append(word_part * 2)
+            else:
+                result.append(tok)
+        return ''.join(result)
+    except Exception:
+        return re.sub(r'\s*ๆ', '', text)
 
 def reduce_naka(text: str) -> str:
     """ลด 'นะคะ' ซ้ำ — เก็บแค่ตัวสุดท้าย"""
@@ -74,8 +101,24 @@ def preprocess_for_f5(text: str) -> tuple:
     Returns: (processed_text, warnings: list[str])
     """
     warnings = []
-    t = numbers_to_thai(text)
-    t = expand_mai_yamok(t)
+    # markdown: **bold**, *italic*, `code` → เนื้อหาข้างใน
+    t = re.sub(r'\*{1,2}(.+?)\*{1,2}', r'\1', text)
+    t = re.sub(r'`(.+?)`', r'\1', t)
+    # markdown bullet/header: - / * / # ขึ้นต้นบรรทัด → ลบ
+    t = re.sub(r'(?m)^[ \t]*[-*#]+[ \t]*', '', t)
+    # newlines → space (F5 splits chunk ที่ \n → เสียงตัด)
+    t = re.sub(r'\n+', ' ', t)
+    # ellipsis / จุดไข่ปลา → space (F5 อ่านไม่ได้)
+    t = re.sub(r'\.{2,}|…', ' ', t)
+    # อุณหภูมิ: °C/°F และ range ด้วย -
+    t = re.sub(r'°[Cc]', ' องศาเซลเซียส', t)
+    t = re.sub(r'°[Ff]', ' องศาฟาเรนไฮต์', t)
+    t = re.sub(r'(\d)\s*-\s*(\d)', r'\1 ถึง \2', t)  # 24-33 → 24 ถึง 33
+    # fuel type codes: B20→บี ยี่สิบ, E85→อี แปดสิบห้า, B7→บี เจ็ด
+    t = re.sub(r'\bB(\d+)\b', lambda m: 'บี ' + _int_to_thai(int(m.group(1))), t)
+    t = re.sub(r'\bE(\d+)\b', lambda m: 'อี ' + _int_to_thai(int(m.group(1))), t)
+    t = re.sub(r'\bNGV\b', 'เอ็นจีวี', t)
+    t = numbers_to_thai(t)
     t = reduce_naka(t)
     t = re.sub(r' +', ' ', t).strip()
 
@@ -113,14 +156,17 @@ if __name__ == '__main__':
         print(f"  {ok} '{text}'")
         print(f"      → '{got}'")
 
-    print("\n=== Unit test: remove_mai_yamok ===")
+    print("\n=== Unit test: expand_mai_yamok ===")
     mk_cases = [
+        "ถ้าจะเติมจริงๆ คงต้องดูปั๊มที่เราอยู่ใกล้ๆ กันนิดนึงนะคะ",
+        "ค่อยๆ ทำไปนะคะ",
         "มันน่าสนใจมากๆ เลยนะคะ",
         "ดีๆ และง่ายๆ",
         "ไม่มี mai yamok",
     ]
     for t in mk_cases:
-        print(f"  '{t}' → '{remove_mai_yamok(t)}'")
+        print(f"  IN : {t}")
+        print(f"  OUT: {expand_mai_yamok(t)}")
 
     print("\n=== Unit test: reduce_naka ===")
     nk_cases = [
