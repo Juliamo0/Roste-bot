@@ -32,6 +32,7 @@ Thumbs.db
 
 # ===== ไฟล์เสียงทดสอบ / reference audio =====
 test*.mp3
+*.mp3
 *.wav
 # ไฟล์ reference audio สำหรับ F5 (ใหญ่ + อาจมีลิขสิทธิ์)
 1_Lai_ref*
@@ -50,3 +51,8 @@ f5_venv/
 f5_out/
 # ไฟล์เสียง TTS ดิบ (ใหญ่ + สร้างใหม่ได้)
 tts_raw/
+
+# ===== โมเดล RVC/F5 (ไฟล์ใหญ่มาก — ไม่ใช่ source code) =====
+*.pth
+*.index
+*.onnx
