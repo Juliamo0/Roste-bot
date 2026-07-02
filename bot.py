@@ -1,3 +1,4 @@
+import os
 import sys
 import re
 import random
@@ -1433,6 +1434,59 @@ async def _generate_tts(text: str, uid: int) -> str | None:
         return None
 
 
+async def _generate_tts_stream(text: str, uid: int):
+    """AsyncIterator[str] — yield path .wav ทีละ segment ทันทีที่ segment เสร็จ
+    producer (thread เดียว sequential ถือ _tts_lock ครอบทั้งคำตอบ) ผลิตต่อเนื่อง
+    ระหว่างที่ consumer เล่น segment ก่อนหน้า — ลำดับรักษาผ่าน Queue ตัวเดียว"""
+    if _voice_worker is None or _voice_worker.load_time == 0.0 or not _voice_worker.alive:
+        if _voice_worker is not None and _voice_worker.load_time == 0.0:
+            print("   🎙️ TTS skip — worker ยังโหลดอยู่")
+        return
+
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def _produce() -> None:
+        # รันใน thread — ส่ง path เข้า queue ฝั่ง event loop; sentinel None ปิดท้ายเสมอ
+        try:
+            for wav in voice.text_to_roste_voice_segments(
+                    text,
+                    worker=_voice_worker,
+                    f5_worker=_f5_worker,
+                    out_dir=str(voice._OUT_DIR / "bot")):
+                loop.call_soon_threadsafe(queue.put_nowait, wav)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    async def _run_producer() -> None:
+        t0 = time.perf_counter()
+        async with _tts_lock:   # serialize — กัน 2 user ยิง convert() พร้อมกัน
+            try:
+                await asyncio.to_thread(_produce)
+            except Exception as e:
+                print(f"   ⚠️ TTS stream error ({type(e).__name__}: {e})")
+        print(f"   🎙️ TTS stream จบใน {time.perf_counter() - t0:.1f}s")
+
+    producer_task = asyncio.create_task(_run_producer())
+    try:
+        while True:
+            wav = await queue.get()
+            if wav is None:
+                break
+            yield wav
+    finally:
+        # consumer หยุดก่อนจบ (หลุดห้อง/error) — thread cancel ไม่ได้ ต้องรอจบ
+        # แล้วเก็บกวาดไฟล์ segment ที่ค้างในคิว (ไม่มีใครเล่นแล้ว)
+        await producer_task
+        while not queue.empty():
+            leftover = queue.get_nowait()
+            if leftover:
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    pass
+
+
 async def _play_wav(vc: discord.VoiceClient, wav_path: str) -> None:
     """เล่นไฟล์ .wav รอจนจบ — pattern เดียวกับ music.py"""
     loop = asyncio.get_running_loop()
@@ -1506,44 +1560,50 @@ async def _speak_in_voice(message, reply_text: str) -> None:
         return
 
     async with music.voice_lock:
+        stream = _generate_tts_stream(reply_text, message.author.id)
         try:
-            reply_wav: str | None = None
-
             if greeting_wav:
-                # เริ่ม TTS คำตอบ concurrent กับ เล่นทักทาย
-                # _generate_tts ใช้ asyncio.to_thread → รันใน thread ขณะ _play_wav รอ done event
-                tts_task = asyncio.create_task(
-                    _generate_tts(reply_text, message.author.id)
-                )
+                # เริ่มดึง segment แรก concurrent กับ เล่นทักทาย
+                # (การเรียก anext ครั้งแรกคือจุดที่ producer เริ่ม generate)
+                first_task = asyncio.create_task(anext(stream, None))
                 print("   🎙️ เล่นทักทาย")
                 await _play_wav(bot_vc, greeting_wav)
-                # รอ TTS เสร็จ — อาจจบระหว่างเล่นทักทายแล้ว
-                reply_wav = await tts_task
+                seg_wav = await first_task
             else:
-                # ไม่มีทักทาย → TTS คำตอบ แล้วเล่น
-                reply_wav = await _generate_tts(reply_text, message.author.id)
+                seg_wav = await anext(stream, None)
 
-            if not reply_wav:
-                return
+            n_played = 0
+            while seg_wav is not None:
+                # Re-check connection ก่อนเล่นทุก segment (bot_vc อาจหลุดระหว่าง TTS)
+                if not bot_vc.is_connected():
+                    print("   🎙️ reconnect — bot_vc หลุดระหว่าง TTS")
+                    fresh_vc = getattr(message.author, "voice", None)
+                    if not fresh_vc or not fresh_vc.channel:
+                        print("   🎙️ skip — user ออก voice แล้ว")
+                        break
+                    try:
+                        bot_vc = await fresh_vc.channel.connect()
+                    except Exception as e:
+                        print(f"   ⚠️ reconnect error ({type(e).__name__}: {e})")
+                        break
 
-            # Re-check connection (bot_vc อาจหลุดระหว่าง TTS/greeting)
-            if not bot_vc.is_connected():
-                print("   🎙️ reconnect — bot_vc หลุดระหว่าง TTS")
-                fresh_vc = getattr(message.author, "voice", None)
-                if not fresh_vc or not fresh_vc.channel:
-                    print("   🎙️ skip — user ออก voice แล้ว")
-                    return
+                n_played += 1
+                print(f"   🎙️ เล่น segment {n_played}")
+                await _play_wav(bot_vc, seg_wav)
                 try:
-                    bot_vc = await fresh_vc.channel.connect()
-                except Exception as e:
-                    print(f"   ⚠️ reconnect error ({type(e).__name__}: {e})")
-                    return
-
-            print("   🎙️ เล่นคำตอบ")
-            await _play_wav(bot_vc, reply_wav)
+                    os.remove(seg_wav)
+                except OSError:
+                    pass
+                seg_wav = await anext(stream, None)
 
         except Exception as e:
             print(f"   ⚠️ voice play error ({type(e).__name__}: {e})")
+        finally:
+            # ปิด generator เสมอ — รอ producer จบ + เก็บกวาด segment ค้างคิว
+            try:
+                await stream.aclose()
+            except Exception as e:
+                print(f"   ⚠️ TTS stream close error ({type(e).__name__}: {e})")
     # ไม่ disconnect — ค้างห้อง (leave timer ทำ step ต่อไป)
 
 
