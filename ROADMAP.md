@@ -4,7 +4,7 @@
 ควบคุมอุปกรณ์ IoT ในบ้านได้ ตัดสินใจบางอย่างได้ และทำงานในโลกจริงได้
 โดยใช้ LLM ที่รันในเครื่องตัวเอง (local)
 
-> อัปเดตล่าสุด: 1 กรกฎาคม 2569
+> อัปเดตล่าสุด: 2 กรกฎาคม 2569
 
 ---
 
@@ -16,6 +16,13 @@
 - [x] ระบบ Mood + Author's Note (ฉีดกฎติดคำตอบ กันหลุดคาแร็กเตอร์)
 - [x] ความจำรายคน (จำชื่อ/เรื่องที่คุย, คำสั่ง "จำไว้ว่า"/"ลืมทุกอย่าง")
 - [x] เลือกขนาดโมเดลได้ (qwen3:8b สมดุล / 14b ฉลาดขึ้นแต่ช้า)
+- [x] **`fix_persona_slips()`** ใน `persona.py` — validation layer รอบสอง ดักคำหลุดคาแร็กเตอร์แบบ
+  rule-based (เจอจริง: สรุปผลค้นเว็บยาวๆ จบด้วย "นะครับ!") กฎ "ห้ามครับ" มีใน SYSTEM_PROMPT + author note
+  อยู่แล้วแต่โมเดลยังหลุดในคำตอบยาว จึงต้องมี validation layer แทนการเพิ่ม prompt ซ้ำ (บทเรียนเดียวกับ
+  `_strip_ungrounded_optional_args`) ลำดับ replace สำคัญ: "นะครับ"→"นะคะ" ต้องมาก่อน "ครับ"→"ค่ะ"
+- [x] **คุมความยาวคำตอบ** — เพิ่มกฎใน `build_author_note()`: คำถามข้อเท็จจริงสั้นๆ (เวลา/อากาศ/ราคา/ไฟดับ)
+  ตอบ 2-4 ประโยค เข้าเรื่องเลย ไม่เกริ่นยาว ไม่สรุปเรื่องอื่นที่ไม่ได้ถาม ไม่ปิดท้ายแนะนำให้ไปเช็คแหล่งอื่นเอง
+  (เจอจริง: ถามฝนวันนี้ ได้คำตอบเป็นเรียงความปนเฮอริเคนเดือนอื่น + ปิดท้าย "ไปเช็ค TMD เอง" ทั้งที่ดึงข้อมูลมาให้แล้ว)
 
 ### 🌐 ดึงข้อมูลจริง
 - [x] เวลา/วันที่ (เขตไทย, พ.ศ.)
@@ -59,6 +66,37 @@
 - [x] เล่นทักทาย + ทำ TTS คำตอบ **concurrent** (ทักทายไม่รอ TTS คำตอบ — ลด latency)
 - [x] upgrade `discord.py` → 2.7.1 + `davey` (แก้ WebSocket close code 4017 จาก DAVE protocol)
 - [x] **เฟส 3d — move logic** — ตรวจโค้ดพบว่าทำงานอยู่แล้วตั้งแต่ commit `dd23daa` (เฟส 3): `_speak_in_voice` และ `_play_karaoke` เทียบห้อง voice ของคนที่ @mention กับห้องที่บอทอยู่ ถ้าไม่ตรงกันจะ `move_to(new_channel)` ทุกครั้งที่มีคนคุยจากห้องอื่น (เพราะบอทตอบเฉพาะตอนถูก @mention อยู่แล้ว จึงเทียบเท่า "ย้ายเมื่อถูกเรียกจากห้องอื่น" ตามที่ตั้งใจ) — ไม่ต้องเขียนโค้ดเพิ่ม แค่ยังไม่เคยเช็คให้ชัวร์/ทำเครื่องหมายว่าเสร็จ
+- [x] **เฟส 5 — sentence streaming** — เดิมรอทั้งคำตอบเจนเสร็จ+concat ก่อนเล่น (~15-20s สำหรับคำตอบยาว)
+  เปลี่ยนเป็น `text_to_roste_voice_segments()` generator yield ไฟล์ `.wav` ทีละ segment (ตัดด้วย crfcut)
+  ทันทีที่เจนเสร็จ — เล่น segment แรกได้เร็วขึ้น (~6.7s วัดจริงบน GPU เทียบ ~12.8-20.7s แบบเดิม)
+  `text_to_roste_voice()` เดิม refactor ให้ consume generator + concat แทน (API/ผลลัพธ์ภายนอกเท่าเดิม
+  ไม่กระทบ greeting cache/karaoke intro/tools อื่น)
+  - **per-segment fail-safe** (จำเป็นเพราะ streaming ทำให้ fallback ทั้งก้อนแบบเดิมใช้ไม่ได้ — ถ้า segment
+    แรกเล่นด้วยเสียง F5 ไปแล้ว แล้ว fallback ทั้งข้อความไป edge-tts จะทำให้เสียงเปลี่ยนกลางคันแล้วเล่นซ้ำจากต้น):
+    F5 (retry 1 ครั้ง, ข้าม retry ทันทีถ้า worker ตายแล้ว) → edge-tts→adjust→RVC เฉพาะ segment นั้น → ข้าม segment
+  - ทดสอบจริงบน GPU (kill F5 worker กลาง stream): segment ที่เหลือสลับไป edge-tts ต่อเนื่องถูกต้อง
+    ไม่เงียบ ไม่เล่นซ้ำจากต้น
+  - **เจอบั๊กแฝงระหว่างทดสอบ:** `python-crfsuite` ไม่เคยถูกติดตั้งจริงใน venv ที่บอทรัน ทำให้ `crfcut`
+    import พังและถูก `try/except` ใน `_split_thai_text` กลืนเงียบมาตลอด (การตัดประโยคไทยไม่เคยทำงานจริง
+    บนเครื่องนี้เลย) แก้แล้ว + เพิ่มเข้า `setup.bat` กันเงียบซ้ำตอน clone ใหม่
+  - `test_voice.py` ใหม่ 11 tests ครอบ: ลำดับ segment, retry, fallback เฉพาะ segment, worker ตายกลางคัน,
+    regression API เดิม
+  - `tools/test_voice_stream.py` — สคริปต์ทดสอบ streaming จริงบน GPU (วัด time-to-first-segment +
+    จำลอง F5 ตายกลางคัน) ใช้ซ้ำได้ทุกครั้งที่แตะ pipeline เสียง
+- [x] **แก้การอ่านปี พ.ศ./ค.ศ.** — `years_to_thai()` ใน `f5_preprocess.py`: เดิมอ่านปีแบบจำนวนเต็ม
+  ("พ.ศ. 2569" → "สองพันห้าร้อยหกสิบเก้า" ยาวและ F5 อ่านตะกุกตะกัก) เปลี่ยนเป็นอ่านทีละหลักตามภาษาพูดจริง
+  ("พอศอ สองห้าหกเก้า") — ทำงานเฉพาะบริบทที่เป็นปีชัดเจน (ตามหลังชื่อเดือน/"ปี"/พ.ศ./ค.ศ.) กันชน
+  "2500 บาท" ที่ต้องอ่านแบบจำนวนเหมือนเดิม และดักเคส "พ.ค." (พฤษภาคม) ไม่ให้สับสนกับ "พ.ศ."
+- [x] **แก้หน่วยจากข้อมูล TMD ที่ F5 อ่านผิด** — "มม." เดิมถูกอ่านสะกดตัวอักษร "มอมอ" (เพราะ TMD คืน
+  ปริมาณฝนเป็น "0.2 มม." ตรงๆ) แก้ให้ขยายเป็น "มิลลิเมตร" + "%" (ความชื้น) ขยายเป็น "เปอร์เซ็นต์" ก่อนส่งเข้า F5
+  - ลองสะกดแบบ "มิลลิเมด" (phonetic ตามเสียงพูดจริง) เพื่อแก้ปัญหาเสียงวรรณยุกต์เพี้ยนที่ F5 อ่าน "ตร"
+    เป็นเสียงสูงผิด แต่ user ทดสอบแล้วอยากให้กลับไปใช้ตัวสะกดมาตรฐาน "มิลลิเมตร" ตามเดิม — ปัญหาเสียง
+    วรรณยุกต์ยังไม่แก้ (ทราบแล้วแต่ user เลือกยอมรับ ไม่ใช่บั๊กที่ต้องรีบแก้)
+- [x] **ทดลอง cap จำนวน segment เสียงสำหรับคำตอบยาว แล้วถอนออก** — เคยเพิ่ม `max_segments` ตัดเสียงเหลือ
+  segment แรกๆ (ที่เหลืออ่านในแชตแทน) เพื่อกันคำตอบยาวเกินฟัง แต่พบว่าตัดจบกลางประโยคที่สมบูรณ์อยู่แล้ว
+  (เช่น ตัดประโยคปิดท้าย "อ้างอิงข้อมูลจากกรมอุตุนิยมวิทยาค่ะ" ทิ้ง) ฟังดูเหมือนพูดไม่จบ — ถอนออกทั้งหมด
+  เพราะปัญหา "คำตอบยาวเกิน" แก้ที่ต้นตอแล้วด้วย author note (ดูหัวข้อ Tool calling ด้านล่าง) และการนับ
+  segment หลังขยายตัวเลขเป็นคำอ่านไทยไม่ใช่ตัวชี้วัดความยาวที่แม่นยำ (ตัวเลขขยายเป็นคำยาวกว่าอักษรเดิมมาก)
 
 ### 🛠️ Tool calling — LLM เลือกเครื่องมือเอง (แทน keyword dispatch)
 - [x] แทนที่ `get_realtime_context()` (keyword matching เดิม) ด้วย native Ollama tool calling —
@@ -80,6 +118,11 @@
   parameter ของทุกเครื่องมือ (ไม่ใช่แค่ province) — เผื่ออนาคต IoT/reminder เจอปัญหาเดิม
 - [x] `tools/simulate_toolcalling.py` — เทสจริงกับ Ollama หลังแก้: เลือกเครื่องมือถูก 5/5,
   multi-turn place-search 2/2 (ยืนยันว่า grounding check ทำงานจริง ไม่ใช่แค่ mock)
+- [x] **กัน `search_web` เรียกซ้อนหลัง `get_weather` สำเร็จ** — เจอจริง: TMD คืนพยากรณ์วันนี้มาแล้ว
+  แต่โมเดล 8B ยังเรียก `search_web` ซ้ำ ได้หน้า climate-average (ค่าเฉลี่ยรายเดือน ไม่ใช่พยากรณ์วันนี้)
+  มาปนกับข้อมูลจริง ทำให้ตอบไม่ตรงคำถาม ("วันนี้ฝนจะตกไหม" → ตอบความชื้นเดือนธันวาแทน) แก้โดยตัด
+  `search_web` ออกจากรายการเครื่องมือของรอบถัดไปทันทีที่ `get_weather` สำเร็จ (ผ่าน `tools` param ใหม่ใน
+  `_chat_once`) โมเดลจึงเรียกซ้ำไม่ได้อีกเลยในเทิร์นนั้น
 
 ### 🔎 ความจำเชิงความหมาย — RAG PDF + semantic recall
 - [x] `vectormemory.py` — ChromaDB (persist ที่ `chroma_db/`) + Ollama `bge-m3` ทำ embedding, ไม่ต้องพึ่ง torch ใน venv หลัก
@@ -92,10 +135,32 @@
 - [x] `test_vectormemory.py` — 13 unit tests mock Ollama เทส edge case ของ LLM-as-reranker โดยเฉพาะ (output หลุดฟอร์แมต, temperature, คะแนนต่ำหมดทั้ง 5 candidate)
 
 ### 🔒 ความปลอดภัย/คุณภาพโค้ด
+
+**เสร็จแล้ว:**
 - [x] จำกัดสิทธิ์คำสั่งพิมพ์ — เพิ่ม `PRINT_ALLOWED_USER_IDS` กัน user ใดๆ ก็สั่งพิมพ์ได้ (เดิมไม่มีการเช็คสิทธิ์เลย)
 - [x] รวมโค้ด Ollama-call ที่ซ้ำ 6-7 จุดใน bot.py เป็น `_get_json_post`/`_strip_think` เดียว
 - [x] เจอ+แก้บั๊กแฝง: `pypdf` ไม่เคยถูกติดตั้งจริงในเครื่อง ทั้งที่ `printing.py` อ้างอิงไว้ (lazy import ตอนพิมพ์จริงเท่านั้นเลยไม่เคยโดนจับ)
 - [x] แก้ `tools/simulate_chat.py` / `simulate_chat_long.py` / `simulate_recall.py` — เดิม `import bot` พังเพราะ chdir ไปที่ `tools/` เอง ไม่ใช่ root ของโปรเจกต์ ทำให้รันตามที่ README บอกไม่ได้เลยมาตั้งแต่ต้น
+- [x] ย้ายทั้งโปรเจกต์ออกจาก OneDrive → `d:\mybot` — ปิดความเสี่ยง secrets/ความจำผู้ใช้ (`memory/`, `chroma_db/`)
+  ถูก sync ขึ้น cloud โดยไม่ตั้งใจ
+- [x] เช็ค git history เต็ม (`git log --all --full-history -- config.py` + pickaxe `-S` ค้นเศษของ token/key
+  จริงทั้ง 4 ตัวในทุก commit ทุก ref) → **สะอาด 100%** — `config.py` ไม่เคยถูก commit แม้แต่ครั้งเดียว
+  และ secrets ไม่เคยหลุดไปอยู่ไฟล์อื่นด้วย ปลอดภัยสำหรับ push ขึ้น public repo
+- [x] ตรวจ subprocess ทั้งหมด (printing.py, voice.py) — ใช้ list args ไม่มี `shell=True`/`eval`/`pickle` ที่เสี่ยง
+- [x] ชื่อไฟล์ที่มาจาก user (PDF สั่งพิมพ์) sanitize ด้วย regex ก่อนสร้าง path — กัน path traversal
+
+**ยังไม่ทำ (พบระหว่างตรวจสอบ 2 ก.ค. 2569 — ยืนยันด้วยการอ่านโค้ดจริง ไม่ใช่จากความจำ):**
+
+| ระดับ | ปัญหา | รายละเอียด | แนวทางแก้ |
+|-------|-------|-----------|-----------|
+| 🔴 วิกฤต | Secrets ยังอยู่ใน `config.py` แบบ plaintext | ปลอดภัยในแง่ git (`.gitignore` + ประวัติสะอาดยืนยันแล้ว) แต่ยังพึ่ง `.gitignore` เส้นเดียว พลาดครั้งเดียว (เช่น เผลอลบบรรทัดใน `.gitignore`) = หลุดทันที **repo มี 3 commits ที่ยังไม่ push ขึ้น origin** — จังหวะดีที่จะย้ายก่อน push | ย้ายไป `.env` + `python-dotenv` (หรือ env vars ล้วน) ปิด failure mode "เผลอ commit" ถาวร |
+| 🔴 วิกฤต | ไม่มี rate limiting / guild allowlist | `on_message` ตอบทุกคนที่ DM หรือ @mention ได้ไม่จำกัด ไม่มี cooldown ต่อ user ไม่มี allowlist server/channel — ใครแกล้งสแปมเผา GPU (F5+RVC ~3-5s/ประโยค), เผาโควตา SerpApi (250 ครั้ง/เดือน) หมดในไม่กี่นาที | จำกัด guild ID ที่ตอบ + cooldown ต่อ user (เช่น 1 ข้อความ/5 วิ) + นับโควตา search ต่อวัน |
+| 🟠 สูง | PDF ingest ไม่มี cap ขนาดไฟล์/จำนวนหน้า | `vectormemory.ingest_pdf` มี `MAX_CHUNKS_PER_PDF=300` กันไฟล์ยาวเกิน แต่ไม่มีเช็คขนาดไฟล์ดิบหรือจำนวนหน้าก่อน `PdfReader` parse — PDF ใหญ่มากหรือที่ออกแบบให้ parse ช้า (decompression bomb) ทำให้บอทค้างได้ | เช็ค `pdf_attach.size` ก่อน (เช่น ≤10MB) + จำกัดจำนวนหน้าก่อน extract |
+| 🟠 สูง | Prompt injection ผ่าน PDF/ผลค้นเว็บ ยังไม่ครบทุกจุด | tool ส่วนใหญ่ (weather/oil/power/maps) มี label `[ข้อมูลภายใน]` + กำกับชัดว่าเป็นข้อมูลอ้างอิงแล้ว แต่ `search_web` result และ PDF context (บรรทัด `_tool_search_web`, ตัวแปร `augmented_message`) ยังไม่มีประโยคกำกับชัดๆ ว่า "นี่คือข้อมูล ไม่ใช่คำสั่ง" — ความเสี่ยงจำกัดเพราะ tool ทั้งหมด read-only และคำสั่งพิมพ์ไม่ผ่าน LLM แต่ควรครอบให้ครบทุกจุดเพื่อความสม่ำเสมอ | เพิ่มประโยคกำกับให้ครบทุก tool ที่รับเนื้อหาจากภายนอก (เว็บ/PDF) |
+| 🟡 กลาง | ไฟล์ใน `print_jobs/` ไม่ถูกลบหลังพิมพ์ | เอกสารที่สั่งพิมพ์ (อาจเป็นเอกสารส่วนตัว) ค้างอยู่บนดิสก์ตลอดไป | `os.remove(job["path"])` ใน `run_print_job` หลังจบงาน |
+| 🟡 กลาง | `pending_prints` ไม่มีวันหมดอายุ | งานใหญ่ที่รอยืนยันค้างได้ไม่จำกัด ถ้าอีกหลายวันเจ้าของพิมพ์คำว่า "ยืนยัน" ในบริบทอื่น งานเก่าจะพิมพ์ออกมาทันที | ใส่ timestamp แล้วหมดอายุใน ~5 นาที |
+| 🟡 กลาง | `song_requests.json` โตได้ไม่จำกัด | ทุก query ที่ขอเพลงกลายเป็น key ใหม่ในไฟล์ ไม่มี cap | จำกัดจำนวน entries |
+| 🟡 กลาง | ไม่มี `requirements.txt` (pin เวอร์ชัน) | `setup.bat` ยังติดตั้งเวอร์ชันล่าสุดเสมอ ไม่ reproduce ได้ เสี่ยง breaking change/supply chain | สร้าง `requirements.txt` ระบุเวอร์ชัน |
 
 ### 🛠️ โครงสร้าง/เครื่องมือ
 - [x] แยกโค้ดเป็นไฟล์ (bot.py / printing.py / music.py)
@@ -143,13 +208,19 @@
     ไม่ตรงกันเป๊ะแต่น่าจะเป็นเรื่องเดียวกัน) — ต้อง clarify เงื่อนไข trigger ที่ชัดเจนก่อนสร้าง
 
 ### 🧪 Testing
-- [x] Unit tests สำหรับ memory.py — 35 tests (pytest)
-- [x] Unit tests สำหรับ bot.py — 34 tests (mock Ollama)
-- [x] Unit tests สำหรับ realtime functions — 61 tests (mock HTTP ทุกระบบ)
+- [x] Unit tests สำหรับ memory.py — 56 tests (pytest)
+- [x] Unit tests สำหรับ bot.py — 67 tests (mock Ollama; รวม tool calling, persona-slip filter)
+- [x] Unit tests สำหรับ realtime functions — 51 tests (mock HTTP ทุกระบบ)
+- [x] Unit tests สำหรับ vectormemory.py — 13 tests (rerank fail-safe)
+- [x] Unit tests สำหรับ voice.py + f5_preprocess.py — 20 tests (streaming segment order/fail-safe, ปี/หน่วย)
 - [x] Integration test `test_all_systems.py` — ยิง HTTP จริง 9 ระบบ รายงานตาราง ✅/⚠️/❌
 - [x] จัดไฟล์ทดสอบ — pytest ไว้ root, diagnostic scripts ย้ายไป `tools/`
 - [x] `tools/simulate_chat_long.py` — จำลอง 18 รอบ 3 หัวข้อ ดู summaries สะสม
 - [x] `tools/simulate_recall.py` — จำลองดึง fact + recall หลัง auto-remember
+
+**รวม 207 unit tests** (`pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py`)
+หมายเหตุ: `pytest` เปล่าไม่มี argument จะพังเพราะ `tools/test_gemini_tts.py` เป็นสคริปต์ (ใช้ `argparse`)
+ไม่ใช่ไฟล์เทสจริง ทำให้ pytest collect ทั้งโฟลเดอร์พัง — ต้องระบุไฟล์ตรงๆ เสมอ
 
 ---
 
@@ -164,6 +235,8 @@ _(ไม่มีตอนนี้ — เฟส 3d ย้ายไปอยู
 ### เสียงพูด — ข้อจำกัด F5-TTS-THAI
 - **cold load ~18s** — บอทรอ F5 worker พร้อมก่อนตอบด้วยเสียงได้ (ตอบแชตได้ก่อน warm เสร็จ)
 - **F5 ออกเสียงผิด** กรณีข้อความมีตัวเลข/หน่วย/โค้ดพิเศษที่ `f5_preprocess.py` ยังไม่ครอบคลุม — แก้ได้โดยเพิ่ม regex ใน `preprocess_for_f5()`
+- **เสียงวรรณยุกต์ "มิลลิเมตร" เพี้ยน** — F5 อ่านคำนี้เป็นเสียงสูงผิด (ปกติควรเป็นเสียงเอก/ต่ำ) ลองสะกดใหม่เป็น
+  "มิลลิเมด" แล้วแต่ user เลือกกลับไปใช้ตัวสะกดมาตรฐาน "มิลลิเมตร" ตามเดิม — ยังไม่แก้ ยอมรับไว้ก่อน
 - **อารมณ์เสียง** ขึ้นกับ ref audio — ปรับได้โดยเลือก ref audio ที่มีน้ำเสียงเหมาะสม
 
 ### เพลง cover — คุณภาพขึ้นกับต้นฉบับ
@@ -257,10 +330,14 @@ _(ไม่มีตอนนี้ — เฟส 3d ย้ายไปอยู
 
 ## 🧭 ลำดับที่แนะนำต่อไป
 
-1. **IoT เปิด-ปิดไฟ (จำลองก่อน)** — เป้าหมายหลักที่ตั้งใจ ตอนนี้ง่ายขึ้นเพราะมี tool calling แล้ว
+1. **เก็บงานความปลอดภัยชุดแรกให้จบ** (ดูตารางที่หัวข้อ "🔒 ความปลอดภัย/คุณภาพโค้ด" ด้านบน) — ก่อนเพิ่ม
+   ฟีเจอร์ใหม่ (โดยเฉพาะ IoT ที่จะเพิ่ม attack surface) ควรปิดช่องโหว่เดิมก่อน: ย้าย secrets ไป `.env`
+   (ทำก่อน push — ตอนนี้มี 3 commits ค้างอยู่ในเครื่อง) + rate limit/guild allowlist + PDF size cap
+2. **IoT เปิด-ปิดไฟ (จำลองก่อน)** — เป้าหมายหลักที่ตั้งใจ ตอนนี้ง่ายขึ้นเพราะมี tool calling แล้ว
    (เพิ่ม tool ใหม่แค่ประกาศใน `TOOLS` + เขียน handler + เพิ่มเข้า `TOOL_HANDLERS`) แนะนำใช้
-   Home Assistant เป็นตัวกลางแทนเขียน integration ทีละยี่ห้อ (ESP32/Tuya) เอง
-2. **ทักก่อนได้ (proactive greeting)** — ออกแบบเสร็จแล้ว (ช่องทาง DM, หยุดถ้าเงียบ 3 วัน) เหลือแค่ fix
+   Home Assistant เป็นตัวกลางแทนเขียน integration ทีละยี่ห้อ (ESP32/Tuya) เอง **สำคัญ:** คำสั่ง IoT ต้อง
+   gate ด้วย user ID เหมือนคำสั่งพิมพ์ (`PRINT_ALLOWED_USER_IDS`) และห้ามให้ LLM ตัดสินใจสั่งอุปกรณ์เองโดยไม่มีคนขอ
+3. **ทักก่อนได้ (proactive greeting)** — ออกแบบเสร็จแล้ว (ช่องทาง DM, หยุดถ้าเงียบ 3 วัน) เหลือแค่ fix
    ช่วงเวลาทัก + implement scheduler ต่อยอดจาก vector memory ที่ทำเสร็จแล้ว
-3. **ทดสอบ Synthesizer V Studio** — สร้างเพลง karaoke ด้วยเสียงสังเคราะห์โดยตรง แทน UVR+RVC
-4. ที่เหลือ (model orchestration / STT / ตัดสินใจเอง) — งานใหญ่ ค่อยทำทีละขั้น
+4. **ทดสอบ Synthesizer V Studio** — สร้างเพลง karaoke ด้วยเสียงสังเคราะห์โดยตรง แทน UVR+RVC
+5. ที่เหลือ (model orchestration / STT / ตัดสินใจเอง) — งานใหญ่ ค่อยทำทีละขั้น

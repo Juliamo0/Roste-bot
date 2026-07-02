@@ -9,6 +9,8 @@
 ## ✨ ความสามารถ
 
 - 🎭 **บุคลิกตัวละคร** — รอสเต้ คุยไทย มีอารมณ์/น้ำเสียงเฉพาะตัว กันหลุดคาแร็กเตอร์ด้วย Author's Note
+  (คุมความยาวคำตอบ 2-4 ประโยคสำหรับคำถามข้อเท็จจริง) + `fix_persona_slips()` ดักคำหลุด ("ครับ" → "ค่ะ")
+  เป็น validation layer รอบสอง เผื่อโมเดลหลุดกฎใน prompt
 - 🧠 **ความจำหลายชั้น**
   - จำชื่อ/ข้อเท็จจริงถาวร (สั่งได้ + จำเองอัตโนมัติเบื้องหลัง)
   - สรุปบทสนทนาเก่าอัตโนมัติเมื่อ history ล้น (แทนที่จะทิ้ง)
@@ -25,6 +27,9 @@
 - 🎵 **เล่นเพลง** — เล่นไฟล์ mp3 ในห้อง voice ตามที่ขอ
 - 🎤 **ร้องเพลง karaoke** — ร้องเพลง cover ด้วยเสียง RVC (RVC) จากโฟลเดอร์ `karaoke/`, ขอเพลงเจาะจงหรือสุ่มได้, TTS เกริ่นก่อนเล่น
 - 🎙️ **รอสเต้พูดได้** — join ห้อง voice, ทักทายเมื่อเข้า, ตอบด้วยเสียง RVC จริง, ออกอัตโนมัติเมื่อห้องว่าง 15 วินาที
+  - **Sentence streaming** — แบ่งคำตอบเป็นประโยค (crfcut) เล่นทีละ segment ทันทีที่เจนเสร็จ
+    ไม่ต้องรอทั้งคำตอบ (latency ประโยคแรก ~6.7s แทน ~15-20s) พร้อม per-segment fail-safe
+    (F5 พังกลาง stream → segment ที่เหลือสลับไป edge-tts อัตโนมัติ ไม่เงียบ ไม่เล่นซ้ำจากต้น)
 
 ## 🗂️ โครงสร้างไฟล์
 
@@ -40,22 +45,23 @@
 | `config.py` | Discord Token + API keys (สร้างเองจาก `config.example.py` — ไม่อยู่ใน repo) |
 | `start.bat` | ดับเบิลคลิกเพื่อรันบอท |
 | `setup.bat` | ดับเบิลคลิกเพื่อติดตั้งไลบรารี |
-| `voice.py` | voice pipeline — `text_to_roste_voice(text, worker=w)` |
+| `voice.py` | voice pipeline — `text_to_roste_voice_segments(text, worker=w)` (generator, yield ทีละ segment) + `text_to_roste_voice()` (concat ครบ ต่อยอดจากตัวแรก) |
 | `voice_rvc_worker.py` | subprocess worker ที่รันใน rvc_venv — โหลด RVC ครั้งเดียว รับงานผ่าน JSON stdin |
 | `f5_worker.py` | subprocess worker ที่รันใน f5_venv — โหลด F5-TTS-THAI v2 ครั้งเดียว รับงานผ่าน JSON stdin |
-| `f5_preprocess.py` | แก้ข้อความก่อนส่ง F5 — ตัวเลข °C fuel codes markdown → ภาษาไทย |
+| `f5_preprocess.py` | แก้ข้อความก่อนส่ง F5 — ตัวเลข, ปี พ.ศ./ค.ศ. (อ่านทีละหลัก), °C, หน่วย (มม./%), fuel codes, markdown → ภาษาไทย |
 
 ### ไฟล์ทดสอบ (root)
 
 | ไฟล์ | ประเภท | จำนวน tests |
 |------|--------|-------------|
-| `test_bot.py` | pytest | 61 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding |
+| `test_bot.py` | pytest | 67 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding, persona-slip filter |
 | `test_memory.py` | pytest | 56 — facts, recall, parse, summaries, supersede/consolidation |
 | `test_realtime.py` | pytest | 51 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
 | `test_vectormemory.py` | pytest | 13 — rerank fail-safe (output หลุดฟอร์แมต, temperature, edge case) |
+| `test_voice.py` | pytest | 20 — streaming segment order/fail-safe, f5_preprocess (ปี/หน่วย) |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
-รัน unit tests ทั้งหมด: `pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py`
+รัน unit tests ทั้งหมด: `pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py`
 
 ### tools/ — สคริปต์เสริม (ไม่ใช่ regression test)
 
@@ -95,13 +101,17 @@
 1. โคลนโปรเจกต์นี้ หรือดาวน์โหลด ZIP
 2. ติดตั้งไลบรารี — ดับเบิลคลิก `setup.bat`
    ```
-   pip install "discord.py[voice]>=2.7.1" aiohttp ddgs requests pypdf pywin32
+   pip install discord.py aiohttp ddgs pypdf pywin32 PyNaCl chromadb
+   pip install pythainlp python-crfsuite soundfile edge-tts
    ```
+   (`pythainlp` + `python-crfsuite` ใช้ตัดประโยคไทยสำหรับ sentence-streaming TTS —
+   ถ้าขาด `python-crfsuite` การตัดประโยคจะพังเงียบ ไม่มี error ให้เห็น)
 3. โหลดโมเดล
    ```
    ollama pull qwen3:8b
+   ollama pull bge-m3
    ```
-   (หรือ `qwen3:14b` ถ้าการ์ดแรงพอ, `qwen3:1.7b` ถ้าการ์ดเล็ก)
+   (`qwen3:8b` หรือ `qwen3:14b` ถ้าการ์ดแรงพอ / `qwen3:1.7b` ถ้าการ์ดเล็ก — `bge-m3` ใช้ทำ embedding สำหรับความจำเชิงความหมาย + RAG PDF)
 4. ตั้งค่า Token:
    - คัดลอก `config.example.py` → `config.py`
    - ใส่ Token จาก [Discord Developer Portal](https://discord.com/developers/applications)
@@ -156,7 +166,7 @@ summaries  → สรุปบทสนทนาเก่า 1 บรรทั�
 รัน unit tests ทั้งหมด (ไม่ต้องเปิด Ollama หรือมี internet):
 
 ```bash
-pytest test_bot.py test_memory.py test_realtime.py -v
+pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py -v
 ```
 
 รัน integration test (ยิง HTTP จริง — ต้องต่อ internet):
@@ -183,12 +193,20 @@ python tools/simulate_recall.py      # ดู fact + recall หลัง auto-re
 | เฟส 3 (3a–3c) | integrate เข้า bot.py — join, ทักทาย, พูดตอบ, leave timer | ✅ เสร็จ |
 | เฟส 3 (3d) | move logic — ย้ายตามคนถ้าถูกเรียกจากห้องอื่น | ✅ เสร็จ (ทำงานอยู่แล้วผ่าน `_speak_in_voice`/`_play_karaoke`) |
 | เฟส 4 | karaoke — ร้องเพลง cover ด้วยเสียงตัวเองในห้อง voice | ✅ เสร็จ |
+| เฟส 5 | sentence streaming — เล่นทีละประโยคทันทีที่เจนเสร็จ + per-segment fail-safe | ✅ เสร็จ |
 
 ### pipeline
 
 ```
-ข้อความ → f5_preprocess.py (ตัวเลข/°C/fuel codes → ไทย) → F5-TTS-THAI v2 (ref: lai_seg4_160s.wav, local) → RVC (RVC model) → .wav
+ข้อความ → crfcut (ตัดเป็นประโยค) → f5_preprocess.py (ตัวเลข/ปี/°C/หน่วย/fuel codes → ไทย)
+        → F5-TTS-THAI v2 (ref: lai_seg4_160s.wav, local) → RVC (RVC model) → .wav ทีละ segment
 ```
+
+**Sentence streaming:** `text_to_roste_voice_segments()` เป็น generator yield ไฟล์ `.wav` ทีละ segment
+ทันทีที่เจนเสร็จ (ไม่รอทั้งคำตอบ) — `bot.py` เล่นไฟล์แรกได้เร็วขึ้น (~6.7s แทน ~15-20s สำหรับคำตอบยาว)
+**per-segment fail-safe:** แต่ละ segment มี chain ของตัวเอง — F5 (retry 1 ครั้ง) → edge-tts→adjust→RVC
+(เฉพาะ segment ที่พัง) → ข้าม segment (เนื้อหาหายแต่เสียงไม่สะดุด) กันปัญหากรณี F5 worker ตายกลางคำตอบยาว
+ที่ segment แรกๆ เล่นไปแล้วด้วยเสียง F5 — fallback ทั้งก้อนแบบเดิมใช้ไม่ได้เพราะจะทำให้เสียงเปลี่ยนกลางคันแล้วเล่นซ้ำจากต้น
 
 F5-TTS-THAI และ RVC ทำงานใน subprocess แยก (`f5_venv`, `rvc_venv`) เพื่อไม่ให้ dependency ชนกับบอทหลัก
 cold load: F5 ~18s / RVC ~9s — หลังจากนั้น inference ~3–5s/ประโยค (F5+RVC รวม)
@@ -289,6 +307,8 @@ python tools/test_voice_pipeline.py
 - บอทรันในเครื่องตัวเองทั้งหมด ข้อมูลไม่ออกไปไหน (ยกเว้นการค้นเว็บ/ดึงข้อมูลจริง)
 - เหมาะกับการใช้ในเซิร์ฟเวอร์ส่วนตัว/วงเพื่อน
 - การเล่นเพลงที่มีลิขสิทธิ์ในที่สาธารณะอาจผิดกฎ — ใช้ในวงเพื่อนเท่านั้น
+- **⚠️ ยังไม่มี rate limiting** — ใครก็ตามที่ DM หรือ @mention บอทได้ ใช้ทรัพยากร (GPU/LLM/API quota)
+  ได้ไม่จำกัด เหมาะกับเซิร์ฟเวอร์ปิด/คนที่ไว้ใจเท่านั้น ดูรายละเอียดที่ [ROADMAP.md](ROADMAP.md) หัวข้อความปลอดภัย
 
 ## 📜 License
 
