@@ -148,12 +148,15 @@
   และ secrets ไม่เคยหลุดไปอยู่ไฟล์อื่นด้วย ปลอดภัยสำหรับ push ขึ้น public repo
 - [x] ตรวจ subprocess ทั้งหมด (printing.py, voice.py) — ใช้ list args ไม่มี `shell=True`/`eval`/`pickle` ที่เสี่ยง
 - [x] ชื่อไฟล์ที่มาจาก user (PDF สั่งพิมพ์) sanitize ด้วย regex ก่อนสร้าง path — กัน path traversal
+- [x] **ย้าย secrets จาก `config.py` (plaintext) ไป `.env`** — `config.py` ตอนนี้เป็นแค่ตัวโหลดผ่าน
+  `python-dotenv` (`load_dotenv()` + `os.getenv(...)`) ไม่มีค่าลับในไฟล์เอง **commit เข้า git ได้ปกติแล้ว**
+  ปิด failure mode "เผลอลบบรรทัดใน `.gitignore` แล้วหลุด" ถาวร (เดิมพึ่ง `.gitignore` เส้นเดียว)
+  `.env.example` (placeholder, commit ได้) แทนที่ `config.example.py` เดิม — ทำก่อน push ตามที่วางแผนไว้
 
 **ยังไม่ทำ (พบระหว่างตรวจสอบ 2 ก.ค. 2569 — ยืนยันด้วยการอ่านโค้ดจริง ไม่ใช่จากความจำ):**
 
 | ระดับ | ปัญหา | รายละเอียด | แนวทางแก้ |
 |-------|-------|-----------|-----------|
-| 🔴 วิกฤต | Secrets ยังอยู่ใน `config.py` แบบ plaintext | ปลอดภัยในแง่ git (`.gitignore` + ประวัติสะอาดยืนยันแล้ว) แต่ยังพึ่ง `.gitignore` เส้นเดียว พลาดครั้งเดียว (เช่น เผลอลบบรรทัดใน `.gitignore`) = หลุดทันที **repo มี 3 commits ที่ยังไม่ push ขึ้น origin** — จังหวะดีที่จะย้ายก่อน push | ย้ายไป `.env` + `python-dotenv` (หรือ env vars ล้วน) ปิด failure mode "เผลอ commit" ถาวร |
 | 🔴 วิกฤต | ไม่มี rate limiting / guild allowlist | `on_message` ตอบทุกคนที่ DM หรือ @mention ได้ไม่จำกัด ไม่มี cooldown ต่อ user ไม่มี allowlist server/channel — ใครแกล้งสแปมเผา GPU (F5+RVC ~3-5s/ประโยค), เผาโควตา SerpApi (250 ครั้ง/เดือน) หมดในไม่กี่นาที | จำกัด guild ID ที่ตอบ + cooldown ต่อ user (เช่น 1 ข้อความ/5 วิ) + นับโควตา search ต่อวัน |
 | 🟠 สูง | PDF ingest ไม่มี cap ขนาดไฟล์/จำนวนหน้า | `vectormemory.ingest_pdf` มี `MAX_CHUNKS_PER_PDF=300` กันไฟล์ยาวเกิน แต่ไม่มีเช็คขนาดไฟล์ดิบหรือจำนวนหน้าก่อน `PdfReader` parse — PDF ใหญ่มากหรือที่ออกแบบให้ parse ช้า (decompression bomb) ทำให้บอทค้างได้ | เช็ค `pdf_attach.size` ก่อน (เช่น ≤10MB) + จำกัดจำนวนหน้าก่อน extract |
 | 🟠 สูง | Prompt injection ผ่าน PDF/ผลค้นเว็บ ยังไม่ครบทุกจุด | tool ส่วนใหญ่ (weather/oil/power/maps) มี label `[ข้อมูลภายใน]` + กำกับชัดว่าเป็นข้อมูลอ้างอิงแล้ว แต่ `search_web` result และ PDF context (บรรทัด `_tool_search_web`, ตัวแปร `augmented_message`) ยังไม่มีประโยคกำกับชัดๆ ว่า "นี่คือข้อมูล ไม่ใช่คำสั่ง" — ความเสี่ยงจำกัดเพราะ tool ทั้งหมด read-only และคำสั่งพิมพ์ไม่ผ่าน LLM แต่ควรครอบให้ครบทุกจุดเพื่อความสม่ำเสมอ | เพิ่มประโยคกำกับให้ครบทุก tool ที่รับเนื้อหาจากภายนอก (เว็บ/PDF) |
@@ -330,9 +333,9 @@ _(ไม่มีตอนนี้ — เฟส 3d ย้ายไปอยู
 
 ## 🧭 ลำดับที่แนะนำต่อไป
 
-1. **เก็บงานความปลอดภัยชุดแรกให้จบ** (ดูตารางที่หัวข้อ "🔒 ความปลอดภัย/คุณภาพโค้ด" ด้านบน) — ก่อนเพิ่ม
-   ฟีเจอร์ใหม่ (โดยเฉพาะ IoT ที่จะเพิ่ม attack surface) ควรปิดช่องโหว่เดิมก่อน: ย้าย secrets ไป `.env`
-   (ทำก่อน push — ตอนนี้มี 3 commits ค้างอยู่ในเครื่อง) + rate limit/guild allowlist + PDF size cap
+1. **เก็บงานความปลอดภัยที่เหลือ** (ดูตารางที่หัวข้อ "🔒 ความปลอดภัย/คุณภาพโค้ด" ด้านบน) — ย้าย secrets
+   ไป `.env` ทำแล้ว ก่อนเพิ่มฟีเจอร์ใหม่ (โดยเฉพาะ IoT ที่จะเพิ่ม attack surface) ที่เหลือคือ
+   rate limit/guild allowlist (วิกฤต) + PDF size cap
 2. **IoT เปิด-ปิดไฟ (จำลองก่อน)** — เป้าหมายหลักที่ตั้งใจ ตอนนี้ง่ายขึ้นเพราะมี tool calling แล้ว
    (เพิ่ม tool ใหม่แค่ประกาศใน `TOOLS` + เขียน handler + เพิ่มเข้า `TOOL_HANDLERS`) แนะนำใช้
    Home Assistant เป็นตัวกลางแทนเขียน integration ทีละยี่ห้อ (ESP32/Tuya) เอง **สำคัญ:** คำสั่ง IoT ต้อง

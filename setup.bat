@@ -18,7 +18,7 @@ echo Installing... (this may take a while)
 echo.
 
 python -m pip install --upgrade pip
-python -m pip install discord.py aiohttp ddgs pypdf pywin32 PyNaCl chromadb
+python -m pip install discord.py aiohttp ddgs pypdf pywin32 PyNaCl chromadb python-dotenv
 REM pythainlp + python-crfsuite: crfcut ตัดประโยคไทยสำหรับ streaming TTS
 REM (ถ้าขาด python-crfsuite ตัว crfcut จะพังเงียบ — เสียงจะไม่แบ่งประโยค)
 python -m pip install pythainlp python-crfsuite soundfile edge-tts

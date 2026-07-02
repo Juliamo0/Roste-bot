@@ -42,7 +42,7 @@
 | `memory.py` | ระบบความจำ — load/save/facts/recall/summaries + คำสั่งจำ-ลืม |
 | `printing.py` | ระบบพิมพ์ PDF + ตั้งค่าเครื่องพิมพ์ |
 | `music.py` | ระบบเล่นเพลงในห้อง voice + ตั้งค่าโฟลเดอร์เพลง |
-| `config.py` | Discord Token + API keys (สร้างเองจาก `config.example.py` — ไม่อยู่ใน repo) |
+| `config.py` | โหลดค่าลับจาก `.env` ผ่าน `python-dotenv` — ไฟล์นี้เองไม่มีค่าลับ commit ได้ปกติ |
 | `start.bat` | ดับเบิลคลิกเพื่อรันบอท |
 | `setup.bat` | ดับเบิลคลิกเพื่อติดตั้งไลบรารี |
 | `voice.py` | voice pipeline — `text_to_roste_voice_segments(text, worker=w)` (generator, yield ทีละ segment) + `text_to_roste_voice()` (concat ครบ ต่อยอดจากตัวแรก) |
@@ -113,17 +113,19 @@
    ```
    (`qwen3:8b` หรือ `qwen3:14b` ถ้าการ์ดแรงพอ / `qwen3:1.7b` ถ้าการ์ดเล็ก — `bge-m3` ใช้ทำ embedding สำหรับความจำเชิงความหมาย + RAG PDF)
 4. ตั้งค่า Token:
-   - คัดลอก `config.example.py` → `config.py`
+   - คัดลอก `.env.example` → `.env`
    - ใส่ Token จาก [Discord Developer Portal](https://discord.com/developers/applications)
    - เปิด **MESSAGE CONTENT INTENT** ใน Bot settings
 5. รันบอท — ดับเบิลคลิก `start.bat`
 
 ### API keys เสริม (ไม่บังคับ)
 
-| ค่าใน `config.py` | ใช้ทำอะไร | ไม่มีจะ fallback ไป |
+| ค่าใน `.env` | ใช้ทำอะไร | ไม่มีจะ fallback ไป |
 |-------------------|-----------|-------------------|
 | `TMD_TOKEN` | พยากรณ์อากาศจากกรมอุตุฯ (แม่นสำหรับไทย) | Open-Meteo (ฟรี ไม่ต้องใช้ key) |
 | `SERPAPI_KEY` | ค้นเว็บ + หาร้านผ่าน Google จริง (250 ครั้ง/เดือน) | DuckDuckGo (ฟรี ไม่ต้องใช้ key) |
+
+> `config.py` เป็นแค่ตัวโหลดค่าจาก `.env` (ไม่มีค่าลับในไฟล์เอง) ไม่ต้องแก้อะไรในนั้น
 
 ## ⚙️ การปรับแต่ง
 
