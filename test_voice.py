@@ -211,3 +211,64 @@ def test_text_to_roste_voice_all_fail_raises(three_segments, edge_broken, tmp_pa
     with pytest.raises(RuntimeError):
         voice.text_to_roste_voice(
             "อะไรก็ได้", worker=FakeRvc(), f5_worker=f5, out_dir=str(tmp_path))
+
+
+# ── years_to_thai — อ่านปี พ.ศ./ค.ศ. ทีละหลัก ─────────────────────────────────
+
+class TestYearsToThai:
+    def test_year_after_full_month(self):
+        from f5_preprocess import preprocess_for_f5
+        out, _ = preprocess_for_f5("อัปเดตวันที่ 30 มิถุนายน 2569")
+        assert "สองห้าหกเก้า" in out
+        assert "สองพันห้าร้อยหกสิบเก้า" not in out
+
+    def test_year_after_por_sor(self):
+        from f5_preprocess import preprocess_for_f5
+        out, _ = preprocess_for_f5("พ.ศ. 2569 เป็นปีนี้")
+        assert "พอศอ สองห้าหกเก้า" in out
+
+    def test_year_after_kor_sor(self):
+        from f5_preprocess import preprocess_for_f5
+        out, _ = preprocess_for_f5("ค.ศ. 2026")
+        assert "คอศอ สองศูนย์สองหก" in out
+
+    def test_year_after_pee(self):
+        from f5_preprocess import preprocess_for_f5
+        out, _ = preprocess_for_f5("ปี 2569 ฝนเยอะ")
+        assert "ปี สองห้าหกเก้า" in out
+
+    def test_year_after_abbrev_month(self):
+        from f5_preprocess import preprocess_for_f5
+        out, _ = preprocess_for_f5("2 ก.ค. 2569")
+        assert "สองห้าหกเก้า" in out
+
+    def test_plain_amount_not_digit_read(self):
+        from f5_preprocess import preprocess_for_f5
+        # เลข 4 หลักที่ไม่ใช่บริบทปี ต้องอ่านแบบจำนวนเหมือนเดิม
+        out, _ = preprocess_for_f5("ราคา 2500 บาท")
+        assert "สองพันห้าร้อย บาท" in out
+        assert "สองห้าศูนย์ศูนย์" not in out
+
+    def test_month_abbrev_not_confused_with_era(self):
+        from f5_preprocess import preprocess_for_f5
+        # พ.ค. (พฤษภาคม) ต้องไม่โดนกฎ พ.ศ. — ปียังอ่านทีละหลักผ่านกฎเดือนย่อ
+        out, _ = preprocess_for_f5("15 พ.ค. 2569")
+        assert "สองห้าหกเก้า" in out
+        assert "พอศอ" not in out
+
+
+# ── หน่วยจากข้อมูล TMD ที่ F5 อ่านผิด (สะกดตัวอักษรแทนคำเต็ม) ──────────────────
+
+class TestUnitAbbreviations:
+    def test_mm_expands_to_full_word(self):
+        from f5_preprocess import preprocess_for_f5
+        # บั๊กที่เจอจริง: "0.2 มม." ถูก F5 อ่านสะกดตัวอักษร "มอมอ"
+        out, _ = preprocess_for_f5("ปริมาณฝนรวม 0.2 มม.")
+        assert "มิลลิเมตร" in out
+        assert "มม." not in out
+
+    def test_percent_expands_to_full_word(self):
+        from f5_preprocess import preprocess_for_f5
+        out, _ = preprocess_for_f5("ความชื้น 79%")
+        assert "เปอร์เซ็นต์" in out
+        assert "%" not in out
