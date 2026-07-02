@@ -9,8 +9,12 @@ import os
 import pathlib
 import sys
 
-# ── ตั้งค่า working dir ให้ชี้มาที่โฟลเดอร์ mybot เสมอ ──────────────────────
-os.chdir(pathlib.Path(__file__).parent)
+# ── ตั้งค่า working dir ให้ชี้มาที่โฟลเดอร์ mybot เสมอ (root ของโปรเจกต์ ไม่ใช่ tools/) ──
+# เดิม chdir ไปที่ tools/ เอง (parent ของสคริปต์) ทำให้ `import bot` พังเพราะ bot.py
+# อยู่นอก sys.path — ต้องขึ้นไปอีกชั้น (parent.parent) ถึงจะเป็น root ที่มี bot.py จริง
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+os.chdir(PROJECT_ROOT)
+sys.path.insert(0, str(PROJECT_ROOT))
 
 # ── ตั้งค่าการทดสอบ ───────────────────────────────────────────────────────────
 TEST_USER_ID   = 111_111_111_111_111_111   # ไม่ชนกับ user จริง

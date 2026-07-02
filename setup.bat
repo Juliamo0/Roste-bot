@@ -18,16 +18,17 @@ echo Installing... (this may take a while)
 echo.
 
 python -m pip install --upgrade pip
-python -m pip install discord.py aiohttp ddgs pypdf pywin32 PyNaCl
+python -m pip install discord.py aiohttp ddgs pypdf pywin32 PyNaCl chromadb
 
 echo.
 echo ============================================
 echo  Python libraries installed.
 echo.
-echo  ** You also need these 3 installed separately (if not yet) **
+echo  ** You also need these installed separately (if not yet) **
 echo   1) Ollama     : https://ollama.com   then run:  ollama pull qwen3:14b
 echo   2) FFmpeg     : winget install ffmpeg        (for playing songs in voice)
 echo   3) SumatraPDF : https://www.sumatrapdfreader.org   (for silent printing)
+echo   4) Embedding model (RAG PDF + vector memory): ollama pull bge-m3
 echo ============================================
 echo.
 pause

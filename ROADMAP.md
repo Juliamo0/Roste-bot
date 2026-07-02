@@ -4,7 +4,7 @@
 ควบคุมอุปกรณ์ IoT ในบ้านได้ ตัดสินใจบางอย่างได้ และทำงานในโลกจริงได้
 โดยใช้ LLM ที่รันในเครื่องตัวเอง (local)
 
-> อัปเดตล่าสุด: 29 มิถุนายน 2569
+> อัปเดตล่าสุด: 1 กรกฎาคม 2569
 
 ---
 
@@ -58,6 +58,44 @@
 - [x] **เฟส 3c** — leave timer: ออกห้องอัตโนมัติเมื่อว่าง 15s, cancel ได้ถ้าคนกลับมา
 - [x] เล่นทักทาย + ทำ TTS คำตอบ **concurrent** (ทักทายไม่รอ TTS คำตอบ — ลด latency)
 - [x] upgrade `discord.py` → 2.7.1 + `davey` (แก้ WebSocket close code 4017 จาก DAVE protocol)
+- [x] **เฟส 3d — move logic** — ตรวจโค้ดพบว่าทำงานอยู่แล้วตั้งแต่ commit `dd23daa` (เฟส 3): `_speak_in_voice` และ `_play_karaoke` เทียบห้อง voice ของคนที่ @mention กับห้องที่บอทอยู่ ถ้าไม่ตรงกันจะ `move_to(new_channel)` ทุกครั้งที่มีคนคุยจากห้องอื่น (เพราะบอทตอบเฉพาะตอนถูก @mention อยู่แล้ว จึงเทียบเท่า "ย้ายเมื่อถูกเรียกจากห้องอื่น" ตามที่ตั้งใจ) — ไม่ต้องเขียนโค้ดเพิ่ม แค่ยังไม่เคยเช็คให้ชัวร์/ทำเครื่องหมายว่าเสร็จ
+
+### 🛠️ Tool calling — LLM เลือกเครื่องมือเอง (แทน keyword dispatch)
+- [x] แทนที่ `get_realtime_context()` (keyword matching เดิม) ด้วย native Ollama tool calling —
+  ขยาย `TOOLS` จาก 1 (search_web) เป็น 6 เครื่องมือ: `get_current_time`, `get_weather`,
+  `get_power_outage`, `get_oil_price`, `search_places`, `search_web`
+- [x] ยืนยันแล้วว่าแก้เคสที่ keyword พลาดจริง เช่น "พรุ่งนี้ต้องพกร่มไหม" (ไม่มีคำว่า
+  อากาศ/ฝนเลย) — โมเดลเลือก `get_weather` ถูกต้อง
+- [x] ลบ `_pending_place` two-turn state ทิ้ง — ใช้ conversation history แทน (โมเดลเรียก
+  `search_places` ซ้ำเองได้จาก context เมื่อผู้ใช้บอกจังหวัดในข้อความถัดไป) ทดสอบแล้วว่าทำงานจริง
+- [x] `_validate_tool_args` + `TOOL_HANDLERS` dispatch table + try/except ครอบทุก handler —
+  กันโมเดลเรียกเครื่องมือไม่มีจริง/ขาด param/handler error ไม่ให้ crash `ask_ollama`
+- [x] `test_bot.py` เพิ่ม 27 tests (validate args, handler ต่อตัว, fail-safe ผ่าน `ask_ollama` เต็ม,
+  grounding check)
+- [x] **`_strip_ungrounded_optional_args`** — แก้ปัญหา qwen3:8b เดา optional parameter เอง
+  (พบจริง: ใส่ `province="กรุงเทพมหานคร"` ให้ `search_places`/`"บ้านที่ตั้งค่าไว้"` ให้ `get_weather`
+  ทั้งที่ผู้ใช้ไม่เคยพูดถึง — ลองแก้ด้วย prompt description 2 รอบไม่หาย ต้องมี validation layer)
+  เช็คว่าค่าที่โมเดลใส่มาปรากฏจริงใน user_message/history/saved facts ก่อนเชื่อ ถ้าไม่เจอที่มา
+  → ตัดทิ้งให้ fallback เดิมของ handler ทำงานแทน (ใช้จังหวัดบ้าน/ถามกลับ) ใช้ได้กับทุก optional
+  parameter ของทุกเครื่องมือ (ไม่ใช่แค่ province) — เผื่ออนาคต IoT/reminder เจอปัญหาเดิม
+- [x] `tools/simulate_toolcalling.py` — เทสจริงกับ Ollama หลังแก้: เลือกเครื่องมือถูก 5/5,
+  multi-turn place-search 2/2 (ยืนยันว่า grounding check ทำงานจริง ไม่ใช่แค่ mock)
+
+### 🔎 ความจำเชิงความหมาย — RAG PDF + semantic recall
+- [x] `vectormemory.py` — ChromaDB (persist ที่ `chroma_db/`) + Ollama `bge-m3` ทำ embedding, ไม่ต้องพึ่ง torch ใน venv หลัก
+- [x] RAG PDF — แนบ PDF ที่ไม่ได้สั่งพิมพ์ = เก็บเนื้อหาไว้ถามได้ (persist ข้ามเซสชัน ต่อ user)
+- [x] semantic recall — เสริม `recall_summaries` (keyword) ด้วยการค้นความหมาย ฉีดเข้า context อัตโนมัติ
+- [x] **สถาปัตยกรรม 2 ด่าน: retrieve top-k (embedding) → rerank (LLM)** — เดิมใช้ cosine-distance threshold ตัดสินชั้นเดียว แต่เจอเคสก้ำกึ่งที่ distance ต่างกันแค่ ~0.005 แยกไม่ออก (คาลิเบรตยังไงก็ผิดได้) จึงเปลี่ยนให้ embedding แค่คัด 5 ผู้เข้ารอบ (`RETRIEVE_K`, relative ไม่ตัดสินขาด) แล้วให้ `qwen3:8b` (โมเดลเดิมที่ตอบแชตอยู่แล้ว ไม่กิน VRAM เพิ่ม) อ่าน query+candidate คู่กันจริงแล้วให้คะแนน 0-10 — threshold ย้ายไปอยู่บนคะแนน LLM แทน (`RERANK_SCORE_MIN`)
+- [x] fail-safe: rerank พัง/parse ไม่ได้ → คืน `[]` (ไม่ inject) ไม่ใช่ปล่อย candidate ดิบผ่าน — "ยอมลืมดีกว่าจำผิดเรื่อง"
+- [x] temperature=0 สำหรับ rerank (นิ่งสุด กันผลสลับข้ามรันสำหรับเคสก้ำกึ่ง)
+- [x] `tools/simulate_vectormemory.py` — เทส end-to-end จริงกับ Ollama/ChromaDB, ปริ้น distance ดิบด่าน 1 คู่กับ verdict ด่าน 2 ให้เห็นว่า rerank แยกเคสก้ำกึ่งได้จริง (10/10 passed)
+- [x] `test_vectormemory.py` — 13 unit tests mock Ollama เทส edge case ของ LLM-as-reranker โดยเฉพาะ (output หลุดฟอร์แมต, temperature, คะแนนต่ำหมดทั้ง 5 candidate)
+
+### 🔒 ความปลอดภัย/คุณภาพโค้ด
+- [x] จำกัดสิทธิ์คำสั่งพิมพ์ — เพิ่ม `PRINT_ALLOWED_USER_IDS` กัน user ใดๆ ก็สั่งพิมพ์ได้ (เดิมไม่มีการเช็คสิทธิ์เลย)
+- [x] รวมโค้ด Ollama-call ที่ซ้ำ 6-7 จุดใน bot.py เป็น `_get_json_post`/`_strip_think` เดียว
+- [x] เจอ+แก้บั๊กแฝง: `pypdf` ไม่เคยถูกติดตั้งจริงในเครื่อง ทั้งที่ `printing.py` อ้างอิงไว้ (lazy import ตอนพิมพ์จริงเท่านั้นเลยไม่เคยโดนจับ)
+- [x] แก้ `tools/simulate_chat.py` / `simulate_chat_long.py` / `simulate_recall.py` — เดิม `import bot` พังเพราะ chdir ไปที่ `tools/` เอง ไม่ใช่ root ของโปรเจกต์ ทำให้รันตามที่ README บอกไม่ได้เลยมาตั้งแต่ต้น
 
 ### 🛠️ โครงสร้าง/เครื่องมือ
 - [x] แยกโค้ดเป็นไฟล์ (bot.py / printing.py / music.py)
@@ -80,10 +118,29 @@
 - [x] Auto-remember — สกัดข้อเท็จจริงจากบทสนทนาเบื้องหลังอัตโนมัติ (ไม่บล็อกการตอบ)
 - [x] Conversation summaries — บทสนทนาที่ล้น history แทนที่จะทิ้ง สรุปเป็น 1 บรรทัดเก็บไว้
 - [x] แก้ race condition — `asyncio.Lock` ต่อ user_id ครอบ critical section load→save
-- [x] `pending_place_query` ย้ายออกจาก JSON ไปเก็บใน RAM (`_pending_place` dict)
+- [x] ~~`pending_place_query` ย้ายออกจาก JSON ไปเก็บใน RAM~~ → ถูกลบทิ้งทั้งกลไกแล้วตอนทำ tool
+  calling (ใช้ conversation history แทน ดูหัวข้อ Tool calling ด้านบน)
 - [x] แก้ SELF_REFERENCE_HINTS — ลบ `"มี"` เดี่ยว ใส่รูปผูกสรรพนาม (`"ผมมี"`, `"ฉันมี"` ฯลฯ)
 - [x] asyncio Queue + bg worker — serialize งาน Ollama background (แก้ TimeoutError เมื่อ summarize + auto-remember ชนกัน)
 - [x] ย้าย `_last_had_summary_notice` state เข้า `_maybe_append_summary_notice` (แก้ notice ไม่แสดง)
+- [x] **Fact supersede/consolidation** — หลักการ "supersede ไม่ delete" ให้ตรงกับ fail-conservative
+  ของโปรเจกต์: `build_extract_prompt` เปลี่ยนให้โมเดล emit `{category, text}` ต่อ fact แทนสตริงล้วน
+  (ฟรี เพราะโมเดลจัดหมวดอยู่แล้วตอนตัดสินใจสกัด ไม่เพิ่ม LLM call) — category บังคับจาก closed set
+  (`FACT_CATEGORIES`), หลุด set = category=None (ไม่ auto-supersede แต่ไม่ทิ้ง fact)
+  - single-value category (ชื่อ/ที่อยู่/งาน) — fact ใหม่หมวดเดียวกัน mark fact เก่าเป็น
+    `superseded=True` + timestamp + `superseded_by` ทันที (rule-based ล้วน ไม่เรียก LLM)
+  - multi-value category (ความชอบ/ของที่มี/เรื่องที่สนใจ/หัวข้อสนทนา) — สะสมได้ ไม่ supersede
+  - `recall_facts` กรอง superseded ออกก่อนเสมอ (ทั้ง path facts น้อย/เกิน cap) — กันโมเดลเห็น
+    ค่าเก่า+ใหม่พร้อมกันแล้วสับสน ของเก่ายังอยู่ใน `mem["facts"]` จริง แค่ไม่ถูกเสนอเป็นค่าปัจจุบัน
+  - fact แบบเก่า (บันทึกไว้ก่อน schema นี้ เป็น str ล้วน) ไม่ถูกแตะเลย ยกเว้นจาก consolidation ถาวร
+    self-heal ผ่าน MAX_FACTS eviction ปกติ
+  - ทดสอบจริงกับ Ollama (`tools/simulate_fact_consolidation.py`, 4/4 passed): บอกที่อยู่ →
+    เปลี่ยนที่อยู่ → โมเดลจัดหมวด "ที่อยู่" ถูกทั้งสองครั้ง → supersede อัตโนมัติถูกต้อง →
+    recall คืนเฉพาะที่อยู่ปัจจุบัน
+  - `test_memory.py` เพิ่ม 21 tests ครอบ: category หลุด set, single vs multi แยกถูก, recall
+    เลือกอันล่าสุด, fact เก่าไม่โดนแตะ, เคส supersede ผิดต้องกู้คืนได้ (56 tests รวม)
+  - **ยังไม่ทำ:** LLM-as-judge fallback สำหรับเคสที่ rule แยกไม่ออกว่าขัดกันจริงไหม (เช่น category
+    ไม่ตรงกันเป๊ะแต่น่าจะเป็นเรื่องเดียวกัน) — ต้อง clarify เงื่อนไข trigger ที่ชัดเจนก่อนสร้าง
 
 ### 🧪 Testing
 - [x] Unit tests สำหรับ memory.py — 35 tests (pytest)
@@ -98,8 +155,7 @@
 
 ## ⏳ กำลังค้างอยู่ (เริ่มแล้ว ยังไม่จบ)
 
-### 🔊 เฟส 3d — move logic
-- [ ] รอสเต้ย้ายตามคน ถ้าถูก @mention จากห้อง voice อื่น → `move_to(new_channel)`
+_(ไม่มีตอนนี้ — เฟส 3d ย้ายไปอยู่ในหมวด ✅ เสร็จแล้วด้านบนแล้ว)_
 
 ---
 
@@ -128,6 +184,32 @@
 ---
 
 ## 🔮 อนาคต (ยังไม่เริ่ม — เรียงตามความเป็นไปได้)
+
+### 🔔 ทักก่อนได้ (proactive / เริ่มบทสนทนาเอง)
+แนวคิด: LLM ต้องมี prompt เข้าเสมอ — "ทักเอง" คือมี scheduler ยิง prompt ปลอมให้อัตโนมัติ
+(เหมือน Neuro-sama ที่มี loop ซ่อนอยู่ ไม่ใช่โมเดลตัดสินใจพูดเองจริงๆ) ต่อยอดจาก pipeline แชตเดิม
++ vector memory ที่ทำเสร็จแล้ว (ใช้ `query_conversation_memory`/summaries ดึง "เรื่องล่าสุดที่คุยกัน"
+มาสร้าง prompt แบบ "เมื่อวานคุยเรื่อง X ไปเป็นไงบ้าง")
+
+**ตัดสินใจแล้ว:**
+- [x] **ช่องทาง: DM** (ไม่ใช่ห้องเจาะจง) — เพราะเห็นเฉพาะคนเดียว ไม่มีทางน่ารำคาญคนอื่นใน server,
+  ไม่ต้อง config channel ID ต่อ server, และ DM เป็นช่องทางที่บอทรองรับอยู่แล้ว (`is_dm` ใน `on_message`)
+- [x] **ไม่ทำ idle trigger บนห้อง Discord แชร์กัน** — ห้องส่วนตัวเงียบได้เป็นเรื่องปกติ ทักใส่ห้องว่าง
+  จะน่ารำคาญ (ต่างจากบริบท live stream ที่มีคนดูตลอด)
+- [x] **หยุดทักถ้าเงียบ 3 วันติด** — เงียบ 1 ครั้งยังไม่หยุด (กันเผลอพลาดจังหวะ), 3 วันติดถึงหยุด
+  จนกว่า user จะกลับมาคุยเอง (reset counter ทันทีที่มี `on_message` ปกติจาก user คนนั้น)
+
+**ยังไม่ตัดสินใจ (รอกำหนดตอน implement):**
+- [ ] **ช่วงเวลาทักตอนเช้า** — ยังไม่ fix ตัวเลข ต้องปรับตามตารางชีวิตจริงตอนเริ่มเขียน (ตัวเลือกที่คุยไว้:
+  7:00-9:00 / 8:00-10:00 / 9:00-11:00 — สุ่มเวลาในช่วงที่เลือกกันดูเป็น cron ตายตัวเกินไป)
+- [ ] **quiet hours แบบ hard cutoff** — ห้ามทักดึกเด็ดขาดไม่ว่ากรณีใด (เช่น 22:00-08:00) เป็น safety net
+  แยกจากช่วงเวลาทักหลัก เผื่อ logic อื่นพลาดไปยิงนอกช่วง
+- [ ] **scope ผู้ใช้ที่จะทัก** — ควรทักเฉพาะ user ที่เคยคุยมาก่อน/มี summaries ใน memory (ไม่ทัก user
+  ใหม่ที่ไม่เคยคุยเลย เพราะจะดูแปลก/creepy)
+- [ ] กลไก scheduler — `asyncio` background task loop เช็คเวลาเป็นระยะ (เหมือน `_bg_worker`/`_leave_after_idle`
+  ที่มีอยู่แล้ว) น่าจะพอ ไม่ต้องเพิ่ม dependency ใหม่ (เช่น APScheduler)
+- [ ] เก็บ state ต่อ user: `last_proactive_greet_date`, `consecutive_silent_greets` — เข้า `memory/<user_id>.json`
+  แบบเดียวกับ facts/summaries
 
 ### 🔌 ควบคุม IoT ในบ้าน — เปิด-ปิดไฟ/ปลั๊ก (smart home)
 เป้าหมายหลักถัดไป ใช้หลักการเดียวกับสั่งพิมพ์ (สั่งอุปกรณ์จริง + รายงานผล)
@@ -175,7 +257,10 @@
 
 ## 🧭 ลำดับที่แนะนำต่อไป
 
-1. **เฟส 3d — move logic** — รอสเต้ย้ายตามคนถ้าถูกเรียกจากห้องอื่น (เล็กน้อย)
-2. **IoT เปิด-ปิดไฟ (จำลองก่อน)** — เป้าหมายหลักที่ตั้งใจ ทำได้จริงด้วยกลไกเดิม
+1. **IoT เปิด-ปิดไฟ (จำลองก่อน)** — เป้าหมายหลักที่ตั้งใจ ตอนนี้ง่ายขึ้นเพราะมี tool calling แล้ว
+   (เพิ่ม tool ใหม่แค่ประกาศใน `TOOLS` + เขียน handler + เพิ่มเข้า `TOOL_HANDLERS`) แนะนำใช้
+   Home Assistant เป็นตัวกลางแทนเขียน integration ทีละยี่ห้อ (ESP32/Tuya) เอง
+2. **ทักก่อนได้ (proactive greeting)** — ออกแบบเสร็จแล้ว (ช่องทาง DM, หยุดถ้าเงียบ 3 วัน) เหลือแค่ fix
+   ช่วงเวลาทัก + implement scheduler ต่อยอดจาก vector memory ที่ทำเสร็จแล้ว
 3. **ทดสอบ Synthesizer V Studio** — สร้างเพลง karaoke ด้วยเสียงสังเคราะห์โดยตรง แทน UVR+RVC
-4. ที่เหลือ (STT / ตัดสินใจเอง) — งานใหญ่ ค่อยทำทีละขั้น
+4. ที่เหลือ (model orchestration / STT / ตัดสินใจเอง) — งานใหญ่ ค่อยทำทีละขั้น

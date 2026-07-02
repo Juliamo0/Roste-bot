@@ -1,6 +1,8 @@
 """
 Unit tests for realtime data functions — Level 1 (mocked HTTP, no real calls)
-ครอบคลุม: น้ำมัน, อากาศ, ตัดไฟ, ค้นเว็บ, หาร้าน, routing, เวลา/วันที่
+ครอบคลุม: น้ำมัน, อากาศ, ตัดไฟ, ค้นเว็บ, หาร้าน, เวลา/วันที่
+(routing เดิม — keyword dispatch ที่เคยเทสใน TestGetRealtimeContextRouting — ถูกแทนที่ด้วย
+LLM tool calling แล้ว ดูเทส dispatch ใหม่ใน test_bot.py + tools/simulate_toolcalling.py)
 Run: pytest test_realtime.py -v
 """
 import asyncio
@@ -485,65 +487,3 @@ class TestSearchWeb:
              patch.dict("sys.modules", {"ddgs": mock_ddgs_module}):
             result = bot.search_web("ข่าว")
         assert "DDG fallback" in result
-
-
-# ── 12. get_realtime_context — routing ────────────────────────────────────────
-
-class TestGetRealtimeContextRouting:
-    def test_กี่โมง_calls_get_thai_datetime(self):
-        with patch.object(bot, "get_thai_datetime", return_value="วันจันทร์ที่ 1") as mock_dt:
-            result = asyncio.run(bot.get_realtime_context("ตอนนี้กี่โมงแล้ว"))
-        mock_dt.assert_called_once()
-        assert "วันจันทร์" in result
-
-    def test_วันอะไร_calls_get_thai_datetime(self):
-        with patch.object(bot, "get_thai_datetime", return_value="วันอาทิตย์") as mock_dt:
-            asyncio.run(bot.get_realtime_context("วันนี้วันอะไร"))
-        mock_dt.assert_called_once()
-
-    def test_อากาศ_calls_extract_city_then_weather(self):
-        with patch.object(bot, "extract_city", AsyncMock(return_value="Chumphon")) as mc, \
-             patch.object(bot, "get_weather_tmd", AsyncMock(return_value=None)), \
-             patch.object(bot, "get_weather", AsyncMock(return_value="อากาศดี 30°C")) as mw:
-            result = asyncio.run(bot.get_realtime_context("อากาศวันนี้เป็นยังไง"))
-        mc.assert_called_once()
-        mw.assert_called_once()
-        assert "อากาศดี" in result
-
-    def test_อากาศ_prefers_tmd_over_open_meteo(self):
-        """ถ้า TMD คืนข้อมูล ต้องไม่เรียก Open-Meteo"""
-        with patch.object(bot, "extract_city", AsyncMock(return_value="Chumphon")), \
-             patch.object(bot, "get_weather_tmd", AsyncMock(return_value="TMD data")), \
-             patch.object(bot, "get_weather", AsyncMock(return_value="OpenMeteo data")) as mow:
-            result = asyncio.run(bot.get_realtime_context("ฝนตกไหม"))
-        mow.assert_not_called()
-        assert "TMD data" in result
-
-    def test_ตัดไฟ_calls_get_power_outage(self):
-        with patch.object(bot, "get_power_outage", AsyncMock(return_value="ไม่มีตัดไฟ")) as mock_po:
-            result = asyncio.run(bot.get_realtime_context("วันนี้มีตัดไฟไหม"))
-        mock_po.assert_called_once()
-        assert "ไม่มีตัดไฟ" in result
-
-    def test_น้ำมัน_calls_get_oil_price_ptt_default(self):
-        with patch.object(bot, "get_oil_price", AsyncMock(return_value="ปตท. ดีเซล 33.34")) as mock_oil:
-            asyncio.run(bot.get_realtime_context("ราคาน้ำมันวันนี้"))
-        mock_oil.assert_called_once_with("ptt")
-
-    def test_น้ำมัน_selects_brand_บางจาก(self):
-        with patch.object(bot, "get_oil_price", AsyncMock(return_value="บางจาก")) as mock_oil:
-            asyncio.run(bot.get_realtime_context("น้ำมันบางจากราคาเท่าไหร่"))
-        mock_oil.assert_called_once_with("bcp")
-
-    def test_ดีเซล_keyword_triggers_oil(self):
-        with patch.object(bot, "get_oil_price", AsyncMock(return_value="ดีเซล 33.34")) as mock_oil:
-            asyncio.run(bot.get_realtime_context("ดีเซลวันนี้ราคาเท่าไร"))
-        mock_oil.assert_called_once()
-
-    def test_no_keyword_returns_none(self):
-        result = asyncio.run(bot.get_realtime_context("สวัสดีตอนเช้า"))
-        assert result is None
-
-    def test_generic_greeting_returns_none(self):
-        result = asyncio.run(bot.get_realtime_context("คุยเรื่องหนังสือการ์ตูน"))
-        assert result is None

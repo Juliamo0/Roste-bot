@@ -12,3 +12,8 @@ DISCORD_TOKEN = "วาง_TOKEN_ของคุณ_ที่นี่"
 
 # Token ของกรมอุตุนิยมวิทยา (TMD) — ขอที่ https://data.tmd.go.th
 TMD_TOKEN = "วาง_TMD_TOKEN_ที่นี่"
+
+# Discord user ID ของเจ้าของบอท — คนเดียวที่สั่งพิมพ์ PDF จริงได้
+# วิธีหา ID: เปิด Developer Mode (Settings > Advanced) แล้วคลิกขวาชื่อตัวเอง > Copy User ID
+# ใส่ได้หลายคนถ้าอยากให้คนอื่นสั่งพิมพ์ได้ด้วย เช่น [111111111111111111, 222222222222222222]
+PRINT_ALLOWED_USER_IDS = [111111111111111111]
