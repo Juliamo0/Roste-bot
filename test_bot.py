@@ -625,3 +625,40 @@ class TestToolLoopFailSafe:
         # ต้องเรียก get_weather ด้วยจังหวัดบ้าน (fallback) ไม่ใช่ "กรุงเทพมหานคร" ที่โมเดลเดามา
         mw.assert_called_once_with(bot.HOME_PROVINCE_NAME)
         assert reply
+
+
+# ── fix_persona_slips — ดักคำหลุดคาแร็กเตอร์ (validation layer) ──────────────────
+
+class TestFixPersonaSlips:
+    """persona.fix_persona_slips — rule-based กัน "ครับ" หลุดถึงผู้ใช้
+    (กฎใน SYSTEM_PROMPT/author note มีแล้วแต่โมเดลยังหลุดจริงในคำตอบยาว)"""
+
+    def test_na_krub_becomes_na_ka(self):
+        import persona
+        # เคสจริงที่เจอ: สรุปผลค้นเว็บยาวจบด้วย "นะครับ!"
+        assert persona.fix_persona_slips(
+            "สามารถแจ้งได้นะครับ!") == "สามารถแจ้งได้นะคะ!"
+
+    def test_krub_becomes_ka(self):
+        import persona
+        assert persona.fix_persona_slips("สวัสดีครับ") == "สวัสดีค่ะ"
+
+    def test_krub_phom_becomes_ka(self):
+        import persona
+        assert persona.fix_persona_slips("ได้เลยครับผม") == "ได้เลยค่ะ"
+
+    def test_multiple_slips_all_fixed(self):
+        import persona
+        out = persona.fix_persona_slips("ครับ เดี๋ยวจัดการให้นะครับ")
+        assert "ครับ" not in out
+        assert out == "ค่ะ เดี๋ยวจัดการให้นะคะ"
+
+    def test_clean_text_unchanged(self):
+        import persona
+        clean = "สวัสดีค่ะ วันนี้อากาศดีนะคะ"
+        assert persona.fix_persona_slips(clean) == clean
+
+    def test_na_krub_not_double_replaced(self):
+        import persona
+        # "นะครับ" ต้องกลายเป็น "นะคะ" ไม่ใช่ "นะค่ะ" (สะกดผิด)
+        assert persona.fix_persona_slips("ขอบคุณนะครับ") == "ขอบคุณนะคะ"

@@ -867,6 +867,8 @@ async def _tool_get_weather(args: dict, mem: dict) -> str:
     if not info:
         print(f"   🌦️ ดึงอากาศ (Open-Meteo สำรอง): {province!r}")
         info = await get_weather(province)
+    if not info:
+        return "[ระบบ: ดึงพยากรณ์อากาศไม่ได้ตอนนี้ บอกผู้ใช้ตรงๆ ว่าตอนนี้ดึงข้อมูลอากาศไม่ได้]"
     return ("[ข้อมูลพยากรณ์อากาศจริงด้านล่างนี้เป็นข้อมูลภายในสำหรับรอสเต้ใช้อ้างอิง "
             "ห้ามลอกมาแสดงเป็นลิสต์หรือท่องตัวเลขทุกค่า ให้รอสเต้ 'เล่า' ด้วยน้ำเสียงตัวเองแบบเป็นกันเอง "
             "เหมือนเพื่อนเล่าให้ฟัง โดยเน้นวันหรือช่วงที่ผู้ใช้ถามเป็นหลัก "
@@ -997,16 +999,18 @@ intents.message_content = True  # ต้องเปิด MESSAGE CONTENT INTEN
 client = discord.Client(intents=intents)
 
 
-async def _chat_once(messages, temperature: float = 0.8):
+async def _chat_once(messages, temperature: float = 0.8, tools=None):
     """ยิงคำขอไปที่ Ollama หนึ่งครั้ง (พร้อมเครื่องมือ) แล้วคืน message dict
     temperature ต่ำ (~0.5) = แม่นยำ เดาน้อย (ใช้ตอนตอบข้อมูลจริง)
-    temperature สูง (~0.8) = มีชีวิตชีวา (ใช้ตอนคุยเล่น)"""
+    temperature สูง (~0.8) = มีชีวิตชีวา (ใช้ตอนคุยเล่น)
+    tools: รายชื่อเครื่องมือที่ยื่นให้โมเดลรอบนี้ (default TOOLS ทั้งหมด) —
+           ใช้ตัดเครื่องมือบางตัวออกกลางลูปได้ เช่น กัน search_web ซ้อนหลัง weather สำเร็จแล้ว"""
     payload = {
         "model": MODEL,
         "messages": messages,
         "stream": False,
         "think": False,
-        "tools": TOOLS,
+        "tools": tools if tools is not None else TOOLS,
         "options": {
             "temperature": temperature,
             "repeat_penalty": 1.12,  # ลดการพูดซ้ำคำ/ประโยคแพทเทิร์นเดิม (กันฟังดูหุ่นยนต์)
@@ -1318,9 +1322,15 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
     )
 
     # 🔁 ลูปเรียกเครื่องมือ: โมเดลตัดสินใจเองว่าต้องใช้เครื่องมือไหน (ถ้าต้อง) วนได้สูงสุด 3 รอบ
+    #    ถ้า get_weather สำเร็จแล้วในรอบก่อนหน้า ตัด search_web ออกจากตัวเลือกรอบถัดไปเลย
+    #    กันโมเดลเรียกค้นเว็บซ้ำแล้วได้หน้า climate-average มาปนกับพยากรณ์จริงที่มีอยู่แล้ว
+    weather_ok = False
     msg = {}
     for _ in range(3):
-        msg = await _chat_once(messages, temperature=reply_temp)
+        turn_tools = TOOLS
+        if weather_ok:
+            turn_tools = [t for t in TOOLS if t["function"]["name"] != "search_web"]
+        msg = await _chat_once(messages, temperature=reply_temp, tools=turn_tools)
         tool_calls = msg.get("tool_calls")
         if not tool_calls:
             break  # ไม่ขอเครื่องมือแล้ว = ได้คำตอบสุดท้าย
@@ -1349,6 +1359,8 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
                 args = _strip_ungrounded_optional_args(fn, args, user_message, history, mem)
                 try:
                     result = await TOOL_HANDLERS[fn](args, mem)
+                    if fn == "get_weather" and not result.startswith("[ระบบ: ดึงพยากรณ์อากาศไม่ได้"):
+                        weather_ok = True
                 except Exception as e:
                     print(f"   ⚠️ tool {fn} error: {type(e).__name__}: {e}")
                     result = f"เครื่องมือ {fn} ทำงานผิดพลาด ({type(e).__name__}) บอกผู้ใช้ตรงๆ ว่าตอนนี้ดึงข้อมูลนี้ไม่ได้"
@@ -1360,6 +1372,12 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
     reply = _strip_think(reply).strip()
     if not reply:
         reply = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
+
+    # 🎭 ดักคำหลุดคาแร็กเตอร์ (ครับ → ค่ะ) — กฎใน prompt อย่างเดียวเอาไม่อยู่
+    fixed = persona.fix_persona_slips(reply)
+    if fixed != reply:
+        print("   🎭 ดักคำหลุดคาแร็กเตอร์ (ครับ → ค่ะ)")
+        reply = fixed
 
     # 💬 บอกผู้ใช้แบบ in-character ถ้ารอบนี้จะสรุปบทยาว (helper จัดการ set เอง)
     reply, _ = _maybe_append_summary_notice(user_id, _will_notice, reply)
