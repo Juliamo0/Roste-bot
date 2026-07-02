@@ -13,6 +13,7 @@ import music      # 🎵 ระบบเพลง (อยู่ในไฟล�
 import voice      # 🎙️ voice pipeline (edge-tts → ffmpeg → RVC subprocess)
 import persona    # 🎭 บุคลิกรอสเต้ (SYSTEM_PROMPT, FEWSHOT, MOODS, author note)
 import memory     # 🧠 ระบบความจำ (load/save/facts/recall + คำสั่งจำ-ลืม)
+import vectormemory  # 🔎 ความจำ/ค้นหาเชิงความหมาย (RAG PDF + semantic recall ผ่าน ChromaDB)
 
 # ดึงค่า/ฟังก์ชันที่ใช้บ่อยมาไว้ในชื่อสั้นๆ (โค้ดด้านล่างจะได้เรียกง่ายเหมือนเดิม)
 SYSTEM_PROMPT = persona.SYSTEM_PROMPT
@@ -24,7 +25,6 @@ save_memory = memory.save_memory
 handle_memory_command = memory.handle_memory_command
 
 # state ชั่วคราวต่อ user — ไม่ควร persist ลง JSON
-_pending_place: dict = {}          # {user_id: คำถามร้านที่ค้างรอจังหวัด}
 _user_locks: dict = {}             # {user_id: asyncio.Lock}
 _active_users: set = set()         # ติดตาม user ที่คุยในเซสชันนี้ (ใช้ flush history ตอนปิดบอท)
 _last_had_summary_notice: set = set()  # user_ids ที่รอบก่อนมีประโยคบอกสรุปแล้ว (กันพูดซ้ำ)
@@ -113,6 +113,12 @@ except ImportError:
 # ถ้ายังเป็นค่าตัวอย่าง (ยังไม่ใส่ key จริง) ให้ถือว่าไม่ได้ตั้ง — จะได้ fallback ไป ddg
 if not SERPAPI_KEY or SERPAPI_KEY.startswith("วาง_"):
     SERPAPI_KEY = ""
+
+# PRINT_ALLOWED_USER_IDS — รายชื่อคนที่สั่งพิมพ์ PDF จริงได้ ไม่ตั้งไว้ = ไม่มีใครสั่งพิมพ์ได้ (ปลอดภัยไว้ก่อน)
+try:
+    from config import PRINT_ALLOWED_USER_IDS
+except ImportError:
+    PRINT_ALLOWED_USER_IDS = []
 
 # เช็กว่าใส่ Token จริงแล้วหรือยัง ถ้ายังให้เตือนชัดๆ
 if not DISCORD_TOKEN or DISCORD_TOKEN == "วาง_TOKEN_ของคุณ_ที่นี่":
@@ -288,10 +294,103 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_current_time",
+            "description": "บอกเวลา/วันที่ปัจจุบันจริงในไทย ใช้เมื่อผู้ใช้ถามกี่โมง วันนี้วันที่เท่าไหร่ วันอะไร",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": (
+                "พยากรณ์อากาศจริง ใช้ทุกครั้งที่ผู้ใช้ถามเรื่องที่เกี่ยวกับสภาพอากาศ แม้ไม่มีคำว่า "
+                "'อากาศ' ตรงๆ ก็ตาม เช่น ถามว่าต้องพกร่มไหม ร้อน/หนาวไหม จะไปเที่ยวได้ไหม กี่องศา "
+                "ห้ามเดา/ตอบจากความรู้ทั่วไปเด็ดขาด ต้องเรียกเครื่องมือนี้เสมอ"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "province": {
+                        "type": "string",
+                        "description": (
+                            "ชื่อจังหวัด/เมืองที่ถามจริงๆ เท่านั้น (เช่น 'เชียงใหม่', 'ภูเก็ต') "
+                            "ถ้าผู้ใช้ไม่ได้ระบุจังหวัด ห้ามใส่ parameter นี้เข้ามาเด็ดขาด "
+                            "ห้ามเขียนคำอธิบาย/ค่า default เอง เช่น ห้ามใส่ 'ไม่ระบุ' หรือ 'จังหวัดบ้าน'"
+                        ),
+                    }
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_power_outage",
+            "description": (
+                "ประกาศตัดไฟจริงจากการไฟฟ้าส่วนภูมิภาค (เฉพาะจังหวัดบ้านที่ตั้งค่าไว้เท่านั้น "
+                "ไม่รองรับจังหวัดอื่น) ใช้เมื่อผู้ใช้ถามเรื่องไฟดับ/ตัดไฟ/งดจ่ายไฟ"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_oil_price",
+            "description": "ราคาน้ำมันวันนี้จริงจาก Kapook ใช้เมื่อผู้ใช้ถามราคาน้ำมัน/ดีเซล/เบนซิน/แก๊สโซฮอล",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "brand": {
+                        "type": "string",
+                        "description": (
+                            "รหัสยี่ห้อน้ำมัน: ptt, bcp (บางจาก), shell, caltex, irpc, pt (พีที), "
+                            "susco, pure — ถ้าผู้ใช้ไม่ได้ระบุยี่ห้อ เว้นว่างไว้ได้ (จะใช้ ptt แทน)"
+                        ),
+                    }
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_places",
+            "description": (
+                "ค้นหาร้านอาหาร/ที่เที่ยว/ที่พักจริงตามจังหวัด ใช้เมื่อผู้ใช้ถามหาร้าน/ของกิน/ที่เที่ยว "
+                "ห้ามเดาชื่อร้านเองเด็ดขาด ต้องเรียกเครื่องมือนี้เสมอ ถ้าไม่รู้จังหวัดของผู้ใช้ "
+                "ให้เรียกโดยเว้น province ว่างไว้ก่อน — เครื่องมือจะบอกกลับมาเองถ้าต้องถามจังหวัดเพิ่ม"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "สิ่งที่หา เช่น 'ร้านก๋วยเตี๋ยว', 'ที่เที่ยว'"},
+                    "province": {
+                        "type": "string",
+                        "description": (
+                            "จังหวัดที่ผู้ใช้ระบุมาจริงๆ เท่านั้น ถ้าผู้ใช้ไม่ได้บอกจังหวัด ห้ามใส่ "
+                            "parameter นี้เข้ามาเด็ดขาด ห้ามเดา/ห้ามใส่ค่า default เอง (เช่น ห้ามใส่ "
+                            "'กรุงเทพ' หรือจังหวัดใดๆ เอง) เครื่องมือจะถามผู้ใช้กลับเองถ้าจำเป็น"
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_web",
             "description": (
-                "ค้นหาข้อมูลจริงจากอินเทอร์เน็ต ใช้เมื่อผู้ใช้ถามเรื่องข้อเท็จจริง ข่าว "
-                "ราคา ข้อมูลล่าสุด ชื่อหนังสือ/คน/สินค้า ปีที่ออก หรืออะไรก็ตามที่ไม่ควรเดา"
+                "ค้นหาข้อมูลจริงจากอินเทอร์เน็ต ใช้เมื่อผู้ใช้ถามเรื่องข้อเท็จจริง ข่าว ราคา ข้อมูลล่าสุด "
+                "ชื่อหนังสือ/คน/สินค้า ปีที่ออก หรืออะไรก็ตามที่ไม่ควรเดา "
+                "สำคัญ: เรื่องที่เปลี่ยนแปลงได้ตลอดเวลา เช่น ใครเป็นผู้นำ/นายกรัฐมนตรีตอนนี้ ข่าวล่าสุด "
+                "สถิติปัจจุบัน ต้องเรียกเครื่องมือนี้เสมอ ห้ามตอบจากความจำของตัวเองแม้จะรู้สึกว่ารู้คำตอบ "
+                "เพราะข้อมูลในความจำอาจล้าสมัยไปแล้ว"
             ),
             "parameters": {
                 "type": "object",
@@ -301,39 +400,11 @@ TOOLS = [
                 "required": ["query"],
             },
         },
-    }
+    },
 ]
 
 
-# คำที่บ่งบอกว่าเป็นคำถามเชิงข้อเท็จจริง (ควรค้นเว็บก่อนตอบ กันการเดามั่ว)
-# 👉 เพิ่ม/ลบคำได้ตามใจ ถ้าอยากให้รอสเต้ค้นบ่อยขึ้นหรือน้อยลง
-# หมายเหตุ: หลีกเลี่ยงคำกว้างเกิน เช่น "วันนี้"/"ตอนนี้" (ทำให้ค้นตอนทักทาย/บ่นด้วย)
-SEARCH_TRIGGERS = (
-    "ราคา", "ล่าสุด", "ข่าว", "ใครเป็น", "ใครคือ", "ชื่อคนเขียน", "ผู้เขียน",
-    "เมื่อไหร่", "เมื่อไร", "กี่บาท", "รีวิว", "เปรียบเทียบรุ่น", "สเปก", "spec",
-    "เวอร์ชันล่าสุด", "version", "release", "ออกปี", "ปี 20",
-    "2024", "2025", "2026", "2567", "2568", "2569",
-    # 🍜 ร้าน/อาหาร/สถานที่ — โมเดลมักไม่รู้ข้อมูลเฉพาะถิ่น จึงต้องค้นก่อนเสมอ
-    "ร้าน", "ร้านอาหาร", "ของกิน", "กิน", "อร่อย", "เมนู", "คาเฟ่", "คาเฟه",
-    "ที่เที่ยว", "เที่ยว", "ที่พัก", "โรงแรม", "รีสอร์ท", "แนะนำร้าน",
-    "ใกล้ฉัน", "แถวนี้", "ในจังหวัด", "ในอำเภอ", "ตำบล", "พิกัด", "เปิดกี่โมง",
-)
-
-# 🍜 คำที่บ่งว่าเป็น "การหาร้าน/สถานที่" โดยเฉพาะ (ต้องมีตำแหน่งก่อนค้น)
-PLACE_HINTS = (
-    "ร้าน", "ร้านอาหาร", "ของกิน", "กิน", "น่ากิน", "หิว", "อร่อย", "คาเฟ่",
-    "ที่เที่ยว", "เที่ยว", "ที่พัก", "โรงแรม", "รีสอร์ท", "ใกล้ฉัน", "แถวนี้",
-    "เปิดกี่โมง", "แนะนำร้าน", "หาร้าน",
-)
-
-# บริบทที่มีคำว่า "กิน" แต่ "ไม่ใช่" การหาร้านอาหาร — กันจับผิด
-PLACE_EXCLUDE = (
-    "กินยา", "กินเจคือ", "กินเจมี", "การกิน", "กินอะไรได้", "กินได้ไหม",
-    "ลดน้ำหนัก", "ลดความอ้วน", "แพ้อาหาร", "กินยังไง", "วิธีกิน", "กินตอนไหน",
-    "หมากิน", "แมวกิน", "สุนัขกิน", "ห้ามกิน", "กินแล้ว",
-)
-
-# รายชื่อ 77 จังหวัดไทย — ไว้ตรวจว่าผู้ใช้ระบุจังหวัดมาในข้อความหรือยัง
+# รายชื่อ 77 จังหวัดไทย — ใช้ normalize ชื่อจังหวัดตอน validate parameter ของ tool calls
 THAI_PROVINCES = {
     "กรุงเทพ", "กรุงเทพมหานคร", "กระบี่", "กาญจนบุรี", "กาฬสินธุ์", "กำแพงเพชร",
     "ขอนแก่น", "จันทบุรี", "ฉะเชิงเทรา", "ชลบุรี", "ชัยนาท", "ชัยภูมิ", "ชุมพร",
@@ -349,15 +420,6 @@ THAI_PROVINCES = {
     "หนองบัวลำภู", "อ่างทอง", "อำนาจเจริญ", "อุดรธานี", "อุตรดิตถ์", "อุทัยธานี",
     "อุบลราชธานี",
 }
-
-
-def is_place_query(text: str) -> bool:
-    """คำถามนี้เป็นการหาร้าน/สถานที่ไหม (ของกิน/ที่เที่ยว/ที่พัก ฯลฯ)
-    ระวังคำว่า 'กิน' ที่อาจไม่ใช่การหาร้าน เช่น 'กินยา' 'หมากินอะไรได้'"""
-    t = text.lower()
-    if any(ex in t for ex in PLACE_EXCLUDE):
-        return False
-    return any(h in t for h in PLACE_HINTS)
 
 
 def find_province_in_text(text: str) -> str:
@@ -376,36 +438,6 @@ def find_saved_location(mem: dict) -> str:
         if prov:
             return prov
     return ""
-
-
-def is_bare_province(text: str) -> str:
-    """ข้อความนี้เป็น 'ชื่อจังหวัดล้วนๆ' ไหม (เช่นตอบ 'ชุมพร' หลังถูกถามว่าแถวไหน)
-    คืนชื่อจังหวัดถ้าใช่ (ข้อความสั้นและมีแต่จังหวัด) หรือ '' ถ้าไม่ใช่"""
-    prov = find_province_in_text(text)
-    if not prov:
-        return ""
-    # ข้อความสั้นๆ (ไม่ใช่ประโยคยาว) ที่มีจังหวัดอยู่ → ถือว่าเป็นการตอบจังหวัด
-    cleaned = text.strip()
-    if len(cleaned) <= len(prov) + 12:  # เผื่อคำเล็กน้อย เช่น "ที่ชุมพรค่ะ"
-        return prov
-    return ""
-
-# คำ/รูปแบบที่บ่งว่าเป็นการทักทาย/บ่นความรู้สึก — ไม่ต้องค้นเว็บ
-CHITCHAT_HINTS = (
-    "สวัสดี", "หวัดดี", "เป็นไง", "เป็นยังไง", "เซ็ง", "เศร้า", "เหนื่อย", "ขี้เกียจ",
-    "เบื่อ", "ง่วง", "ดีใจ", "เครียด", "สบายดี", "ว่าไง", "ทำอะไรอยู่",
-)
-
-
-def needs_search(text: str) -> bool:
-    """เดาว่าคำถามนี้ควรค้นเว็บก่อนไหม (ดูจากคำที่มักเป็นข้อเท็จจริง)"""
-    t = text.lower()
-    # ข้อความสั้นมาก หรือเป็นการทักทาย/บ่นความรู้สึก → ไม่ค้น
-    if len(text.strip()) < 8:
-        return False
-    if any(h in t for h in CHITCHAT_HINTS):
-        return False
-    return any(k.lower() in t for k in SEARCH_TRIGGERS)
 
 
 # ============================================================
@@ -632,32 +664,17 @@ async def get_weather(city: str) -> str:
     return "\n".join(out)
 
 
-async def extract_city(user_message: str) -> str:
-    """ให้โมเดลดึงชื่อเมือง/จังหวัดจากคำถาม (เป็นอังกฤษ) ถ้าไม่ระบุใช้ Chumphon"""
-    prompt = [
-        {"role": "system", "content":
-            "ผู้ใช้ถามเรื่องอากาศ จงตอบเฉพาะชื่อเมือง/จังหวัดเป็นภาษาอังกฤษคำเดียว "
-            "เช่น Bangkok, Nakhon Si Thammarat, Chiang Mai ถ้าผู้ใช้ไม่ได้ระบุเมือง ให้ตอบ Chumphon "
-            "ห้ามมีคำอธิบายอื่น"},
-        {"role": "user", "content": user_message},
-    ]
-    payload = {"model": MODEL, "messages": prompt, "stream": False,
-               "think": False, "options": {"temperature": 0.1}}
-    try:
-        data = await _get_json_post(payload)
-        c = (data["message"].get("content", "") or "").strip()
-        if "</think>" in c:
-            c = c.rsplit("</think>", 1)[-1]
-        c = c.strip().strip('"').splitlines()[0].strip()
-        return c or "Chumphon"
-    except Exception:
-        return "Chumphon"
-
-
-async def _get_json_post(payload):
+async def _get_json_post(payload, timeout=120):
     async with aiohttp.ClientSession() as s:
-        async with s.post(OLLAMA_URL, json=payload, timeout=120) as r:
+        async with s.post(OLLAMA_URL, json=payload, timeout=timeout) as r:
             return await r.json()
+
+
+def _strip_think(text: str) -> str:
+    """ตัด <think>...</think> ที่โมเดลเผลอโชว์ทิ้ง เหลือแค่คำตอบจริงหลัง </think>"""
+    if "</think>" in text:
+        return text.rsplit("</think>", 1)[-1]
+    return text
 
 
 # ============================================================
@@ -832,109 +849,142 @@ async def _search_places(place_query: str, province: str):
             "ปิดท้ายชวนให้ผู้ใช้บอกถ้าอยากได้แบบเจาะจงขึ้น]\n\n[ข้อมูลภายใน]\n" + results)
 
 
-async def get_realtime_context(user_message: str, mem: dict = None, user_id=None):
-    """คืนข้อความข้อมูลจริงสำหรับแปะเข้ากับคำถาม (หรือ None ถ้าไม่ต้อง)"""
-    if mem is None:
-        mem = {}
-    t = user_message.lower()
+async def _tool_get_current_time(args: dict, mem: dict) -> str:
+    print("   🕐 ดึงเวลาจริง")
+    return f"[ระบบ: เวลาปัจจุบันจริง ใช้ข้อมูลนี้ตอบ]\n{get_thai_datetime()}"
 
-    # 🕐 เวลา/วันที่
-    if any(k in t for k in ("กี่โมง", "กี่นาฬิกา", "เวลาตอนนี้", "วันนี้วันที่",
-                            "วันที่เท่าไหร่", "วันนี้วันอะไร", "วันอะไร")):
-        print("   🕐 ดึงเวลาจริง")
-        return f"[ระบบ: เวลาปัจจุบันจริง ใช้ข้อมูลนี้ตอบ]\n{get_thai_datetime()}"
 
-    # 🌦️ อากาศ
-    if any(k in t for k in ("อากาศ", "ฝน", "ฝนตก", "พยากรณ์", "ร้อนไหม", "หนาว",
-                            "weather", "อุณหภูมิ", "กี่องศา")):
-        city = await extract_city(user_message)
-        # ลองกรมอุตุฯ (TMD) ก่อน — แม่นสำหรับไทย
-        province_th = EN_TO_TH_PROVINCE.get(city.lower().strip())
-        info = None
-        if province_th:
-            print(f"   🌦️ ดึงอากาศ (TMD): {province_th!r}")
-            info = await get_weather_tmd(province_th)
-        # ถ้า TMD ไม่ได้ (ไม่มีในแผนที่จังหวัด/ดึงพลาด) ใช้ Open-Meteo สำรอง
-        if not info:
-            print(f"   🌦️ ดึงอากาศ (Open-Meteo สำรอง): {city!r}")
-            info = await get_weather(city)
-        return ("[ข้อมูลพยากรณ์อากาศจริงด้านล่างนี้เป็นข้อมูลภายในสำหรับรอสเต้ใช้อ้างอิง "
-                "ห้ามลอกมาแสดงเป็นลิสต์หรือท่องตัวเลขทุกค่า ให้รอสเต้ 'เล่า' ด้วยน้ำเสียงตัวเองแบบเป็นกันเอง "
-                "เหมือนเพื่อนเล่าให้ฟัง โดยเน้นวันหรือช่วงที่ผู้ใช้ถามเป็นหลัก "
-                "ถ้าถามแค่วันนี้ ตอบสั้นๆ 2-4 ประโยค ถ้าถามหลายวัน/ทั้งสัปดาห์ ให้สรุปภาพรวมแนวโน้มหลายวัน "
-                "(เช่น วันไหนฝน วันไหนแดดดี) แบบกระชับ ไม่ต้องไล่ทีละวันครบทุกค่า "
-                "บอกสภาพอากาศและช่วงฝน (ถ้ามี) แบบเป็นธรรมชาติ เช่น 'วันนี้น่าจะมีฝนช่วงบ่ายถึงค่ำนะคะ' "
-                "สำคัญมาก: ใช้คำบรรยายสภาพอากาศตามข้อมูลเป๊ะ ห้ามเติมคำที่ขัดกันเอง "
-                "(ถ้าข้อมูลบอก 'มีเมฆเป็นส่วนมาก' ห้ามพูดว่า 'แจ่มใส' เด็ดขาด — เลือกพูดอย่างใดอย่างหนึ่งตามข้อมูล) "
-                "ปรับน้ำเสียงตามสภาพ: ฝนตก→ห่วงเรื่องพกร่ม, ร้อน→เตือนดื่มน้ำ/กันแดด, เย็นสบาย→ชวนออกไปข้างนอก "
-                "ห้ามแต่งตัวเลขเอง และปิดท้ายบอกแบบแนบเนียนว่าอ้างอิงข้อมูลกรมอุตุนิยมวิทยา]\n\n[ข้อมูลภายใน]\n" + info)
+async def _tool_get_weather(args: dict, mem: dict) -> str:
+    province = (args.get("province") or "").strip() or HOME_PROVINCE_NAME
+    # ลองกรมอุตุฯ (TMD) ก่อน — แม่นสำหรับไทย — รับได้ทั้งชื่อจังหวัดไทยตรงๆ หรือชื่อเมืองอังกฤษ
+    province_th = province if province in THAI_PROVINCES else EN_TO_TH_PROVINCE.get(province.lower())
+    info = None
+    if province_th:
+        print(f"   🌦️ ดึงอากาศ (TMD): {province_th!r}")
+        info = await get_weather_tmd(province_th)
+    # ถ้า TMD ไม่ได้ (ไม่มีในแผนที่จังหวัด/ดึงพลาด) ใช้ Open-Meteo สำรอง
+    if not info:
+        print(f"   🌦️ ดึงอากาศ (Open-Meteo สำรอง): {province!r}")
+        info = await get_weather(province)
+    return ("[ข้อมูลพยากรณ์อากาศจริงด้านล่างนี้เป็นข้อมูลภายในสำหรับรอสเต้ใช้อ้างอิง "
+            "ห้ามลอกมาแสดงเป็นลิสต์หรือท่องตัวเลขทุกค่า ให้รอสเต้ 'เล่า' ด้วยน้ำเสียงตัวเองแบบเป็นกันเอง "
+            "เหมือนเพื่อนเล่าให้ฟัง โดยเน้นวันหรือช่วงที่ผู้ใช้ถามเป็นหลัก "
+            "ถ้าถามแค่วันนี้ ตอบสั้นๆ 2-4 ประโยค ถ้าถามหลายวัน/ทั้งสัปดาห์ ให้สรุปภาพรวมแนวโน้มหลายวัน "
+            "(เช่น วันไหนฝน วันไหนแดดดี) แบบกระชับ ไม่ต้องไล่ทีละวันครบทุกค่า "
+            "บอกสภาพอากาศและช่วงฝน (ถ้ามี) แบบเป็นธรรมชาติ เช่น 'วันนี้น่าจะมีฝนช่วงบ่ายถึงค่ำนะคะ' "
+            "สำคัญมาก: ใช้คำบรรยายสภาพอากาศตามข้อมูลเป๊ะ ห้ามเติมคำที่ขัดกันเอง "
+            "(ถ้าข้อมูลบอก 'มีเมฆเป็นส่วนมาก' ห้ามพูดว่า 'แจ่มใส' เด็ดขาด — เลือกพูดอย่างใดอย่างหนึ่งตามข้อมูล) "
+            "ปรับน้ำเสียงตามสภาพ: ฝนตก→ห่วงเรื่องพกร่ม, ร้อน→เตือนดื่มน้ำ/กันแดด, เย็นสบาย→ชวนออกไปข้างนอก "
+            "ห้ามแต่งตัวเลขเอง และปิดท้ายบอกแบบแนบเนียนว่าอ้างอิงข้อมูลกรมอุตุนิยมวิทยา]\n\n[ข้อมูลภายใน]\n" + info)
 
-    # 🔌 ตัดไฟ — ดึงประกาศจากการไฟฟ้าส่วนภูมิภาค (PEA)
-    if any(k in t for k in ("ตัดไฟ", "ดับไฟ", "ไฟดับ", "งดจ่ายไฟ", "หยุดจ่ายไฟ",
-                            "ไฟจะดับ", "ประกาศดับไฟ", "ไฟฟ้าดับ")):
-        print(f"   🔌 ดึงประกาศตัดไฟ {HOME_PROVINCE_NAME} (PEA)")
-        info = await get_power_outage()
-        return ("[ข้อมูลประกาศตัดไฟจริงจากการไฟฟ้าส่วนภูมิภาคด้านล่างเป็นข้อมูลภายใน "
-                "ให้รอสเต้เล่าด้วยน้ำเสียงตัวเองแบบเป็นกันเองและห่วงใย ไม่ใช่อ่านลิสต์ดิบ "
-                "บอกวัน เวลา และบริเวณที่จะตัดไฟ เรียงจากใกล้สุด ถ้ามีหลายรายการสรุปให้กระชับ "
-                "เตือนให้เตรียมตัว (ชาร์จแบต/สำรองน้ำ) แบบสั้นๆ "
-                "ถ้าไม่มีประกาศก็บอกตามนั้น ห้ามแต่งวันเวลาหรือสถานที่เพิ่มเอง "
-                "ปิดท้ายบอกว่าข้อมูลจากการไฟฟ้าส่วนภูมิภาค]\n\n[ข้อมูลภายใน]\n" + info)
 
-    # ⛽ ราคาน้ำมัน — ดึงตารางจริงจาก Kapook (ยึด ปตท. เว้นแต่ระบุยี่ห้ออื่น)
-    if any(k in t for k in ("น้ำมัน", "ดีเซล", "เบนซิน", "แก๊สโซฮอล", "gasohol",
-                            "diesel", "e20", "e85", "แก๊สโซฮอล์", "ngv")):
-        # เลือกยี่ห้อตามที่ผู้ใช้พูดถึง (ไม่งั้นใช้ ปตท.)
-        brand = "ptt"
-        for code, name in (("bcp", "บางจาก"), ("shell", "เชลล์"), ("caltex", "คาลเท็กซ์"),
-                           ("irpc", "ไออาร์พีซี"), ("pt", "พีที"), ("susco", "ซัสโก้"),
-                           ("pure", "เพียว")):
-            if name in user_message or code in t:
+async def _tool_get_power_outage(args: dict, mem: dict) -> str:
+    # หมายเหตุ: รองรับเฉพาะจังหวัดบ้านที่ตั้งค่าไว้ (HOME_PROVINCE_ID/NAME) — ไม่มี mapping
+    # ชื่อจังหวัดอื่น → PEA province_id ให้ใช้ ตาม tool description ที่บอกโมเดลไว้แล้ว
+    print(f"   🔌 ดึงประกาศตัดไฟ {HOME_PROVINCE_NAME} (PEA)")
+    info = await get_power_outage()
+    return ("[ข้อมูลประกาศตัดไฟจริงจากการไฟฟ้าส่วนภูมิภาคด้านล่างเป็นข้อมูลภายใน "
+            "ให้รอสเต้เล่าด้วยน้ำเสียงตัวเองแบบเป็นกันเองและห่วงใย ไม่ใช่อ่านลิสต์ดิบ "
+            "บอกวัน เวลา และบริเวณที่จะตัดไฟ เรียงจากใกล้สุด ถ้ามีหลายรายการสรุปให้กระชับ "
+            "เตือนให้เตรียมตัว (ชาร์จแบต/สำรองน้ำ) แบบสั้นๆ "
+            "ถ้าไม่มีประกาศก็บอกตามนั้น ห้ามแต่งวันเวลาหรือสถานที่เพิ่มเอง "
+            "ปิดท้ายบอกว่าข้อมูลจากการไฟฟ้าส่วนภูมิภาค]\n\n[ข้อมูลภายใน]\n" + info)
+
+
+async def _tool_get_oil_price(args: dict, mem: dict) -> str:
+    raw = (args.get("brand") or "").strip().lower()
+    brand = "ptt"
+    if raw in OIL_BRANDS:
+        brand = raw
+    elif raw:
+        # เผื่อโมเดลส่งชื่อไทยมาแทนรหัส เช่น "บางจาก" แทน "bcp"
+        for code, name in OIL_BRANDS.items():
+            if name in (args.get("brand") or ""):
                 brand = code
                 break
-        print(f"   ⛽ ดึงราคาน้ำมันจาก Kapook (ยี่ห้อ: {brand})")
-        info = await get_oil_price(brand)
-        return ("[ระบบ: ตารางราคาน้ำมันวันนี้จาก Kapook (ข้อมูลจริง มีโครงสร้างชัดเจน) "
-                "ตอบโดยจับคู่ชนิดน้ำมันกับราคาให้ตรง บอกวันที่อัปเดตด้วย ใช้เฉพาะตัวเลขในตารางนี้ ห้ามแต่งเอง "
-                "ปิดท้ายด้วยความเห็นสั้นๆ แบบเป็นกันเองได้ เช่นความรู้สึกต่อราคา แต่ห้ามเปลี่ยน/เพิ่มตัวเลข]\n" + info)
+    print(f"   ⛽ ดึงราคาน้ำมันจาก Kapook (ยี่ห้อ: {brand})")
+    info = await get_oil_price(brand)
+    return ("[ระบบ: ตารางราคาน้ำมันวันนี้จาก Kapook (ข้อมูลจริง มีโครงสร้างชัดเจน) "
+            "ตอบโดยจับคู่ชนิดน้ำมันกับราคาให้ตรง บอกวันที่อัปเดตด้วย ใช้เฉพาะตัวเลขในตารางนี้ ห้ามแต่งเอง "
+            "ปิดท้ายด้วยความเห็นสั้นๆ แบบเป็นกันเองได้ เช่นความรู้สึกต่อราคา แต่ห้ามเปลี่ยน/เพิ่มตัวเลข]\n" + info)
 
-    # 🍜 หาร้าน/สถานที่ (ของกิน/ที่เที่ยว/ที่พัก) — ต้องรู้จังหวัดก่อนถึงจะค้นได้
-    #    ลำดับ: หาจังหวัดในข้อความ → ถ้าไม่มีดูจากความจำ → ถ้ายังไม่มีให้ถามกลับ
-    #    กรณีพิเศษ: ถ้าเพิ่งถามจังหวัดไป แล้วผู้ใช้ตอบจังหวัดล้วนๆ → เอามารวมกับคำถามเดิม
-    pending = _pending_place.get(user_id, "")
-    bare_prov = is_bare_province(user_message)
-    if pending and bare_prov:
-        # ผู้ใช้ตอบจังหวัดมาตามที่รอสเต้ถาม → รวมคำถามร้านเดิม + จังหวัด แล้วค้นเลย
-        print(f"   🍜 ผู้ใช้ตอบจังหวัด {bare_prov!r} ต่อจากคำถามร้านที่ค้างไว้")
-        _pending_place.pop(user_id, None)  # เคลียร์สถานะค้าง
-        return await _search_places(f"{pending} {bare_prov}", bare_prov)
 
-    if is_place_query(user_message):
-        province = find_province_in_text(user_message) or find_saved_location(mem)
-        if not province:
-            # ไม่รู้ว่าผู้ใช้อยู่ไหน → จำคำถามนี้ไว้ แล้วสั่งให้รอสเต้ถามกลับ (กันเดามั่ว)
-            print("   🍜 คำถามหาร้านแต่ไม่รู้จังหวัด → จำไว้ + ให้ถามกลับ")
-            if user_id is not None:
-                _pending_place[user_id] = user_message  # จำคำถามร้านไว้รอจังหวัด
-            return ("[ระบบ: ผู้ใช้อยากให้แนะนำร้าน/สถานที่ แต่ยังไม่รู้ว่าจะหาแถวไหน "
-                    "ให้รอสเต้ถามกลับสั้นๆ ด้วยน้ำเสียงตัวเองว่าอยากหาแถวจังหวัด/อำเภอไหน "
-                    "ห้ามแนะนำชื่อร้านใดๆ ทั้งสิ้นในตอนนี้ เพราะยังไม่ได้ค้นข้อมูลจริง ห้ามเดาชื่อร้านเด็ดขาด]")
-        _pending_place.pop(user_id, None)  # มีจังหวัดแล้ว เคลียร์สถานะค้าง
-        return await _search_places(user_message, province)
+async def _tool_search_places(args: dict, mem: dict) -> str:
+    query = (args.get("query") or "").strip()
+    province = (args.get("province") or "").strip() or find_saved_location(mem)
+    if not province:
+        print("   🍜 คำถามหาร้านแต่ไม่รู้จังหวัด → บอกโมเดลให้ถามกลับ")
+        return ("ยังไม่รู้ว่าผู้ใช้อยู่จังหวัด/อำเภอไหน ให้ถามกลับสั้นๆ ด้วยน้ำเสียงตัวเองว่าอยากหาแถวไหน "
+                "ห้ามแนะนำชื่อร้านใดๆ ทั้งสิ้นตอนนี้ เพราะยังไม่ได้ค้นข้อมูลจริง ห้ามเดาชื่อร้านเด็ดขาด")
+    return await _search_places(query, province)
 
-    # 🔎 คำถามข้อเท็จจริงทั่วไป → ค้นเว็บ
-    if needs_search(user_message):
-        query = await make_search_query(user_message)
-        print(f"   🔎 ค้นเว็บ: {query!r}")
-        results = await asyncio.to_thread(search_web, query, 5, "th-th")
-        failed = (not results) or results.startswith(("ไม่พบผลการค้นหา", "ค้นเว็บไม่"))
-        if failed:
-            return ("[ระบบ: ค้นเว็บแล้วไม่พบข้อมูลที่ชัดเจน ให้บอกตรงๆ ว่าหาข้อมูลที่แน่ใจไม่ได้ "
-                    "ห้ามเดาชื่อ ปี ตัวเลข หรือผู้เขียนเอง]")
-        return ("[ระบบ: ผลการค้นเว็บล่าสุด ให้ตอบโดยอ้างอิงเฉพาะข้อมูลนี้ ห้ามแต่งเพิ่ม "
-                "ถ้าไม่พอให้บอกว่าไม่แน่ใจ เติมความเห็น/ความรู้สึกสั้นๆ ของตัวเองท้ายคำตอบได้]\n" + results)
 
+async def _tool_search_web(args: dict, mem: dict) -> str:
+    query = (args.get("query") or "").strip()
+    print(f"   🔎 ค้นเว็บ: {query!r}")
+    results = await asyncio.to_thread(search_web, query, 5, "th-th")
+    failed = (not results) or results.startswith(("ไม่พบผลการค้นหา", "ค้นเว็บไม่"))
+    if failed:
+        return ("[ระบบ: ค้นเว็บแล้วไม่พบข้อมูลที่ชัดเจน ให้บอกตรงๆ ว่าหาข้อมูลที่แน่ใจไม่ได้ "
+                "ห้ามเดาชื่อ ปี ตัวเลข หรือผู้เขียนเอง]")
+    return ("[ระบบ: ผลการค้นเว็บล่าสุด ให้ตอบโดยอ้างอิงเฉพาะข้อมูลนี้ ห้ามแต่งเพิ่ม "
+            "ถ้าไม่พอให้บอกว่าไม่แน่ใจ เติมความเห็น/ความรู้สึกสั้นๆ ของตัวเองท้ายคำตอบได้]\n" + results)
+
+
+# ต่อ tool ใหม่ (IoT, reminder, ...) แค่เพิ่ม function ที่นี่ + ประกาศใน TOOLS + เพิ่มเข้า dict นี้
+TOOL_HANDLERS = {
+    "get_current_time": _tool_get_current_time,
+    "get_weather": _tool_get_weather,
+    "get_power_outage": _tool_get_power_outage,
+    "get_oil_price": _tool_get_oil_price,
+    "search_places": _tool_search_places,
+    "search_web": _tool_search_web,
+}
+
+
+def _validate_tool_args(fn: str, args: dict) -> str | None:
+    """เช็คว่า args มี required field ครบตาม TOOLS ประกาศไว้ (ต้องเป็น string ไม่ว่างเปล่า)
+    คืน error message ถ้าเรียกเครื่องมือไม่รู้จัก/ขาด required field, คืน None ถ้าโอเค"""
+    schema = next((t["function"] for t in TOOLS if t["function"]["name"] == fn), None)
+    if schema is None:
+        return f"ไม่รู้จักเครื่องมือ {fn}"
+    required = schema.get("parameters", {}).get("required", [])
+    for field in required:
+        val = args.get(field)
+        if not isinstance(val, str) or not val.strip():
+            return f"เรียกเครื่องมือ {fn} ไม่ถูกต้อง — ต้องระบุ '{field}' เป็นข้อความที่ไม่ว่างเปล่า"
     return None
+
+
+def _strip_ungrounded_optional_args(fn: str, args: dict, user_message: str,
+                                     history: list, mem: dict) -> dict:
+    """ตัด optional parameter ที่ "ไม่มีที่มาจริง" ในบทสนทนาทิ้ง (เสมือนโมเดลไม่ได้ใส่มาแต่แรก)
+
+    ปัญหาที่พบจริง (tools/simulate_toolcalling.py): qwen3:8b บางครั้งเดา parameter ที่ optional
+    เอง เช่นใส่ province="กรุงเทพมหานคร" ทั้งที่ผู้ใช้ไม่เคยพูดถึงเลย — ซึ่ง "กรุงเทพมหานคร" เป็นชื่อ
+    จังหวัดที่ valid จริง เลยแยกไม่ออกจากกรณีผู้ใช้บอกจริงด้วยการเช็คแค่ค่า ต้องเช็คว่า "มีที่มา" ด้วย
+
+    required parameter (เช่น query) ไม่ต้องเช็ค เพราะต้องมาจากเจตนาผู้ใช้อยู่แล้วไม่มี fallback ให้ตัดทิ้ง
+    ค่าที่ผ่าน: ปรากฏใน user_message ปัจจุบัน, เคยพูดถึงใน history (กันพังเคสที่บอกเมืองไว้เทิร์นก่อนๆ),
+    หรือตรงกับ fact ที่ผู้ใช้ตั้งไว้เอง (แยก "default ที่ผู้ใช้ตั้งไว้" ออกจาก "โมเดลเดาเอง" ตามที่ต้องระวัง)
+    ค่าที่ไม่ผ่าน → ตัดทิ้ง แล้วปล่อยให้ fallback เดิมของแต่ละ handler ทำงาน (เช่น ใช้จังหวัดบ้าน/ถามกลับ)"""
+    schema = next((t["function"] for t in TOOLS if t["function"]["name"] == fn), None)
+    if schema is None:
+        return args
+    required = set(schema.get("parameters", {}).get("required", []))
+
+    haystacks = [user_message]
+    haystacks += [m.get("content", "") for m in history if m.get("role") == "user"]
+    haystacks += list(mem.get("facts", []))
+
+    cleaned = dict(args)
+    for key, val in args.items():
+        if key in required or not isinstance(val, str) or not val.strip():
+            continue
+        if not any(val in h for h in haystacks if h):
+            print(f"   ⚠️ tool {fn}: parameter '{key}'={val!r} ไม่มีที่มาในบทสนทนา — ตัดทิ้ง (กันโมเดลเดา)")
+            cleaned.pop(key, None)
+    return cleaned
 
 
 # ============================================================
@@ -961,9 +1011,7 @@ async def _chat_once(messages, temperature: float = 0.8):
             "repeat_penalty": 1.12,  # ลดการพูดซ้ำคำ/ประโยคแพทเทิร์นเดิม (กันฟังดูหุ่นยนต์)
         },
     }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(OLLAMA_URL, json=payload, timeout=300) as resp:
-            data = await resp.json()
+    data = await _get_json_post(payload, timeout=300)
     return data["message"]
 
 
@@ -980,12 +1028,9 @@ async def make_search_query(user_message: str) -> str:
     payload = {"model": MODEL, "messages": prompt, "stream": False,
                "think": False, "options": {"temperature": 0.2}}
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(OLLAMA_URL, json=payload, timeout=120) as resp:
-                data = await resp.json()
+        data = await _get_json_post(payload, timeout=120)
         q = data["message"].get("content", "") or ""
-        if "</think>" in q:
-            q = q.rsplit("</think>", 1)[-1]
+        q = _strip_think(q)
         q = q.strip().strip('"').strip()
         q = q.splitlines()[0].strip() if q else ""
         return q or user_message
@@ -1007,19 +1052,17 @@ async def auto_remember(user_id: int, user_name: str, user_message: str):
             "stream": False, "think": False,
             "options": {"temperature": 0.2},
         }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(OLLAMA_URL, json=payload, timeout=120) as resp:
-                data = await resp.json()
+        data = await _get_json_post(payload, timeout=120)
         output = data.get("message", {}).get("content", "")
-        facts = memory.parse_extracted_facts(output)
+        facts = memory.parse_extracted_facts(output)  # [{"category":..., "text":...}, ...]
         if not facts:
             return
-        # บันทึกเข้า memory ผ่าน add_fact (มีกันซ้ำ/เพดานอยู่แล้ว)
+        # บันทึกเข้า memory ผ่าน add_fact (มีกันซ้ำ/เพดาน/supersede อัตโนมัติอยู่แล้ว)
         async with get_user_lock(user_id):
             mem = load_memory(user_id)
             if user_name:
                 mem["name"] = user_name
-            added = [f for f in facts if memory.add_fact(mem, f)]
+            added = [f["text"] for f in facts if memory.add_fact(mem, f["text"], f.get("category"))]
             if added:
                 save_memory(user_id, mem)
                 print(f"   🪄 จำเองเพิ่ม {len(added)} เรื่อง: {added}")
@@ -1102,12 +1145,9 @@ async def detect_topic_change(new_message: str, history_pairs: list) -> bool:
         "options": {"temperature": 0.1, "num_predict": 10},
     }
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(OLLAMA_URL, json=payload, timeout=30) as resp:
-                data = await resp.json()
+        data = await _get_json_post(payload, timeout=30)
         answer = data.get("message", {}).get("content", "") or ""
-        if "</think>" in answer:
-            answer = answer.rsplit("</think>", 1)[-1]
+        answer = _strip_think(answer)
         return "YES" in answer.upper()
     except Exception:
         return False
@@ -1131,12 +1171,9 @@ async def summarize_and_verify(user_id: int, pairs: list):
             "stream": False, "think": False,
             "options": {"temperature": 0.1},
         }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(OLLAMA_URL, json=payload, timeout=120) as resp:
-                data = await resp.json()
+        data = await _get_json_post(payload, timeout=120)
         raw = data.get("message", {}).get("content", "") or ""
-        if "</think>" in raw:
-            raw = raw.rsplit("</think>", 1)[-1]
+        raw = _strip_think(raw)
         summary_text = raw.strip().splitlines()[0].strip()
         if not summary_text:
             return
@@ -1149,12 +1186,9 @@ async def summarize_and_verify(user_id: int, pairs: list):
             "stream": False, "think": False,
             "options": {"temperature": 0.1},
         }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(OLLAMA_URL, json=verify_payload, timeout=120) as resp:
-                vdata = await resp.json()
+        vdata = await _get_json_post(verify_payload, timeout=120)
         vraw = vdata.get("message", {}).get("content", "") or ""
-        if "</think>" in vraw:
-            vraw = vraw.rsplit("</think>", 1)[-1]
+        vraw = _strip_think(vraw)
         first_line = vraw.strip().splitlines()[0].strip() if vraw.strip() else ""
         up = first_line.upper()
 
@@ -1180,6 +1214,8 @@ async def summarize_and_verify(user_id: int, pairs: list):
             mem["summaries"] = summaries[-memory.MAX_SUMMARIES:]
             save_memory(user_id, mem)
             print(f"   📝 สรุปบท: {entry['text']}")
+        # 🔎 เก็บลง vector memory ด้วย — ให้ค้นแบบความหมาย (semantic) ได้ทีหลัง
+        await vectormemory.add_conversation_memory(user_id, entry["text"])
     except Exception as e:
         import traceback
         print(f"   ⚠️ สรุปบทพลาด (ไม่กระทบการตอบ): {type(e).__name__}: {e}")
@@ -1228,6 +1264,16 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
             + "\n".join(f"- {s}" for s in recalled)
         )
 
+    # 🔎 semantic recall — เสริม recall_summaries (keyword) ด้วยการค้นความหมายผ่าน vector memory
+    #    ค้นทุกครั้ง (ไม่ต้องมีคำใบ้ PAST_HINTS) แต่กรองด้วยระยะห่างความหมาย กันดึงเรื่องไม่เกี่ยวข้อง
+    vec_recalled = await vectormemory.query_conversation_memory(user_id, user_message)
+    vec_recalled = [s for s in vec_recalled if s not in recalled]  # กันซ้ำกับที่ดึงมาแล้ว
+    if vec_recalled:
+        system_text += (
+            "\n\nความทรงจำเก่าที่อาจเกี่ยวข้อง (ค้นแบบความหมาย ใช้เป็น context เฉยๆ):\n"
+            + "\n".join(f"- {s}" for s in vec_recalled)
+        )
+
     history = mem.get("history", [])
     original_pairs = len(history) // 2  # จำนวนคู่ก่อนเช็ค condition A
 
@@ -1245,16 +1291,22 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
         or (not cond_a_fired and len(history) + 2 >= MAX_HISTORY_PAIRS * 2)
     )
 
-    # 🧭 ดึง "ข้อมูลจริง" ตามชนิดคำถาม (เวลา/อากาศ/น้ำมัน/ค้นเว็บ) แล้วแปะติดคำถาม
-    # (แปะติดคำถามโดยตรง ชัวร์กว่าการแทรก system message แยก เพราะโมเดลเห็นแน่นอน)
+    # 📄 RAG PDF — ถ้า user เคยส่ง PDF มาก่อน (ตอนนี้หรือเซสชันก่อนๆ ก็ได้ ข้อมูล persist)
+    #    ค้นเนื้อหาที่เกี่ยวข้องกับคำถามนี้มาแปะให้โมเดลตอบ (กรองด้วยระยะห่างความหมายแล้ว)
     augmented_message = user_message
-    realtime = await get_realtime_context(user_message, mem, user_id)
-    if realtime:
-        augmented_message = f"{user_message}\n\n{realtime}"
+    pdf_chunks = await vectormemory.query_pdf(user_id, user_message)
+    if pdf_chunks:
+        pdf_context = "\n---\n".join(pdf_chunks)
+        augmented_message = (
+            f"{user_message}\n\n"
+            f"[เนื้อหาจากไฟล์ PDF ที่ผู้ใช้เคยส่งมา ใช้ตอบถ้าเกี่ยวข้องกับคำถาม]\n{pdf_context}"
+        )
 
-    # มีข้อมูลจริงแปะมา → ใช้ temperature ต่ำ (แม่นยำ เดาน้อย)
-    # คุยเล่นปกติ → ใช้ค่าสูงกว่า (มีชีวิตชีวา คาแร็กเตอร์ออก)
-    reply_temp = 0.5 if realtime else 0.8
+    # มีเนื้อหา PDF แปะมา → ใช้ temperature ต่ำตั้งแต่ต้น (แม่นยำ เดาน้อย)
+    # ไม่มี → เริ่มที่ค่าปกติ (มีชีวิตชีวา) แล้วลดลงอัตโนมัติถ้าโมเดลเรียกเครื่องมือระหว่างทาง
+    # (พอมีข้อมูลจริงจาก tool แล้ว ต้องตอบแม่นๆ ไม่ใช่เดา — เดิมรู้ล่วงหน้าได้เพราะ dispatch เป็น keyword
+    # ตอนนี้รู้ว่าจะใช้ tool ไหมได้ก็ต่อเมื่อโมเดลตัดสินใจแล้วเท่านั้น จึงต้องปรับ temp กลางลูปแทน)
+    reply_temp = 0.5 if pdf_chunks else 0.8
 
     messages = (
         [{"role": "system", "content": system_text}]
@@ -1264,7 +1316,7 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
         + [{"role": "user", "content": augmented_message}]
     )
 
-    # 🔁 ลูปเรียกเครื่องมือ: ถ้าโมเดลขอค้นเว็บ ให้ค้นแล้วส่งผลกลับ วนได้สูงสุด 3 รอบ
+    # 🔁 ลูปเรียกเครื่องมือ: โมเดลตัดสินใจเองว่าต้องใช้เครื่องมือไหน (ถ้าต้อง) วนได้สูงสุด 3 รอบ
     msg = {}
     for _ in range(3):
         msg = await _chat_once(messages, temperature=reply_temp)
@@ -1272,30 +1324,39 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
         if not tool_calls:
             break  # ไม่ขอเครื่องมือแล้ว = ได้คำตอบสุดท้าย
 
+        reply_temp = 0.5  # ได้ข้อมูลจริงจาก tool แล้ว ตอบต่อจากนี้ต้องแม่น ไม่ใช่เดา
+
         # เก็บข้อความที่โมเดลขอเรียกเครื่องมือไว้ในบทสนทนา
         messages.append({
             "role": "assistant",
             "content": msg.get("content", ""),
             "tool_calls": tool_calls,
         })
-        # ทำตามที่ขอทีละเครื่องมือ แล้วแนบผลกลับ
+        # ทำตามที่ขอทีละเครื่องมือ แล้วแนบผลกลับ — validate ก่อนเรียกจริงเสมอ กันโมเดลเรียกมั่ว/ฟอร์แมตเพี้ยน
         for call in tool_calls:
-            fn = call["function"]["name"]
-            args = call["function"].get("arguments", {}) or {}
-            if fn == "search_web":
-                query = args.get("query", "")
-                print(f"   🔎 รอสเต้ค้นเว็บ: {query!r}")
-                result = await asyncio.to_thread(search_web, query)
+            fn = call["function"].get("name", "")
+            args = call["function"].get("arguments") or {}
+            if not isinstance(args, dict):
+                args = {}
+            err = _validate_tool_args(fn, args)
+            if err:
+                print(f"   ⚠️ tool call ไม่ถูกต้อง: {fn} args={args} → {err}")
+                result = err
             else:
-                result = f"ไม่รู้จักเครื่องมือ {fn}"
+                # กันโมเดลเดา optional parameter เอง (เช่น province="กรุงเทพมหานคร" ทั้งที่ไม่มีใครพูดถึง)
+                # ตัดค่าที่ไม่มีที่มาจริงในบทสนทนาทิ้ง ให้ fallback เดิมของ handler ทำงานแทน
+                args = _strip_ungrounded_optional_args(fn, args, user_message, history, mem)
+                try:
+                    result = await TOOL_HANDLERS[fn](args, mem)
+                except Exception as e:
+                    print(f"   ⚠️ tool {fn} error: {type(e).__name__}: {e}")
+                    result = f"เครื่องมือ {fn} ทำงานผิดพลาด ({type(e).__name__}) บอกผู้ใช้ตรงๆ ว่าตอนนี้ดึงข้อมูลนี้ไม่ได้"
             messages.append({"role": "tool", "tool_name": fn, "content": result})
 
     reply = msg.get("content", "") or ""
 
     # 🧹 ถ้าโมเดลเผลอแสดงกระบวนการคิด คำตอบจริงจะอยู่หลัง </think>
-    if "</think>" in reply:
-        reply = reply.rsplit("</think>", 1)[-1]
-    reply = reply.strip()
+    reply = _strip_think(reply).strip()
     if not reply:
         reply = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
 
@@ -1666,6 +1727,20 @@ async def on_message(message):
         (a for a in message.attachments if a.filename.lower().endswith(".pdf")), None)
     wants_print = any(k in user_message.lower() for k in printing.PRINT_TRIGGERS)
 
+    # ===== 📄 RAG PDF — แนบ PDF มาแต่ไม่ได้สั่งพิมพ์ = ให้รอสเต้ "อ่าน" เก็บไว้ถามได้ =====
+    # เก็บแบบ persist ต่อ user (vectormemory.py) — ถามถึงเนื้อหาไฟล์นี้ทีหลัง (คนละเซสชัน) ได้เลย
+    if pdf_attach and not wants_print:
+        try:
+            pdf_bytes = await pdf_attach.read()
+            n_chunks = await vectormemory.ingest_pdf(user_id, pdf_attach.filename, pdf_bytes)
+            if n_chunks:
+                print(f"   📄 อ่าน PDF {pdf_attach.filename!r} เก็บไว้แล้ว ({n_chunks} chunks)")
+            else:
+                print(f"   ⚠️ อ่าน PDF {pdf_attach.filename!r} ไม่ได้ข้อความเลย (อาจเป็นสแกน/รูปภาพ)")
+        except Exception as e:
+            print(f"   ⚠️ RAG PDF พลาด: {type(e).__name__}: {e}")
+        # ไม่ return — ปล่อยให้ไหลต่อไปตอบแชตตามปกติ (ask_ollama จะค้นเนื้อหานี้ประกอบคำตอบเอง)
+
     # ถ้ากำลังพิมพ์งานอื่นอยู่ — ล็อก ตอบว่ายุ่งก่อน (ทุกข้อความ)
     if printing.print_lock.locked():
         await message.reply(
@@ -1679,8 +1754,12 @@ async def on_message(message):
         await printing.run_print_job(message, job)
         return
 
-    # คำสั่งพิมพ์ใหม่: ต้องมีไฟล์ PDF แนบ + มีคำว่าพิมพ์
+    # คำสั่งพิมพ์ใหม่: ต้องมีไฟล์ PDF แนบ + มีคำว่าพิมพ์ + เป็นคนที่ได้รับอนุญาต
     if pdf_attach and wants_print:
+        if user_id not in PRINT_ALLOWED_USER_IDS:
+            print(f"   🚫 ปฏิเสธคำสั่งพิมพ์จากผู้ใช้ที่ไม่ได้รับอนุญาต: {user_name} ({user_id})")
+            await message.reply("ขอโทษค่ะ คำสั่งพิมพ์นี้ใช้ได้เฉพาะเจ้าของรอสเต้เท่านั้นนะคะ")
+            return
         print(f"   🖨️ รับคำสั่งพิมพ์: {pdf_attach.filename}")
         await printing.start_print_request(message, user_id, user_name, pdf_attach, user_message)
         return

@@ -49,12 +49,13 @@
 
 | ไฟล์ | ประเภท | จำนวน tests |
 |------|--------|-------------|
-| `test_bot.py` | pytest | 34 — lock, summarize, memory overflow, routing |
-| `test_memory.py` | pytest | 35 — facts, recall, parse, summaries |
-| `test_realtime.py` | pytest | 61 — oil, weather, PEA, search, places, routing |
+| `test_bot.py` | pytest | 61 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding |
+| `test_memory.py` | pytest | 56 — facts, recall, parse, summaries, supersede/consolidation |
+| `test_realtime.py` | pytest | 51 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
+| `test_vectormemory.py` | pytest | 13 — rerank fail-safe (output หลุดฟอร์แมต, temperature, edge case) |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
-รัน unit tests ทั้งหมด: `pytest test_bot.py test_memory.py test_realtime.py`
+รัน unit tests ทั้งหมด: `pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py`
 
 ### tools/ — สคริปต์เสริม (ไม่ใช่ regression test)
 
@@ -63,6 +64,9 @@
 | `simulate_chat_long.py` | จำลองคุย 18 รอบกับ Ollama จริง — ดู summaries สะสม |
 | `simulate_recall.py` | จำลองดึง fact + recall หลัง auto-remember |
 | `simulate_chat.py` | จำลองคุย 9 รอบ — ดู trigger สรุปครั้งแรก |
+| `simulate_vectormemory.py` | เทส RAG PDF + semantic recall แบบ end-to-end กับ Ollama/ChromaDB จริง |
+| `simulate_toolcalling.py` | เทส LLM tool calling จริง — เลือกเครื่องมือถูกไหม + multi-turn place-search |
+| `simulate_fact_consolidation.py` | เทส fact supersede จริงกับ Ollama — ย้ายที่อยู่ต้อง supersede ไม่ใช่เพิ่มซ้อน |
 | `test_oil.py` | ดึงราคาน้ำมัน Kapook แบบ print-and-check |
 | `test_tmd.py` | ดึงพยากรณ์อากาศ TMD รายวัน |
 | `test_tmd_hourly.py` | ดึงพยากรณ์อากาศ TMD รายชั่วโมง |
@@ -177,7 +181,7 @@ python tools/simulate_recall.py      # ดู fact + recall หลัง auto-re
 | เฟส 1 | RVC รันในเครื่องได้ (GPU, warm ~1–2s/ประโยค) | ✅ เสร็จ |
 | เฟส 2 | pipeline เสียงทำงาน standalone (`voice.py`) | ✅ เสร็จ |
 | เฟส 3 (3a–3c) | integrate เข้า bot.py — join, ทักทาย, พูดตอบ, leave timer | ✅ เสร็จ |
-| เฟส 3 (3d) | move logic — ย้ายตามคนถ้าถูกเรียกจากห้องอื่น | ⬜ ถัดไป |
+| เฟส 3 (3d) | move logic — ย้ายตามคนถ้าถูกเรียกจากห้องอื่น | ✅ เสร็จ (ทำงานอยู่แล้วผ่าน `_speak_in_voice`/`_play_karaoke`) |
 | เฟส 4 | karaoke — ร้องเพลง cover ด้วยเสียงตัวเองในห้อง voice | ✅ เสร็จ |
 
 ### pipeline

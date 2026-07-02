@@ -63,64 +63,132 @@ def save_memory(user_id, mem):
         print(f"   ↳ บันทึกความจำไม่สำเร็จ: {e}")
 
 
-def add_fact(mem, fact):
+# ============================================================
+#  หมวดหมู่ fact — ปิด (closed set) ให้ write path เทียบ "key เดียวกัน" แบบ rule-based ได้
+#  single-value: มีค่า "จริง" ได้ค่าเดียวต่อช่วงเวลา — ค่าใหม่ supersede ค่าเก่า (ไม่ลบ)
+#  multi-value: สะสมได้หลายอัน ไม่มี supersede (เช่น ความชอบมีได้หลายเรื่องพร้อมกัน)
+# ============================================================
+SINGLE_VALUE_CATEGORIES = {"ชื่อ", "ที่อยู่", "งาน"}
+MULTI_VALUE_CATEGORIES = {"ความชอบ", "ของที่มี", "เรื่องที่สนใจ", "หัวข้อสนทนา"}
+FACT_CATEGORIES = SINGLE_VALUE_CATEGORIES | MULTI_VALUE_CATEGORIES
+
+
+def _now_th_iso() -> str:
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone(timedelta(hours=7))).isoformat(timespec="seconds")
+
+
+def _fact_text(f) -> str:
+    """คืนข้อความของ fact ไม่ว่าจะเก็บแบบเก่า (str ล้วน ก่อนมี category) หรือแบบใหม่ (dict)"""
+    return f["text"] if isinstance(f, dict) else f
+
+
+def _fact_category(f):
+    """คืนหมวดของ fact — None ถ้าเป็นแบบเก่า/ไม่มีหมวด (แบบนี้ยกเว้นจาก supersede เสมอ)"""
+    return f.get("category") if isinstance(f, dict) else None
+
+
+def _fact_superseded(f) -> bool:
+    """fact นี้ถูกแทนที่ไปแล้วหรือยัง — ยังอยู่ในเมมโมรีเสมอ (ไม่ลบ) แค่ไม่ใช่ค่าปัจจุบันแล้ว"""
+    return isinstance(f, dict) and bool(f.get("superseded"))
+
+
+def add_fact(mem, text, category=None):
     """เพิ่ม fact เข้าความจำ พร้อมกันซ้ำ + คุมเพดาน
+
+    ถ้า category อยู่ในกลุ่ม single-value (เช่น "ที่อยู่") และมี fact เดิมหมวดเดียวกันที่ยัง
+    valid (ไม่ใช่ superseded) → mark อันเก่าเป็น superseded ก่อน (ไม่ลบทิ้ง) แล้วค่อยเพิ่มอันใหม่
+    เทียบแค่ category ตรงกันไหม (rule-based ล้วน ไม่เรียก LLM)
+
+    category ที่ไม่อยู่ใน FACT_CATEGORIES (หรือไม่ระบุ) → เก็บเป็น category=None
+    fact แบบนี้จะไม่ถูก supersede อัตโนมัติ (ไม่มี key ให้เทียบ) แต่ยัง evict ได้ตาม MAX_FACTS ปกติ
+
     คืน True ถ้าเพิ่มจริง, False ถ้าซ้ำ (ไม่ได้เพิ่ม)"""
-    fact = fact.strip()
-    if not fact:
+    text = text.strip()
+    if not text:
         return False
+    if category not in FACT_CATEGORIES:
+        category = None
+
     facts = mem.setdefault("facts", [])
-    # กันจำซ้ำ — ถ้ามี fact ที่เหมือนกันเป๊ะอยู่แล้ว ไม่เพิ่ม
-    if fact in facts:
-        return False
-    facts.append(fact)
-    # คุมเพดาน — เกิน MAX_FACTS ตัดอันเก่าสุด (ต้นลิสต์) ทิ้ง
+
+    # กันจำซ้ำ — ถ้ามี fact ข้อความเดียวกันเป๊ะที่ยัง valid อยู่แล้ว ไม่เพิ่มซ้ำ
+    # (fact ที่เคยถูก supersede ไปแล้วไม่นับ — เผื่อผู้ใช้ย้ายกลับที่เดิม ต้องเพิ่มใหม่เป็นค่าปัจจุบันได้)
+    for f in facts:
+        if _fact_text(f) == text and not _fact_superseded(f):
+            return False
+
+    now_iso = _now_th_iso()
+
+    if category in SINGLE_VALUE_CATEGORIES:
+        for f in facts:
+            if isinstance(f, dict) and f.get("category") == category and not f.get("superseded"):
+                f["superseded"] = True
+                f["superseded_at"] = now_iso
+                f["superseded_by"] = text
+
+    facts.append({
+        "category": category,
+        "text": text,
+        "created": now_iso,
+        "superseded": False,
+        "superseded_at": None,
+        "superseded_by": None,
+    })
+
+    # คุมเพดาน — เกิน MAX_FACTS ตัดอันเก่าสุด (ต้นลิสต์) ทิ้งจริง (self-heal ของ fact เก่า/ไม่มีหมวดด้วย)
     if len(facts) > MAX_FACTS:
         del facts[: len(facts) - MAX_FACTS]
     return True
 
 
 def remove_fact(mem, keyword):
-    """ลบ fact ที่มีคำว่า keyword อยู่ (ลบรายตัว ไม่ต้องล้างหมด)
-    คืนรายการ fact ที่ถูกลบ (อาจมากกว่า 1 ถ้า keyword ตรงหลายอัน)"""
+    """ลบ fact ที่มีคำว่า keyword อยู่ (ลบรายตัว ไม่ต้องล้างหมด) — เป็นคำสั่งผู้ใช้ตรงๆ จึงลบจริง
+    (ต่างจาก supersede อัตโนมัติใน add_fact ที่ไม่ลบ — อันนี้ผู้ใช้ตั้งใจสั่งให้ลืมเอง)
+    คืนรายการข้อความ fact ที่ถูกลบ (อาจมากกว่า 1 ถ้า keyword ตรงหลายอัน)"""
     keyword = keyword.strip()
     if not keyword:
         return []
     facts = mem.get("facts", [])
-    removed = [f for f in facts if keyword in f]
-    mem["facts"] = [f for f in facts if keyword not in f]
-    return removed
+    removed = [f for f in facts if keyword in _fact_text(f)]
+    mem["facts"] = [f for f in facts if keyword not in _fact_text(f)]
+    return [_fact_text(f) for f in removed]
 
 
 def recall_facts(mem, user_message):
     """ดึง fact ที่ "เกี่ยวข้อง" กับข้อความปัจจุบันมาใช้ (selective recall)
-    - ถ้า facts น้อย (<= MAX_FACTS_IN_CONTEXT) คืนทั้งหมด
+    - ไม่รวม fact ที่ถูก superseded แล้ว (กันโมเดลเห็นข้อมูลเก่า+ใหม่พร้อมกันแล้วสับสนว่าอันไหนจริง
+      — เช่น "อยู่ชุมพร" กับ "อยู่กรุงเทพ" พร้อมกัน) ของเก่ายังอยู่ในไฟล์เสมอ แค่ไม่ถูกเสนอเป็น
+      "ค่าปัจจุบัน" ในบทสนทนาปกติ — ยังใช้เป็นวัตถุดิบให้ฟีเจอร์อื่น query ย้อนหลังได้
+    - ถ้า facts (ที่ยัง valid) น้อย (<= MAX_FACTS_IN_CONTEXT) คืนทั้งหมด
     - ถ้าเยอะ ให้คะแนนตามจำนวนคำที่ตรงกับข้อความ แล้วเลือกอันคะแนนสูงสุด
       (อันที่ไม่ตรงเลยก็ยังเก็บบางส่วนไว้ เผื่อเป็นข้อมูลพื้นฐานสำคัญ)"""
-    facts = mem.get("facts", [])
+    facts = [f for f in mem.get("facts", []) if not _fact_superseded(f)]
     if len(facts) <= MAX_FACTS_IN_CONTEXT:
-        return list(facts)
+        return [_fact_text(f) for f in facts]
 
     # แตกข้อความเป็นคำ (กรองคำสั้นเกินทิ้ง)
     words = [w for w in user_message.lower().split() if len(w) >= 2]
 
     scored = []
-    for fact in facts:
-        fl = fact.lower()
+    for f in facts:
+        text = _fact_text(f)
+        fl = text.lower()
         score = sum(1 for w in words if w in fl)
-        scored.append((score, fact))
+        scored.append((score, text))
 
     # เรียงตามคะแนน (มากก่อน) — อันที่เกี่ยวข้องขึ้นก่อน
     scored.sort(key=lambda x: x[0], reverse=True)
 
     # เลือกอันที่มีคะแนน (เกี่ยวข้องจริง) ก่อน
-    relevant = [f for s, f in scored if s > 0][:MAX_FACTS_IN_CONTEXT]
+    relevant = [t for s, t in scored if s > 0][:MAX_FACTS_IN_CONTEXT]
 
     # ถ้ายังไม่เต็มโควต้า เติมด้วย fact ล่าสุด (เผื่อข้อมูลพื้นฐานที่ไม่ได้ตรงคำ)
     if len(relevant) < MAX_FACTS_IN_CONTEXT:
-        for fact in reversed(facts):
-            if fact not in relevant:
-                relevant.append(fact)
+        all_texts = [_fact_text(f) for f in facts]
+        for text in reversed(all_texts):
+            if text not in relevant:
+                relevant.append(text)
             if len(relevant) >= MAX_FACTS_IN_CONTEXT:
                 break
     return relevant
@@ -150,27 +218,35 @@ def should_try_extract(text: str) -> bool:
 
 
 def build_extract_prompt(user_message: str) -> str:
-    """สร้าง prompt สั่งโมเดลสกัดข้อเท็จจริงถาวรเกี่ยวกับผู้ใช้ออกมาเป็น JSON"""
+    """สร้าง prompt สั่งโมเดลสกัดข้อเท็จจริงถาวรเกี่ยวกับผู้ใช้ พร้อมระบุหมวดจาก set ปิด
+    (โมเดลจัดหมวดอยู่แล้วในหัวตอนตัดสินใจว่าเข้าเกณฑ์สกัดไหม — ให้บอกหมวดออกมาด้วยเลย
+    ไม่ต้องเรียก LLM เพิ่มรอบ — หมวดนี้ทำให้ write path เทียบ "key เดียวกัน" แบบ rule-based ได้)"""
+    categories_list = ", ".join(sorted(FACT_CATEGORIES))
     return (
         "ดึง \"ข้อเท็จจริงถาวรเกี่ยวกับตัวผู้ใช้\" จากข้อความด้านล่าง "
-        "เฉพาะหมวดเหล่านี้เท่านั้น: ชื่อ, ที่อยู่/จังหวัด, งานหรือการเรียน, "
-        "ความชอบ, ของที่ครอบครอง, เรื่องที่สนใจ, "
-        "หัวข้อ/ประเด็นที่ผู้ใช้ชอบคุยหรือกลับมาถามบ่อย\n"
+        f"เฉพาะหมวดเหล่านี้เท่านั้น: {categories_list}\n"
         "กฎ:\n"
         "- เอาเฉพาะข้อมูลที่เป็นความจริงถาวรเกี่ยวกับ \"ตัวผู้ใช้เอง\" เท่านั้น\n"
         "- ห้ามเอา: คำถาม, ความรู้สึกชั่วคราว, เรื่องทั่วไป, เรื่องคนอื่น, สิ่งที่ไม่แน่ใจ\n"
-        "- หมวด \"หัวข้อที่ชอบคุย\" ให้เขียนเป็น pattern ถาวร เช่น \"ชอบคุยเรื่องปรัชญา\" "
+        "- หมวด \"หัวข้อสนทนา\" ให้เขียนเป็น pattern ถาวร เช่น \"ชอบคุยเรื่องปรัชญา\" "
         "ไม่ใช่เหตุการณ์เฉพาะ เช่น \"ถามเรื่องหนังสือเมื่อกี้\"\n"
-        "- เขียนแต่ละข้อสั้นๆ กระชับ เป็นภาษาไทย (เช่น \"ชื่อจูเลีย\", \"อยู่ชุมพร\", \"ชอบคุยเรื่อง sci-fi\")\n"
+        "- เขียนแต่ละข้อสั้นๆ กระชับ เป็นภาษาไทย\n"
+        "- category ต้องเป็นคำในลิสต์ข้างบนเป๊ะๆ เท่านั้น ห้ามสร้างหมวดใหม่เอง\n"
         "- ถ้าไม่มีข้อมูลที่เข้าเกณฑ์เลย ให้ตอบ []\n"
-        "ตอบเป็น JSON array ของสตริงเท่านั้น ห้ามมีคำอธิบายอื่น เช่น [\"ชื่อจูเลีย\",\"อยู่ชุมพร\"]\n\n"
+        "ตอบเป็น JSON array ของ object ที่มี \"category\" กับ \"text\" เท่านั้น "
+        "ห้ามมีคำอธิบายอื่น เช่น:\n"
+        "[{\"category\": \"ชื่อ\", \"text\": \"ชื่อจูเลีย\"}, "
+        "{\"category\": \"ที่อยู่\", \"text\": \"อยู่ชุมพร\"}]\n\n"
         f"ข้อความ: {user_message}"
     )
 
 
 def parse_extracted_facts(model_output: str) -> list:
-    """แปลงผลที่โมเดลตอบ (ควรเป็น JSON array) เป็น list ของ fact
-    ทนทานต่อกรณีโมเดลใส่ข้อความเกินมา — ดึงเฉพาะส่วน [...] ออกมา parse"""
+    """แปลงผลที่โมเดลตอบ (ควรเป็น JSON array ของ {category, text}) เป็น list ของ dict
+    ทนทานต่อกรณีโมเดลใส่ข้อความเกินมา — ดึงเฉพาะส่วน [...] ออกมา parse
+    - category ที่หลุด FACT_CATEGORIES → category=None (ไม่มีหมวด แต่ยังเก็บ fact ไว้ ไม่ทิ้ง)
+    - รองรับกรณีโมเดลเผลอตอบเป็น list ของสตริงล้วน (รูปแบบเก่า) ด้วย เพื่อความทนทาน
+    คืน list ของ {"category": str|None, "text": str}"""
     import json as _json
     import re as _re
     if not model_output:
@@ -188,13 +264,23 @@ def parse_extracted_facts(model_output: str) -> list:
         return []
     if not isinstance(items, list):
         return []
-    # กรองให้เหลือเฉพาะสตริงสั้นๆ ที่สมเหตุสมผล (กันโมเดลคืนของแปลก)
+
     out = []
     for it in items:
-        if isinstance(it, str):
-            it = it.strip()
-            if 2 <= len(it) <= 60:        # ยาวเกิน 60 ตัว = น่าจะไม่ใช่ fact สั้นๆ
-                out.append(it)
+        if isinstance(it, dict):
+            text, category = it.get("text"), it.get("category")
+        elif isinstance(it, str):
+            text, category = it, None
+        else:
+            continue
+        if not isinstance(text, str):
+            continue
+        text = text.strip()
+        if not (2 <= len(text) <= 60):   # ยาวเกิน 60 ตัว = น่าจะไม่ใช่ fact สั้นๆ
+            continue
+        if category not in FACT_CATEGORIES:
+            category = None
+        out.append({"category": category, "text": text})
     return out
 
 
@@ -317,7 +403,8 @@ def handle_memory_command(user_id, user_name, text):
     )
     if asked_memory:
         mem = load_memory(user_id)
-        facts = mem.get("facts", [])
+        # ไม่แสดง fact ที่ถูก supersede แล้ว — ผู้ใช้ถามว่า "จำอะไรได้บ้าง" ควรได้ยินแต่ค่าปัจจุบัน
+        facts = [_fact_text(f) for f in mem.get("facts", []) if not _fact_superseded(f)]
         if not facts:
             return "ตอนนี้รอสเต้ยังไม่ได้จำเรื่องอะไรเป็นพิเศษเลยค่ะ ถ้าอยากให้จำอะไรบอกได้นะคะ"
         lines = "\n".join(f"  • {f}" for f in facts)

@@ -26,9 +26,14 @@ import sys
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-os.chdir(pathlib.Path(__file__).parent)
+# ── ตั้งค่า working dir ให้ชี้มาที่โฟลเดอร์ mybot เสมอ (root ของโปรเจกต์ ไม่ใช่ tools/) ──
+# เดิม chdir ไปที่ tools/ เอง (parent ของสคริปต์) ทำให้ `import bot` พังเพราะ bot.py
+# อยู่นอก sys.path — ต้องขึ้นไปอีกชั้น (parent.parent) ถึงจะเป็น root ที่มี bot.py จริง
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+os.chdir(PROJECT_ROOT)
+sys.path.insert(0, str(PROJECT_ROOT))
 
-import bot     # noqa: E402 — หลัง chdir เพื่อให้ config/memory paths ถูกต้อง
+import bot     # noqa: E402 — หลัง chdir/sys.path เพื่อให้ config/memory paths ถูกต้อง
 import memory  # noqa: E402
 
 # ── ค่าคงที่ ──────────────────────────────────────────────────────────────────

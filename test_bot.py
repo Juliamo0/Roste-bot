@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import bot
 import memory
+import vectormemory
 
 
 # ── aiohttp mock helpers ──────────────────────────────────────────────────────
@@ -382,3 +383,245 @@ class TestConditionBTrigger:
         # หลัง trigger B บันทึก [] → message ถัดไปเริ่มจาก 2 messages ซึ่งต่ำกว่า limit
         after_clear_then_one_pair = _make_history(2)
         assert not bot._check_condition_b(after_clear_then_one_pair)
+
+
+# ── _validate_tool_args — pure function ตรวจ required field ตามที่ TOOLS ประกาศไว้ ─────
+
+class TestValidateToolArgs:
+    def test_unknown_tool_returns_error(self):
+        assert bot._validate_tool_args("fly_to_moon", {}) is not None
+
+    def test_missing_required_field_returns_error(self):
+        assert bot._validate_tool_args("search_web", {}) is not None
+
+    def test_empty_string_required_field_returns_error(self):
+        assert bot._validate_tool_args("search_web", {"query": "   "}) is not None
+
+    def test_wrong_type_required_field_returns_error(self):
+        assert bot._validate_tool_args("search_web", {"query": 123}) is not None
+
+    def test_valid_required_field_returns_none(self):
+        assert bot._validate_tool_args("search_web", {"query": "ข่าววันนี้"}) is None
+
+    def test_no_required_fields_ok_even_with_empty_args(self):
+        assert bot._validate_tool_args("get_current_time", {}) is None
+        assert bot._validate_tool_args("get_power_outage", {}) is None
+
+
+# ── _strip_ungrounded_optional_args — กันโมเดลเดา optional param เอง (เช่น province) ──────
+
+class TestStripUngroundedOptionalArgs:
+    def test_ungrounded_value_stripped(self):
+        """โมเดลเดา province ที่ผู้ใช้ไม่เคยพูดถึงเลย ทั้งใน message/history/facts"""
+        args = {"province": "กรุงเทพมหานคร"}
+        cleaned = bot._strip_ungrounded_optional_args(
+            "get_weather", args, "พรุ่งนี้ฝนตกไหม", [], {"facts": []})
+        assert "province" not in cleaned
+
+    def test_value_grounded_in_current_message_kept(self):
+        args = {"province": "เชียงใหม่"}
+        cleaned = bot._strip_ungrounded_optional_args(
+            "get_weather", args, "เชียงใหม่ฝนตกไหม", [], {"facts": []})
+        assert cleaned.get("province") == "เชียงใหม่"
+
+    def test_value_grounded_in_history_kept(self):
+        """ผู้ใช้บอกเมืองไว้เทิร์นก่อนๆ ไม่ใช่ข้อความปัจจุบัน — ต้องไม่โดนตัด"""
+        history = [
+            {"role": "user", "content": "อยู่เชียงใหม่นะ"},
+            {"role": "assistant", "content": "โอเคค่ะ"},
+        ]
+        args = {"province": "เชียงใหม่"}
+        cleaned = bot._strip_ungrounded_optional_args(
+            "get_weather", args, "พรุ่งนี้ฝนตกไหม", history, {"facts": []})
+        assert cleaned.get("province") == "เชียงใหม่"
+
+    def test_value_matching_saved_fact_kept(self):
+        """ตรงกับ default ที่ผู้ใช้ตั้งไว้เอง (fact) — ต้องแยกจาก 'โมเดลเดาเอง' ไม่ให้โดนตัด"""
+        args = {"province": "ชุมพร"}
+        cleaned = bot._strip_ungrounded_optional_args(
+            "get_weather", args, "ฝนตกไหม", [], {"facts": ["อยู่ชุมพร"]})
+        assert cleaned.get("province") == "ชุมพร"
+
+    def test_required_field_never_stripped_even_if_ungrounded(self):
+        """query เป็น required — ต้องไม่โดนตัดแม้จะไม่เจอคำนั้นเป๊ะๆ ในข้อความ (โมเดลสรุปคำค้นเองได้)"""
+        args = {"query": "ร้านก๋วยเตี๋ยวอร่อย"}
+        cleaned = bot._strip_ungrounded_optional_args(
+            "search_places", args, "หาของกินหน่อย", [], {"facts": []})
+        assert cleaned.get("query") == "ร้านก๋วยเตี๋ยวอร่อย"
+
+    def test_unknown_tool_returns_args_unchanged(self):
+        args = {"anything": "value"}
+        cleaned = bot._strip_ungrounded_optional_args("fly_to_moon", args, "msg", [], {})
+        assert cleaned == args
+
+
+# ── _tool_* handlers — เรียกตรงๆ (ไม่ผ่าน ask_ollama) mock เฉพาะฟังก์ชันดึงข้อมูลจริงข้างใน ──
+
+class TestToolHandlers:
+    def test_get_current_time_uses_real_clock(self):
+        with patch.object(bot, "get_thai_datetime", return_value="วันจันทร์ บ่ายสามโมง"):
+            result = asyncio.run(bot._tool_get_current_time({}, {}))
+        assert "วันจันทร์" in result
+
+    def test_get_weather_defaults_to_home_province_when_missing(self):
+        with patch.object(bot, "get_weather_tmd", AsyncMock(return_value=None)), \
+             patch.object(bot, "get_weather", AsyncMock(return_value="ร้อน 35°C")) as mw:
+            result = asyncio.run(bot._tool_get_weather({}, {}))
+        mw.assert_called_once_with(bot.HOME_PROVINCE_NAME)
+        assert "ร้อน 35" in result
+
+    def test_get_weather_prefers_tmd_over_open_meteo(self):
+        with patch.object(bot, "get_weather_tmd", AsyncMock(return_value="TMD data")), \
+             patch.object(bot, "get_weather", AsyncMock(return_value="OpenMeteo data")) as mow:
+            result = asyncio.run(bot._tool_get_weather({"province": "เชียงใหม่"}, {}))
+        mow.assert_not_called()
+        assert "TMD data" in result
+
+    def test_get_oil_price_defaults_to_ptt(self):
+        with patch.object(bot, "get_oil_price", AsyncMock(return_value="ปตท. 33.34")) as mo:
+            asyncio.run(bot._tool_get_oil_price({}, {}))
+        mo.assert_called_once_with("ptt")
+
+    def test_get_oil_price_accepts_code_directly(self):
+        with patch.object(bot, "get_oil_price", AsyncMock(return_value="เชลล์ 34")) as mo:
+            asyncio.run(bot._tool_get_oil_price({"brand": "shell"}, {}))
+        mo.assert_called_once_with("shell")
+
+    def test_get_oil_price_maps_thai_name_to_code(self):
+        with patch.object(bot, "get_oil_price", AsyncMock(return_value="บางจาก 32")) as mo:
+            asyncio.run(bot._tool_get_oil_price({"brand": "บางจาก"}, {}))
+        mo.assert_called_once_with("bcp")
+
+    def test_search_places_missing_province_asks_back_not_crash(self):
+        result = asyncio.run(bot._tool_search_places({"query": "ก๋วยเตี๋ยว"}, {"facts": []}))
+        assert "จังหวัด" in result
+
+    def test_search_places_falls_back_to_saved_location(self):
+        with patch.object(bot, "_search_places", AsyncMock(return_value="ผลลัพธ์")) as msp:
+            asyncio.run(bot._tool_search_places({"query": "ก๋วยเตี๋ยว"}, {"facts": ["อยู่ชุมพร"]}))
+        msp.assert_called_once_with("ก๋วยเตี๋ยว", "ชุมพร")
+
+    def test_search_web_returns_failure_message_when_empty(self):
+        with patch.object(bot, "search_web", return_value=""):
+            result = asyncio.run(bot._tool_search_web({"query": "ทดสอบ"}, {}))
+        assert "ไม่พบข้อมูล" in result or "ห้ามเดา" in result
+
+
+# ── tool loop fail-safe (ผ่าน ask_ollama เต็ม) — โมเดลเรียกมั่ว/ฟอร์แมตเพี้ยน/handler พัง ──
+#    ต้องไม่ crash ask_ollama ทั้งฟังก์ชัน ไม่ว่าเกิดอะไรขึ้นกับ tool call
+
+class TestToolLoopFailSafe:
+    def setup_method(self):
+        bot._user_locks.clear()
+
+    def _patch_no_op_recall(self, monkeypatch):
+        """กัน ask_ollama ยิง Ollama/ChromaDB จริงตอน semantic recall/RAG (ไม่เกี่ยวกับสิ่งที่เทสนี้)"""
+        monkeypatch.setattr(vectormemory, "query_pdf", AsyncMock(return_value=[]))
+        monkeypatch.setattr(vectormemory, "query_conversation_memory", AsyncMock(return_value=[]))
+
+    def test_valid_tool_call_flows_through_normally(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        self._patch_no_op_recall(monkeypatch)
+        user_id = 601
+        _init_mem(tmp_path, user_id)
+
+        tool_call = {"function": {"name": "get_current_time", "arguments": {}}}
+        responses = [
+            {"content": "", "tool_calls": [tool_call]},
+            {"content": "ตอนนี้บ่ายสามโมงค่ะ", "tool_calls": None},
+        ]
+        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)), \
+             patch.object(bot, "get_thai_datetime", return_value="บ่ายสามโมง"):
+            reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "ตอนนี้กี่โมง"))
+        assert "บ่ายสามโมง" in reply
+
+    def test_hallucinated_tool_name_does_not_crash(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        self._patch_no_op_recall(monkeypatch)
+        user_id = 602
+        _init_mem(tmp_path, user_id)
+
+        tool_call = {"function": {"name": "fly_to_moon", "arguments": {}}}
+        responses = [
+            {"content": "", "tool_calls": [tool_call]},
+            {"content": "ขอโทษค่ะ ทำแบบนั้นไม่ได้นะคะ", "tool_calls": None},
+        ]
+        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)):
+            reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "บินไปดวงจันทร์หน่อย"))
+        assert reply  # ไม่ crash — ได้ reply กลับมาตามปกติ
+
+    def test_missing_required_param_does_not_crash(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        self._patch_no_op_recall(monkeypatch)
+        user_id = 603
+        _init_mem(tmp_path, user_id)
+
+        # search_web ต้องมี query แต่โมเดลส่งมาว่างเปล่า
+        tool_call = {"function": {"name": "search_web", "arguments": {"query": ""}}}
+        responses = [
+            {"content": "", "tool_calls": [tool_call]},
+            {"content": "หืม ขอโทษค่ะ ลองถามใหม่อีกทีนะคะ", "tool_calls": None},
+        ]
+        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)):
+            reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "ค้นเว็บหน่อย"))
+        assert reply
+
+    def test_handler_exception_does_not_crash(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        self._patch_no_op_recall(monkeypatch)
+        # mock handler ตัวจริงใน TOOL_HANDLERS ให้ raise (จำลอง network error/bug ข้างใน)
+        monkeypatch.setitem(bot.TOOL_HANDLERS, "get_weather",
+                             AsyncMock(side_effect=RuntimeError("weather api down")))
+        user_id = 604
+        _init_mem(tmp_path, user_id)
+
+        tool_call = {"function": {"name": "get_weather", "arguments": {"province": "ชุมพร"}}}
+        responses = [
+            {"content": "", "tool_calls": [tool_call]},
+            {"content": "ขอโทษค่ะ ระบบอากาศมีปัญหาตอนนี้", "tool_calls": None},
+        ]
+        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)):
+            reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "พรุ่งนี้ฝนตกไหม"))
+        assert reply  # exception ข้างใน handler ต้องไม่หลุดขึ้นไป crash ask_ollama
+
+    def test_multiple_tool_calls_in_one_round_all_processed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        self._patch_no_op_recall(monkeypatch)
+        user_id = 605
+        _init_mem(tmp_path, user_id)
+
+        calls = [
+            {"function": {"name": "get_current_time", "arguments": {}}},
+            {"function": {"name": "get_oil_price", "arguments": {}}},
+        ]
+        responses = [
+            {"content": "", "tool_calls": calls},
+            {"content": "ตอนนี้บ่ายสามโมง น้ำมันปตท. 33 บาทค่ะ", "tool_calls": None},
+        ]
+        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)), \
+             patch.object(bot, "get_thai_datetime", return_value="บ่ายสามโมง"), \
+             patch.object(bot, "get_oil_price", AsyncMock(return_value="ปตท. 33 บาท")) as mo:
+            reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "กี่โมงแล้ว น้ำมันราคาเท่าไหร่"))
+        mo.assert_called_once_with("ptt")
+        assert reply
+
+    def test_hallucinated_optional_arg_stripped_before_handler_runs(self, tmp_path, monkeypatch):
+        """โมเดลเดา province='กรุงเทพมหานคร' ทั้งที่ผู้ใช้ไม่เคยพูดถึง — handler ต้องได้ province ว่าง
+        (ไม่ใช่ค่าที่เดามา) แล้ว fallback เป็นจังหวัดบ้านเองตามดีไซน์ของ _tool_get_weather"""
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        self._patch_no_op_recall(monkeypatch)
+        user_id = 606
+        _init_mem(tmp_path, user_id)
+
+        tool_call = {"function": {"name": "get_weather", "arguments": {"province": "กรุงเทพมหานคร"}}}
+        responses = [
+            {"content": "", "tool_calls": [tool_call]},
+            {"content": "พรุ่งนี้ฝนตกช่วงบ่ายค่ะ", "tool_calls": None},
+        ]
+        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)), \
+             patch.object(bot, "get_weather_tmd", AsyncMock(return_value=None)), \
+             patch.object(bot, "get_weather", AsyncMock(return_value="ฝนตกบ่าย")) as mw:
+            reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "พรุ่งนี้ต้องพกร่มไหม"))
+        # ต้องเรียก get_weather ด้วยจังหวัดบ้าน (fallback) ไม่ใช่ "กรุงเทพมหานคร" ที่โมเดลเดามา
+        mw.assert_called_once_with(bot.HOME_PROVINCE_NAME)
+        assert reply
