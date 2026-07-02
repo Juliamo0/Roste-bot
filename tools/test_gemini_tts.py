@@ -1,5 +1,5 @@
 """
-test_gemini_tts.py — ทดสอบ Gemini TTS → RVC RVC
+test_gemini_tts.py — ทดสอบ Gemini TTS → RVC
 เทียบ 4 voices + pitch
 
 ต้องการ: GEMINI_API_KEY env variable หรือ --api-key flag

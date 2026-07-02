@@ -1,5 +1,5 @@
 """
-ทดสอบ F5-TTS → RVC RVC pipeline
+ทดสอบ F5-TTS → RVC pipeline
 รันด้วย Python ใดก็ได้ (orchestrator ไม่ต้องการ torch)
   python tools/test_f5_rvc_pipeline.py
 """
@@ -30,7 +30,7 @@ TESTS = [
     },
 ]
 
-# ref audio = เสียง RVC ที่มีอยู่แล้ว (F5 เอาไปเป็น style ref)
+# ref audio = เสียงต้นแบบ ที่มีอยู่แล้ว (F5 เอาไปเป็น style ref)
 REF_AUDIO = os.path.join(BOT_DIR, "rvc_out", "bot", "350cab19_rvc.wav")
 REF_TEXT  = "รอสเต้จะร้องเพลง Monster ให้ฟังนะคะ"
 
@@ -48,7 +48,7 @@ def parse_kv(text):
 
 # ─── รันแต่ละ test ───────────────────────────────────────────────────
 print("=" * 60)
-print("F5-TTS → RVC RVC Pipeline Test")
+print("F5-TTS → RVC Pipeline Test")
 print("=" * 60)
 
 for i, cfg in enumerate(TESTS):
@@ -90,7 +90,7 @@ for i, cfg in enumerate(TESTS):
         "out_path": rvc_out,
         "f0_key":   cfg["f0_key"],
     })
-    print("  [Stage 2] RVC RVC...", flush=True)
+    print("  [Stage 2] RVC...", flush=True)
     t_s2 = time.perf_counter()
     r2 = subprocess.run([RVC_PYTHON, STAGE2, s2_args],
                         capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -117,5 +117,5 @@ if os.path.exists(EDGETTS_REF):
 print("\n" + "=" * 60)
 print("เปิดไฟล์ใน f5_out/ เพื่อฟังเปรียบเทียบ")
 print("  test1_f5_raw.wav          = F5 ก่อน RVC")
-print("  test1_f5_rvc_rvc.wav  = F5 → RVC RVC")
+print("  test1_f5_rvc_rvc.wav  = F5 → RVC")
 print("  compare_edgetts_rvc.wav   = edge-tts → RVC เดิม")

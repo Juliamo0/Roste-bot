@@ -1,5 +1,5 @@
 """
-Whisper transcription of RVC ref vocal
+Whisper transcription of reference vocal
 รันด้วย: f5_venv\Scripts\python.exe tools\transcribe_ref.py
 """
 import sys, os, time

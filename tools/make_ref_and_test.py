@@ -95,10 +95,10 @@ print(f"  F5 เสร็จใน {kv.get('F5_GEN_TIME','?')}s  |  เสีย
 print(f"  wall clock: {s1_time:.1f}s  (รวม load model)")
 
 # ════════════════════════════════════════════════════════════
-# Step 3: RVC RVC
+# Step 3: RVC
 # ════════════════════════════════════════════════════════════
 print(f"\n{'='*55}")
-print("Step 3: RVC RVC")
+print("Step 3: RVC")
 print(f"{'='*55}")
 
 s2_args = json.dumps({"in_path": F5_OUT, "out_path": RVC_OUT, "f0_key": 0})
