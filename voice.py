@@ -7,6 +7,10 @@ text_to_roste_voice(text) -> wav_path:
   fallback pipeline:
     strip_emoji → edge-tts → ffmpeg adjust → RVC (warm/oneshot)
 
+text_to_roste_voice_segments(text) -> Iterator[wav_path]:
+  แบบ streaming — yield ทีละ segment ทันทีที่เสร็จ (เริ่มเล่นได้ไม่ต้องรอทั้งก้อน)
+  fail-safe ต่อ segment: F5 retry 1 ครั้ง → edge-tts → ข้าม segment
+
 RVC warm worker (โหลดโมเดลครั้งเดียว):
   with RvcWorker() as w:
       path = text_to_roste_voice("...", worker=w)
@@ -480,6 +484,118 @@ def _concat_wavs(paths: list[str], out_path: str, silence_ms: int = 150) -> None
 
 # ── public API ─────────────────────────────────────────────────────────────────
 
+def _rvc_convert(in_wav: str, out_wav: str, worker: RvcWorker | None) -> None:
+    if worker:
+        worker.convert(in_wav, out_wav)
+    else:
+        _rvc_oneshot(in_wav, out_wav)
+
+
+def _gen_one_segment(
+    seg: str,
+    label: str,
+    out_path: str,
+    *,
+    worker: RvcWorker | None,
+    f5_worker: F5Worker,
+    tmp_dir: str,
+) -> str | None:
+    """Generate เสียงหนึ่ง segment ตาม fail-safe chain (ต่อ segment ไม่ใช่ทั้งก้อน):
+      1. F5 → RVC (retry F5 อีก 1 ครั้ง — ความพังมักเป็น transient)
+      2. edge-tts → adjust → RVC (เนื้อหาครบ ยังผ่าน RVC จึงยังเป็น timbre รอสเต้)
+      3. ข้าม segment (คืน None) — ผู้ใช้ยังอ่านข้อความเต็มใน Discord ได้
+    """
+    f5_wav = os.path.join(tmp_dir, f"{label}_f5.wav")
+    for attempt in (1, 2):
+        if not f5_worker.alive:
+            break  # worker ตายแล้ว retry ไปก็พังเหมือนเดิม — ข้ามไป edge-tts เลย
+        try:
+            f5_worker.generate(
+                ref_audio=F5_REF_AUDIO,
+                ref_text=F5_REF_TEXT,
+                gen_text=seg,
+                out_path=f5_wav,
+                speed=F5_SPEED,
+                steps=F5_STEPS,
+            )
+            _rvc_convert(f5_wav, out_path, worker)
+            return out_path
+        except Exception as e:
+            print(f"   ⚠️ F5 segment {label} พัง (ครั้งที่ {attempt}): {e}")
+
+    try:
+        raw_wav = os.path.join(tmp_dir, f"{label}_raw.wav")
+        adj_wav = os.path.join(tmp_dir, f"{label}_adj.wav")
+        _edge_tts(seg, raw_wav)
+        _adjust(raw_wav, adj_wav)
+        _rvc_convert(adj_wav, out_path, worker)
+        print(f"   🎙️ segment {label} ใช้ edge-tts fallback")
+        return out_path
+    except Exception as e:
+        print(f"   ⚠️ edge-tts fallback segment {label} พังด้วย ({e}) — ข้าม segment นี้")
+        return None
+
+
+def text_to_roste_voice_segments(
+    text: str,
+    *,
+    worker: RvcWorker | None = None,
+    f5_worker: F5Worker | None = None,
+    out_dir: str | None = None,
+    filename: str | None = None,
+):
+    """ข้อความ → yield path .wav ทีละ segment ทันทีที่เสร็จ (ลำดับตาม text เสมอ
+    เพราะ generate เป็น sequential) — ให้ caller เริ่มเล่น segment แรกได้โดยไม่รอทั้งก้อน
+
+    ไฟล์ที่ yield เขียนลง out_dir (persistent) — caller รับผิดชอบลบหลังใช้เสร็จ
+    segment ที่พังทุกชั้น fail-safe จะถูกข้าม (ไม่ yield ไม่ raise)
+    ถ้าไม่มี f5_worker → เส้น edge-tts ทั้งก้อนแบบเดิม (yield ไฟล์เดียว)
+    """
+    text = strip_emoji(text).strip()
+    if not text:
+        raise ValueError("text ว่างหลัง strip_emoji")
+
+    out_dir = out_dir or str(_OUT_DIR)
+    os.makedirs(out_dir, exist_ok=True)
+
+    uid     = filename or uuid.uuid4().hex[:8]
+    tmp_dir = tempfile.mkdtemp(prefix="roste_")
+
+    try:
+        if f5_worker and f5_worker.alive:
+            from f5_preprocess import preprocess_for_f5
+            preprocessed, warns = preprocess_for_f5(text)
+            for w in warns:
+                print(f"   ⚠️ F5 preprocess: {w}")
+            segments = _split_thai_text(preprocessed, max_chars=300)
+            print(f"   🔤 F5 gen_text ({len(preprocessed)}c, {len(segments)} ส่วน): {preprocessed!r}")
+            for i, seg in enumerate(segments):
+                out_path = os.path.join(out_dir, f"{uid}_{i}_rvc.wav")
+                got = _gen_one_segment(
+                    seg, f"{uid}_{i}", out_path,
+                    worker=worker, f5_worker=f5_worker, tmp_dir=tmp_dir)
+                if got:
+                    yield got
+        else:
+            out_path = os.path.join(out_dir, f"{uid}_rvc.wav")
+            raw_wav = os.path.join(tmp_dir, f"{uid}_raw.wav")
+            adj_wav = os.path.join(tmp_dir, f"{uid}_adj.wav")
+            _edge_tts(text, raw_wav)
+            _adjust(raw_wav, adj_wav)
+            _rvc_convert(adj_wav, out_path, worker)
+            yield out_path
+    finally:
+        for fn in os.listdir(tmp_dir):
+            try:
+                os.remove(os.path.join(tmp_dir, fn))
+            except OSError:
+                pass
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+
+
 def text_to_roste_voice(
     text: str,
     *,
@@ -489,7 +605,7 @@ def text_to_roste_voice(
     filename: str | None = None,
 ) -> str:
     """
-    ข้อความ → ไฟล์ .wav เสียงรอสเต้
+    ข้อความ → ไฟล์ .wav เสียงรอสเต้ (ไฟล์เดียว รอทุก segment เสร็จแล้ว concat)
 
     Args:
         text:      ข้อความ (strip_emoji อัตโนมัติ)
@@ -502,74 +618,24 @@ def text_to_roste_voice(
     Returns:
         absolute path ไฟล์ .wav
     """
-    text = strip_emoji(text).strip()
-    if not text:
-        raise ValueError("text ว่างหลัง strip_emoji")
-
     out_dir = out_dir or str(_OUT_DIR)
     os.makedirs(out_dir, exist_ok=True)
+    uid = filename or uuid.uuid4().hex[:8]
 
-    uid     = filename or uuid.uuid4().hex[:8]
-    tmp_dir = tempfile.mkdtemp(prefix="roste_")
+    seg_wavs = list(text_to_roste_voice_segments(
+        text, worker=worker, f5_worker=f5_worker,
+        out_dir=out_dir, filename=f"{uid}_seg"))
+    if not seg_wavs:
+        raise RuntimeError("ทุก segment ล้มเหลว — ไม่มีเสียงออก")
+
     rvc_wav = os.path.join(out_dir, f"{uid}_rvc.wav")
-
-    def _rvc(in_wav: str) -> None:
-        if worker:
-            worker.convert(in_wav, rvc_wav)
-        else:
-            _rvc_oneshot(in_wav, rvc_wav)
-
-    try:
-        if f5_worker and f5_worker.alive:
-            from f5_preprocess import preprocess_for_f5
-            preprocessed, warns = preprocess_for_f5(text)
-            for w in warns:
-                print(f"   ⚠️ F5 preprocess: {w}")
-            segments = _split_thai_text(preprocessed, max_chars=300)
-            print(f"   🔤 F5 gen_text ({len(preprocessed)}c, {len(segments)} ส่วน): {preprocessed!r}")
+    if len(seg_wavs) == 1:
+        os.replace(seg_wavs[0], rvc_wav)
+    else:
+        _concat_wavs(seg_wavs, rvc_wav)
+        for p in seg_wavs:
             try:
-                seg_rvc_wavs = []
-                for i, seg in enumerate(segments):
-                    label = f"{uid}_{i}"
-                    f5_wav_i  = os.path.join(tmp_dir, f"{label}_f5.wav")
-                    rvc_wav_i = os.path.join(tmp_dir, f"{label}_rvc.wav") if len(segments) > 1 else rvc_wav
-                    f5_worker.generate(
-                        ref_audio=F5_REF_AUDIO,
-                        ref_text=F5_REF_TEXT,
-                        gen_text=seg,
-                        out_path=f5_wav_i,
-                        speed=F5_SPEED,
-                        steps=F5_STEPS,
-                    )
-                    if worker:
-                        worker.convert(f5_wav_i, rvc_wav_i)
-                    else:
-                        _rvc_oneshot(f5_wav_i, rvc_wav_i)
-                    seg_rvc_wavs.append(rvc_wav_i)
-                if len(segments) > 1:
-                    _concat_wavs(seg_rvc_wavs, rvc_wav)
-            except Exception as e:
-                print(f"   ⚠️ F5 failed ({e}) — fallback edge-tts")
-                raw_wav = os.path.join(tmp_dir, f"{uid}_raw.wav")
-                adj_wav = os.path.join(tmp_dir, f"{uid}_adj.wav")
-                _edge_tts(text, raw_wav)
-                _adjust(raw_wav, adj_wav)
-                _rvc(adj_wav)
-        else:
-            raw_wav = os.path.join(tmp_dir, f"{uid}_raw.wav")
-            adj_wav = os.path.join(tmp_dir, f"{uid}_adj.wav")
-            _edge_tts(text, raw_wav)
-            _adjust(raw_wav, adj_wav)
-            _rvc(adj_wav)
-    finally:
-        for fn in os.listdir(tmp_dir):
-            try:
-                os.remove(os.path.join(tmp_dir, fn))
+                os.remove(p)
             except OSError:
                 pass
-        try:
-            os.rmdir(tmp_dir)
-        except OSError:
-            pass
-
     return rvc_wav
