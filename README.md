@@ -25,7 +25,7 @@
   - 🍜 หาร้าน/สถานที่ (Google Maps ผ่าน SerpApi)
 - 🖨️ **สั่งพิมพ์ PDF** — แนบไฟล์ใน Discord แล้วให้รอสเต้สั่งเครื่องพิมพ์จริง
 - 🎵 **เล่นเพลง** — เล่นไฟล์ mp3 ในห้อง voice ตามที่ขอ
-- 🎤 **ร้องเพลง karaoke** — ร้องเพลง cover ด้วยเสียง RVC (RVC) จากโฟลเดอร์ `karaoke/`, ขอเพลงเจาะจงหรือสุ่มได้, TTS เกริ่นก่อนเล่น
+- 🎤 **ร้องเพลง karaoke** — ร้องเพลง cover ด้วยเสียง RVC (ส่วนตัว ไม่แจกจ่ายโมเดล) จากโฟลเดอร์ `karaoke/`, ขอเพลงเจาะจงหรือสุ่มได้, TTS เกริ่นก่อนเล่น
 - 🎙️ **รอสเต้พูดได้** — join ห้อง voice, ทักทายเมื่อเข้า, ตอบด้วยเสียง RVC จริง, ออกอัตโนมัติเมื่อห้องว่าง 15 วินาที
   - **Sentence streaming** — แบ่งคำตอบเป็นประโยค (crfcut) เล่นทีละ segment ทันทีที่เจนเสร็จ
     ไม่ต้องรอทั้งคำตอบ (latency ประโยคแรก ~6.7s แทน ~15-20s) พร้อม per-segment fail-safe
@@ -201,7 +201,7 @@ python tools/simulate_recall.py      # ดู fact + recall หลัง auto-re
 
 ```
 ข้อความ → crfcut (ตัดเป็นประโยค) → f5_preprocess.py (ตัวเลข/ปี/°C/หน่วย/fuel codes → ไทย)
-        → F5-TTS-THAI v2 (ref: lai_seg4_160s.wav, local) → RVC (RVC model) → .wav ทีละ segment
+        → F5-TTS-THAI v2 (ref audio ต้นแบบ, local) → RVC (โมเดลเสียงส่วนตัว) → .wav ทีละ segment
 ```
 
 **Sentence streaming:** `text_to_roste_voice_segments()` เป็น generator yield ไฟล์ `.wav` ทีละ segment
@@ -247,7 +247,8 @@ rvc_venv\Scripts\pip install torch==2.1.0 torchaudio==2.1.0 --index-url https://
 rvc_venv\Scripts\pip install rvc-python==0.1.5
 ```
 
-**โมเดล:** วาง `.pth` และ `.index` ที่ `D:\rvc_voice_model\` (path ตั้งค่าใน `voice.py` → `MODEL_DIR`)
+**โมเดล:** วาง `.pth` และ `.index` ที่ path ตั้งค่าใน `voice.py` → `MODEL_DIR` (โมเดลเสียงเป็นของส่วนตัว
+ไม่ได้แจกจ่ายมากับ repo นี้ และไม่ควรนำไปใช้เชิงพาณิชย์ตามความประสงค์ของเจ้าของเสียงต้นทาง)
 
 ทดสอบ pipeline:
 ```bash
@@ -256,7 +257,7 @@ python tools/test_voice_pipeline.py
 
 ## 🎤 ระบบ Karaoke
 
-รอสเต้ร้องเพลง cover ด้วยเสียง RVC ในห้อง voice
+รอสเต้ร้องเพลง cover ด้วยเสียง RVC ส่วนตัวในห้อง voice
 
 ### วิธีใช้ใน Discord
 
@@ -270,7 +271,7 @@ python tools/test_voice_pipeline.py
 ```
 เพลงต้นฉบับ
   └─▶ UVR (Ultimate Vocal Remover) — แยกเสียงร้องออกจากดนตรี → vocals.wav
-        └─▶ RVC RVC (GPU) — แปลงเสียงร้องเป็นเสียงรอสเต้ (~15s) → roste_vocals.wav
+        └─▶ RVC (GPU) — แปลงเสียงร้องเป็นเสียงรอสเต้ (~15s) → roste_vocals.wav
               └─▶ mix (Audacity/ffmpeg) — ผสม roste_vocals + instrumental (optional)
                     └─▶ karaoke/[ชื่อเพลง]_[ศิลปิน].wav
 ```
@@ -282,7 +283,7 @@ python tools/test_voice_pipeline.py
 ### วิธีเพิ่มเพลงใหม่
 
 1. แยกเสียงร้องด้วย UVR → ได้ไฟล์ vocals `.wav`
-2. แปลงด้วย RVC โมเดล RVC (ผ่าน `rvc_venv`)
+2. แปลงด้วย RVC โมเดลเสียงส่วนตัว (ผ่าน `rvc_venv`)
 3. ตั้งชื่อไฟล์รูปแบบ **`[ชื่อเพลง]_[ศิลปิน].wav`**
    - `monster_yoasobi.wav` → รอสเต้เรียกชื่อ "Monster"
    - `blinding_lights_weeknd.wav` → "Blinding Lights"
@@ -309,9 +310,12 @@ python tools/test_voice_pipeline.py
 - บอทรันในเครื่องตัวเองทั้งหมด ข้อมูลไม่ออกไปไหน (ยกเว้นการค้นเว็บ/ดึงข้อมูลจริง)
 - เหมาะกับการใช้ในเซิร์ฟเวอร์ส่วนตัว/วงเพื่อน
 - การเล่นเพลงที่มีลิขสิทธิ์ในที่สาธารณะอาจผิดกฎ — ใช้ในวงเพื่อนเท่านั้น
+- **โมเดลเสียง RVC ที่ใช้เป็นของส่วนตัว ไม่ได้แจกจ่ายมากับ repo นี้** และไม่ใช้เชิงพาณิชย์ตามความประสงค์ของ
+  เจ้าของเสียงต้นทาง — ถ้าจะทำ voice cloning เอง ต้องหาข้อมูลเสียง/โมเดลของตัวเอง
 - **⚠️ ยังไม่มี rate limiting** — ใครก็ตามที่ DM หรือ @mention บอทได้ ใช้ทรัพยากร (GPU/LLM/API quota)
   ได้ไม่จำกัด เหมาะกับเซิร์ฟเวอร์ปิด/คนที่ไว้ใจเท่านั้น ดูรายละเอียดที่ [ROADMAP.md](ROADMAP.md) หัวข้อความปลอดภัย
 
 ## 📜 License
 
-โปรเจกต์ส่วนตัว ใช้/ดัดแปลงได้ตามสะดวก
+[PolyForm Noncommercial License 1.0.0](LICENSE) — ดู/แก้/แจกจ่ายซอร์สได้ แต่ห้ามใช้เชิงพาณิชย์
+(ใช้ส่วนตัว ศึกษา ทดลอง งานอดิเรก ทำได้เต็มที่)

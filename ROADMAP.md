@@ -46,7 +46,7 @@
 - [x] บันทึกประวัติการขอเพลง (รู้ว่าควรเตรียมเพลงไหนเพิ่ม)
 - [x] **เฟส 4 — karaoke: รอสเต้ร้องเพลง cover ด้วยเสียงตัวเอง**
   - UVR (Ultimate Vocal Remover) แยกเสียงร้องออกจากเพลงต้นฉบับ
-  - RVC RVC แปลงเสียงร้องเป็นเสียงรอสเต้ (~15s บน GPU)
+  - RVC (โมเดลเสียงส่วนตัว) แปลงเสียงร้องเป็นเสียงรอสเต้ (~15s บน GPU)
   - วางไฟล์ที่ได้ใน `karaoke/` ตั้งชื่อ `[ชื่อเพลง]_[ศิลปิน].wav`
   - สั่ง `@รอสเต้ ร้องเพลง monster` หรือ `ร้องเพลงให้ฟัง` (สุ่ม) ในห้อง voice
   - sequence: TTS เกริ่น "จะร้องเพลง X ให้ฟัง" → เล่นเพลง → disconnect
@@ -54,8 +54,8 @@
 ### 🎙️ ระบบเสียงรอสเต้ — pipeline + integrate (เฟส 1–3)
 - [x] ยืนยันว่า qwen3:8b + RVC อยู่บน 4GB VRAM พร้อมกันได้ (qwen ~2.4GB + RVC peak ~0.9GB)
 - [x] RVC รันในเครื่อง (GPU, warm ~1–2s/ประโยค) — รัน inference ผ่าน rvc_venv (Python 3.10) แยก
-- [x] **F5-TTS-THAI v2** — แทนที่ edge-tts ด้วย flow matching TTS ภาษาไทย local ล้วน (clone เสียง RVC ด้วย ref audio)
-  - pipeline: `f5_preprocess.py` (ตัวเลข/°C/fuel codes → ไทย) → F5-TTS-THAI v2 → RVC (RVC) → .wav
+- [x] **F5-TTS-THAI v2** — แทนที่ edge-tts ด้วย flow matching TTS ภาษาไทย local ล้วน (clone เสียงต้นแบบส่วนตัวด้วย ref audio)
+  - pipeline: `f5_preprocess.py` (ตัวเลข/°C/fuel codes → ไทย) → F5-TTS-THAI v2 → RVC (โมเดลส่วนตัว) → .wav
   - cold load: F5 ~18s / RVC ~9s — warm inference ~3–5s/ประโยค รวม F5+RVC
   - ๆ expansion, number reading, degree symbols จัดการถูกต้อง
 - [x] `voice.py` + `voice_rvc_worker.py` + `f5_worker.py` + `f5_preprocess.py` — warm worker subprocess (JSON stdin/stdout)
@@ -300,9 +300,9 @@ _(ไม่มีตอนนี้ — เฟส 3d ย้ายไปอยู
 - หมายเหตุ: ยากสุดในสายเสียง + กิน VRAM (เครื่อง 4GB อาจไม่ไหวพร้อม LLM)
 
 ### 🎵 ร้องเพลงด้วยเสียงรอสเต้ (RVC singing) → ✅ เสร็จแล้ว (เฟส 4)
-- [x] RVC infrastructure พร้อม (โมเดล RVC ใช้กับเสียงพูดได้)
-- [x] RVC model ร้องเพลงได้โดยไม่ต้องเทรนแยก — ทดสอบกับ Monster (YOASOBI) สำเร็จ
-- [x] pipeline: UVR แยกเสียงร้อง → RVC RVC → `karaoke/` → เล่นในห้อง voice
+- [x] RVC infrastructure พร้อม (โมเดลเสียงส่วนตัวที่ใช้กับเสียงพูดใช้ร้องเพลงได้ด้วย)
+- [x] โมเดลร้องเพลงได้โดยไม่ต้องเทรนแยก — ทดสอบกับ Monster (YOASOBI) สำเร็จ
+- [x] pipeline: UVR แยกเสียงร้อง → RVC (โมเดลส่วนตัว) → `karaoke/` → เล่นในห้อง voice
 - [ ] **อนาคต: Synthesizer V Studio** — สร้างเสียงร้องสังเคราะห์ตรงๆ ด้วยโมเดลเสียงรอสเต้ ไม่ต้องพึ่งต้นฉบับ (UVR stage ไม่จำเป็น)
 
 ### 🎙️ อัปเกรด TTS — เสียงที่มีอารมณ์กว่า edge-tts

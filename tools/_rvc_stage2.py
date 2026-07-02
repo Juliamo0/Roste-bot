@@ -1,4 +1,4 @@
-"""Stage 2: f5_raw.wav → RVC RVC  (รันด้วย rvc_venv)"""
+"""Stage 2: f5_raw.wav → RVC  (รันด้วย rvc_venv)"""
 import sys, time, os, json
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")

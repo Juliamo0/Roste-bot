@@ -153,7 +153,7 @@ if vachana_ref_path and os.path.exists(vachana_ref_path):
         "text": VACHANA_REF_TEXT,
     })
 
-# เพิ่ม RVC candidates (ทุกอัน — ผู้ใช้เลือกทีหลัง)
+# เพิ่ม reference candidates (ทุกอัน — ผู้ใช้เลือกทีหลัง)
 test_refs += candidate_refs
 
 print(f"\nรวม {len(test_refs)} refs ที่จะทดสอบ")
@@ -212,7 +212,7 @@ print("\n" + "=" * 60)
 print("สรุป — ไฟล์ทั้งหมดอยู่ที่: " + OUT_DIR)
 print("=" * 60)
 
-print("\n📂 RVC source segments (ฟังเลือกอันที่ 'ชัด-ช้า' สุด):")
+print("\n📂 source reference segments (ฟังเลือกอันที่ 'ชัด-ช้า' สุด):")
 for c in candidate_refs:
     p = c["path"]
     if os.path.exists(p):

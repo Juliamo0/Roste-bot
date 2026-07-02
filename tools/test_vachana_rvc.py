@@ -1,5 +1,5 @@
 """
-test_vachana_rvc.py — ทดสอบ VachanaTTS → RVC RVC
+test_vachana_rvc.py — ทดสอบ VachanaTTS → RVC
 เทียบกับ F5 → RVC
 
 รัน: f5_venv\Scripts\python.exe tools\test_vachana_rvc.py
@@ -144,7 +144,7 @@ for name, text in TESTS:
 # ── Phase 2: Vachana → RVC pitch=0 ───────────────────────────────────────────
 
 print("\n" + "=" * 60)
-print("Phase 2: Vachana → RVC (pitch=0, RVC)")
+print("Phase 2: Vachana → RVC (pitch=0)")
 print("=" * 60)
 print("\n⚠️  โหลด RVC subprocess... (~8s ต่อไฟล์)")
 
@@ -196,7 +196,7 @@ for name, _ in TESTS:
     if os.path.exists(f):
         print(f"  {name}_vachana_raw.wav  ({dur(f)})")
 
-print("\n📂 Phase 2 — Vachana → RVC pitch=0 (เทียบเสียง RVC):")
+print("\n📂 Phase 2 — Vachana → RVC pitch=0 (เทียบเสียงต้นแบบ):")
 for name, _ in TESTS:
     f = os.path.join(OUT_DIR, f"{name}_vachana_rvc_p0.wav")
     if os.path.exists(f):
