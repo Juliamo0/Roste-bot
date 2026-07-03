@@ -272,3 +272,84 @@ class TestUnitAbbreviations:
         out, _ = preprocess_for_f5("ความชื้น 79%")
         assert "เปอร์เซ็นต์" in out
         assert "%" not in out
+
+
+# ── worker hang timeout — บั๊กจริงที่เจอ: worker subprocess ค้าง (GPU stall) ทำ
+#    music.voice_lock/_tts_lock ค้างตลอดไปเพราะ readline() เดิมไม่มี timeout ──────
+
+import queue
+import threading
+import time as _time
+
+
+class _HangingStdout:
+    """จำลอง subprocess.stdout ที่ readline() ค้างตลอดไป (ไม่มีวันคืนค่า) จนกว่าจะถูก kill"""
+
+    def __init__(self):
+        self._killed = threading.Event()
+
+    def readline(self):
+        self._killed.wait()   # ค้างจน kill() ถูกเรียก (จำลอง process หยุดตอบสนอง)
+        return ""
+
+
+class _FakeProc:
+    """จำลอง subprocess.Popen แบบเพียงพอสำหรับเทส timeout — poll()/stdin เป็น no-op, stdout ค้างได้"""
+
+    def __init__(self):
+        self.stdout = _HangingStdout()
+        self.stdin = type("_Stdin", (), {"write": lambda self, s: None,
+                                          "flush": lambda self: None})()
+        self.killed = False
+
+    def poll(self):
+        return None if not self.killed else 1
+
+    def kill(self):
+        self.killed = True
+        self.stdout._killed.set()   # จำลองว่า process ตายแล้ว readline() คืนค่าว่างได้ (unblock thread ทิ้ง)
+
+
+class TestReadlineWithTimeout:
+    def test_returns_line_when_available_immediately(self):
+        proc = _FakeProc()
+        proc.stdout.readline = lambda: "hello\n"
+        assert voice._readline_with_timeout(proc, timeout=1.0) == "hello\n"
+
+    def test_returns_none_when_hung_past_timeout(self):
+        proc = _FakeProc()
+        t0 = _time.monotonic()
+        result = voice._readline_with_timeout(proc, timeout=0.2)
+        elapsed = _time.monotonic() - t0
+        assert result is None
+        assert elapsed < 1.0   # ไม่ควรรอเกิน timeout ไปมาก
+
+
+class TestRvcWorkerTimeout:
+    def test_convert_kills_process_and_raises_on_hang(self):
+        w = voice.RvcWorker()
+        w._proc = _FakeProc()
+        with pytest.raises(RuntimeError, match="ไม่ตอบสนอง"):
+            w.convert("in.wav", "out.wav", timeout=0.2)
+        assert w._proc is None   # _kill() เซ็ต _proc=None ให้ .alive เป็น False ต่อไป
+        assert w.alive is False
+
+    def test_worker_dead_after_timeout_kill(self):
+        w = voice.RvcWorker()
+        w._proc = _FakeProc()
+        try:
+            w.convert("in.wav", "out.wav", timeout=0.2)
+        except RuntimeError:
+            pass
+        assert w.alive is False
+
+
+class TestF5WorkerTimeout:
+    def test_generate_kills_process_and_raises_on_hang(self):
+        w = voice.F5Worker()
+        w._proc = _FakeProc()
+        with pytest.raises(RuntimeError, match="ไม่ตอบสนอง"):
+            w.generate(ref_audio="ref.wav", ref_text="x", gen_text="y",
+                       out_path="out.wav", timeout=0.2)
+        assert w._proc is None
+        assert w.alive is False

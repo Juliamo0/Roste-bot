@@ -662,3 +662,154 @@ class TestFixPersonaSlips:
         import persona
         # "นะครับ" ต้องกลายเป็น "นะคะ" ไม่ใช่ "นะค่ะ" (สะกดผิด)
         assert persona.fix_persona_slips("ขอบคุณนะครับ") == "ขอบคุณนะคะ"
+
+
+# ── rate limiting — cooldown ต่อ user + guild allowlist + SerpApi daily quota ──
+
+class TestCooldown:
+    """_check_cooldown — กันสแปมถี่เกินไปเผา GPU (F5+RVC)/API quota ต่อ user"""
+
+    def setup_method(self):
+        bot._last_message_at.clear()
+
+    def test_first_message_always_passes(self):
+        assert bot._check_cooldown(111, now=100.0) is True
+
+    def test_second_message_within_cooldown_blocked(self):
+        bot._check_cooldown(111, now=100.0)
+        assert bot._check_cooldown(111, now=101.0) is False  # +1s < 3s cooldown
+
+    def test_message_after_cooldown_window_passes(self):
+        bot._check_cooldown(111, now=100.0)
+        assert bot._check_cooldown(111, now=104.0) is True  # +4s > 3s cooldown
+
+    def test_different_users_have_independent_cooldown(self):
+        bot._check_cooldown(111, now=100.0)
+        assert bot._check_cooldown(222, now=100.1) is True  # คนละ user ไม่โดน cooldown ร่วม
+
+
+class TestGuildAllowlist:
+    """_guild_allowed — จำกัด guild ที่บอทตอบ (ไม่ตั้ง ALLOWED_GUILD_IDS = ตอบทุกที่ เหมือนเดิม)"""
+
+    def test_dm_always_allowed_regardless_of_allowlist(self, monkeypatch):
+        monkeypatch.setattr(bot, "ALLOWED_GUILD_IDS", [999])
+        assert bot._guild_allowed(None) is True
+
+    def test_empty_allowlist_allows_any_guild(self, monkeypatch):
+        monkeypatch.setattr(bot, "ALLOWED_GUILD_IDS", [])
+        assert bot._guild_allowed(12345) is True
+
+    def test_guild_in_allowlist_passes(self, monkeypatch):
+        monkeypatch.setattr(bot, "ALLOWED_GUILD_IDS", [111, 222])
+        assert bot._guild_allowed(111) is True
+
+    def test_guild_not_in_allowlist_blocked(self, monkeypatch):
+        monkeypatch.setattr(bot, "ALLOWED_GUILD_IDS", [111, 222])
+        assert bot._guild_allowed(999) is False
+
+
+class TestSerpapiQuotaGuard:
+    """_serpapi_quota_ok — กันสแปมเผาโควตา SerpApi ทั้งเดือน (free plan 250/เดือน) หมดในไม่กี่นาที"""
+
+    def setup_method(self):
+        bot._serpapi_quota_date = None
+        bot._serpapi_quota_count = 0
+
+    def test_allows_up_to_daily_limit(self):
+        for _ in range(bot._SERPAPI_DAILY_LIMIT):
+            assert bot._serpapi_quota_ok() is True
+
+    def test_blocks_once_daily_limit_exceeded(self):
+        for _ in range(bot._SERPAPI_DAILY_LIMIT):
+            bot._serpapi_quota_ok()
+        assert bot._serpapi_quota_ok() is False
+
+    def test_resets_when_stored_date_is_stale(self):
+        from datetime import date, timedelta
+        bot._serpapi_quota_date = date.today() - timedelta(days=1)
+        bot._serpapi_quota_count = bot._SERPAPI_DAILY_LIMIT  # สมมติเมื่อวานเต็มโควตาแล้ว
+        assert bot._serpapi_quota_ok() is True  # ข้ามวันแล้ว ต้อง reset ให้นับใหม่
+
+
+# ── _play_karaoke — พูดปิดท้ายก่อนออกจากห้อง voice หลังร้องจบ ──────────────────
+#    (เดิม disconnect ทันทีไม่พูดอะไรเลย รู้สึกห้วน — ผู้ใช้รายงานเจอจริง)
+
+class TestPlayKaraokeOutro:
+    def _make_message(self):
+        message = MagicMock()
+        message.guild.voice_client = None
+        message.channel.send = AsyncMock()
+        message.author.id = 111
+        message.author.mention = "@user"
+        return message
+
+    def test_outro_generated_and_played_after_song_before_disconnect(self, monkeypatch, tmp_path):
+        message = self._make_message()
+        channel_mock = message.author.voice.channel
+
+        bot_vc = MagicMock()
+        bot_vc.is_connected.return_value = True
+        bot_vc.is_playing.return_value = False
+        bot_vc.disconnect = AsyncMock()
+        channel_mock.connect = AsyncMock(return_value=bot_vc)
+
+        call_log = []
+
+        async def fake_generate_tts(text, uid):
+            call_log.append(("generate_tts", text))
+            return f"fake_{len(call_log)}.wav"
+
+        async def fake_play_wav(vc, path):
+            call_log.append(("play_wav", path))
+
+        def fake_song_play(source, after=None):
+            call_log.append(("song_play", None))
+            if after:
+                after(None)  # จำลองเพลงเล่นจบทันที
+
+        bot_vc.play = MagicMock(side_effect=fake_song_play)
+
+        monkeypatch.setattr(bot, "_generate_tts", fake_generate_tts)
+        monkeypatch.setattr(bot, "_play_wav", fake_play_wav)
+        monkeypatch.setattr(bot.music, "voice_lock", asyncio.Lock())
+
+        asyncio.run(bot._play_karaoke(message, "song.wav", "Monster"))
+
+        kinds = [c[0] for c in call_log]
+        # ลำดับต้องเป็น: เกริ่นก่อนร้อง -> เล่นเพลง -> พูดปิดท้าย (generate+play) -> (แล้วค่อย disconnect)
+        assert kinds == ["generate_tts", "play_wav", "song_play", "generate_tts", "play_wav"]
+
+        texts = [c[1] for c in call_log if c[0] == "generate_tts"]
+        assert "Monster" in texts[0] and "จะร้องเพลง" in texts[0]
+        assert "Monster" in texts[1] and "จบแล้วค่ะ" in texts[1]
+
+        bot_vc.disconnect.assert_awaited_once()
+
+    def test_disconnect_still_happens_if_outro_tts_returns_none(self, monkeypatch):
+        # worker ยังไม่พร้อม/พัง -> _generate_tts คืน None ต้องไม่ crash แล้วยัง disconnect ต่อได้
+        message = self._make_message()
+        channel_mock = message.author.voice.channel
+
+        bot_vc = MagicMock()
+        bot_vc.is_connected.return_value = True
+        bot_vc.is_playing.return_value = False
+        bot_vc.disconnect = AsyncMock()
+        channel_mock.connect = AsyncMock(return_value=bot_vc)
+        bot_vc.play = MagicMock(side_effect=lambda source, after=None: after and after(None))
+
+        play_wav_calls = []
+
+        async def fake_generate_tts(text, uid):
+            return None
+
+        async def fake_play_wav(vc, path):
+            play_wav_calls.append(path)
+
+        monkeypatch.setattr(bot, "_generate_tts", fake_generate_tts)
+        monkeypatch.setattr(bot, "_play_wav", fake_play_wav)
+        monkeypatch.setattr(bot.music, "voice_lock", asyncio.Lock())
+
+        asyncio.run(bot._play_karaoke(message, "song.wav", "Monster"))
+
+        assert play_wav_calls == []   # ไม่มี wav ให้เล่นก็ไม่เรียก _play_wav
+        bot_vc.disconnect.assert_awaited_once()

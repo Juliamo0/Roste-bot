@@ -14,6 +14,7 @@ KARAOKE_DIR = "karaoke"
 
 # ไฟล์บันทึกว่าใครขอเพลงอะไรบ้าง (ไว้ดูว่าควรเตรียมเพลงไหนเพิ่ม)
 SONG_REQUESTS_LOG = "song_requests.json"
+MAX_SONG_REQUESTS = 200   # กันไฟล์โตไม่จำกัด — เกินแล้วตัดคำขอที่ถูกขอน้อยสุดทิ้งก่อน (เก็บเพลงยอดฮิตไว้)
 
 # ---------- สถานะภายใน ----------
 voice_lock = asyncio.Lock()   # เล่นได้ทีละเพลง
@@ -90,6 +91,11 @@ def log_song_request(user_name, query, found):
     entry["found"] = found
     entry["last_by"] = user_name
     data[key] = entry
+    if len(data) > MAX_SONG_REQUESTS:
+        excess = len(data) - MAX_SONG_REQUESTS
+        lowest = sorted(data, key=lambda k: data[k].get("count", 0))[:excess]
+        for k in lowest:
+            del data[k]
     try:
         with open(SONG_REQUESTS_LOG, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

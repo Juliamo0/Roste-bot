@@ -24,9 +24,11 @@ import asyncio
 import io
 import json
 import os
+import queue
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -161,6 +163,31 @@ def _adjust(in_wav: str, out_wav: str) -> None:
     _ffmpeg_adjust(in_wav, out_wav, src_sr)
 
 
+_WORKER_READ_TIMEOUT_SEC = 60   # กัน worker subprocess ค้าง (GPU stall/driver hang) ทำ voice_lock/_tts_lock ค้างตลอดไป
+
+
+def _readline_with_timeout(proc: subprocess.Popen, timeout: float) -> str | None:
+    """อ่านบรรทัดเดียวจาก stdout ของ subprocess โดยจำกัดเวลารอ
+    readline() ธรรมดาไม่มี timeout ในตัว และ select() ใช้กับ pipe บน Windows ไม่ได้
+    เลยต้องอ่านในเธรดแยกแล้วรอผลแบบมี timeout แทน (thread ที่ยังอ่านค้างอยู่จะถูกทิ้งไว้เป็น daemon —
+    ผู้เรียกต้อง kill subprocess เองถ้าจะเลิกใช้ worker ตัวนี้ ไม่งั้น thread จะรอ readline ค้างไปเรื่อยๆ)
+    คืน None ถ้าหมดเวลาไม่ได้ผลลัพธ์"""
+    result: queue.Queue = queue.Queue(maxsize=1)
+
+    def _reader():
+        try:
+            line = proc.stdout.readline()
+        except Exception:
+            line = ""
+        result.put(line)
+
+    threading.Thread(target=_reader, daemon=True).start()
+    try:
+        return result.get(timeout=timeout)
+    except queue.Empty:
+        return None
+
+
 # ── RVC warm worker ────────────────────────────────────────────────────────────
 
 class RvcWorker:
@@ -221,7 +248,8 @@ class RvcWorker:
                 raise RuntimeError(f"RVC worker init error: {resp.get('msg')}")
         self.load_time = time.perf_counter() - t0
 
-    def convert(self, input_path: str, output_path: str) -> float:
+    def convert(self, input_path: str, output_path: str,
+                timeout: float = _WORKER_READ_TIMEOUT_SEC) -> float:
         """แปลงไฟล์เดียว คืน elapsed seconds (warm ~1.4s)"""
         if not self.alive:
             raise RuntimeError("RvcWorker not running (call start() first)")
@@ -230,7 +258,10 @@ class RvcWorker:
         self._proc.stdin.flush()
         # scan for JSON response
         while True:
-            line = self._proc.stdout.readline()
+            line = _readline_with_timeout(self._proc, timeout)
+            if line is None:
+                self._kill()
+                raise RuntimeError(f"RVC worker ไม่ตอบสนองเกิน {timeout:.0f}s (killed)")
             if not line:
                 raise RuntimeError("RVC worker closed unexpectedly")
             line = line.strip()
@@ -242,6 +273,16 @@ class RvcWorker:
         if resp.get("status") == "error":
             raise RuntimeError(f"RVC error: {resp.get('msg')}")
         return float(resp.get("elapsed", 0.0))
+
+    def _kill(self) -> None:
+        """ฆ่า process ทันที (ไม่รอ) — เรียกตอน worker ค้างเกิน timeout กัน convert()/generate()
+        ครั้งถัดไปพังซ้ำแบบเดิม ทำให้ .alive กลาย False ให้ fail-safe chain สลับไป edge-tts แทน"""
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+            self._proc = None
 
     def stop(self) -> None:
         if self._proc:
@@ -315,6 +356,7 @@ class F5Worker:
         out_path: str,
         speed: float = 1.0,
         steps: int = 32,
+        timeout: float = _WORKER_READ_TIMEOUT_SEC,
     ) -> float:
         """สร้างเสียง คืน duration seconds"""
         if not self.alive:
@@ -330,7 +372,10 @@ class F5Worker:
         self._proc.stdin.write(job + "\n")
         self._proc.stdin.flush()
         while True:
-            line = self._proc.stdout.readline()
+            line = _readline_with_timeout(self._proc, timeout)
+            if line is None:
+                self._kill()
+                raise RuntimeError(f"F5 worker ไม่ตอบสนองเกิน {timeout:.0f}s (killed)")
             if not line:
                 raise RuntimeError("F5 worker closed unexpectedly")
             line = line.strip()
@@ -346,6 +391,16 @@ class F5Worker:
                 except ValueError:
                     pass
         return dur
+
+    def _kill(self) -> None:
+        """ฆ่า process ทันที — เรียกตอน worker ค้างเกิน timeout กัน generate() ครั้งถัดไปพังซ้ำแบบเดิม
+        ทำให้ .alive กลาย False ให้ fail-safe chain สลับไป edge-tts แทน"""
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+            self._proc = None
 
     def stop(self) -> None:
         if self._proc:
