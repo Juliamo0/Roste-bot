@@ -54,14 +54,16 @@
 
 | ไฟล์ | ประเภท | จำนวน tests |
 |------|--------|-------------|
-| `test_bot.py` | pytest | 67 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding, persona-slip filter |
+| `test_bot.py` | pytest | 80 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding, persona-slip filter, rate limiting, karaoke outro |
 | `test_memory.py` | pytest | 56 — facts, recall, parse, summaries, supersede/consolidation |
 | `test_realtime.py` | pytest | 51 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
-| `test_vectormemory.py` | pytest | 13 — rerank fail-safe (output หลุดฟอร์แมต, temperature, edge case) |
-| `test_voice.py` | pytest | 20 — streaming segment order/fail-safe, f5_preprocess (ปี/หน่วย) |
+| `test_vectormemory.py` | pytest | 15 — rerank fail-safe (output หลุดฟอร์แมต, temperature, edge case), PDF page cap |
+| `test_voice.py` | pytest | 25 — streaming segment order/fail-safe, f5_preprocess (ปี/หน่วย), worker hang timeout |
+| `test_printing.py` | pytest | 9 — print_jobs cleanup, pending_prints expiry |
+| `test_music.py` | pytest | 4 — song_requests.json entry cap |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
-รัน unit tests ทั้งหมด: `pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py`
+รัน unit tests ทั้งหมด: `pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py test_printing.py test_music.py`
 
 ### tools/ — สคริปต์เสริม (ไม่ใช่ regression test)
 
@@ -99,11 +101,8 @@
 ### ขั้นตอน
 
 1. โคลนโปรเจกต์นี้ หรือดาวน์โหลด ZIP
-2. ติดตั้งไลบรารี — ดับเบิลคลิก `setup.bat`
-   ```
-   pip install discord.py aiohttp ddgs pypdf pywin32 PyNaCl chromadb
-   pip install pythainlp python-crfsuite soundfile edge-tts
-   ```
+2. ติดตั้งไลบรารี — ดับเบิลคลิก `setup.bat` (รัน `pip install -r requirements.txt` ให้อัตโนมัติ
+   เวอร์ชัน pin ไว้แล้วทุกตัว reproduce ได้ตรงกันทุกเครื่อง)
    (`pythainlp` + `python-crfsuite` ใช้ตัดประโยคไทยสำหรับ sentence-streaming TTS —
    ถ้าขาด `python-crfsuite` การตัดประโยคจะพังเงียบ ไม่มี error ให้เห็น)
 3. โหลดโมเดล
@@ -168,7 +167,7 @@ summaries  → สรุปบทสนทนาเก่า 1 บรรทั�
 รัน unit tests ทั้งหมด (ไม่ต้องเปิด Ollama หรือมี internet):
 
 ```bash
-pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py -v
+pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py test_printing.py test_music.py -v
 ```
 
 รัน integration test (ยิง HTTP จริง — ต้องต่อ internet):
@@ -212,6 +211,11 @@ python tools/simulate_recall.py      # ดู fact + recall หลัง auto-re
 
 F5-TTS-THAI และ RVC ทำงานใน subprocess แยก (`f5_venv`, `rvc_venv`) เพื่อไม่ให้ dependency ชนกับบอทหลัก
 cold load: F5 ~18s / RVC ~9s — หลังจากนั้น inference ~3–5s/ประโยค (F5+RVC รวม)
+
+**Worker hang timeout:** ถ้า RVC/F5 subprocess ค้าง (GPU stall/driver hang) `RvcWorker.convert()`/
+`F5Worker.generate()` จะ timeout ใน 60 วิ (`_WORKER_READ_TIMEOUT_SEC`) แล้ว kill process ทันที ให้
+`.alive` กลาย False และ fail-safe chain สลับไป edge-tts ต่อได้ปกติ — เดิมไม่มี timeout เลย ทำให้
+`music.voice_lock` ค้างตลอดไปถ้า worker แฮงก์แม้แต่ครั้งเดียว (บอทต้องรีสตาร์ทเองถึงจะกลับมาใช้เสียงได้)
 
 ### ติดตั้ง f5_venv (ต้องทำเอง — ไม่มีใน repo)
 
@@ -258,6 +262,9 @@ python tools/test_voice_pipeline.py
 ## 🎤 ระบบ Karaoke
 
 รอสเต้ร้องเพลง cover ด้วยเสียง RVC ส่วนตัวในห้อง voice
+
+**sequence:** เกริ่นก่อนร้อง ("จะร้องเพลง X ให้ฟังนะคะ") → เล่นเพลง → พูดปิดท้าย ("ร้องเพลง X จบแล้วค่ะ
+เป็นไงบ้างคะ เพราะไหม~") → disconnect (เดิม disconnect ทันทีไม่พูดอะไรเลยหลังร้องจบ รู้สึกห้วน — แก้แล้ว)
 
 ### วิธีใช้ใน Discord
 
@@ -312,8 +319,8 @@ python tools/test_voice_pipeline.py
 - การเล่นเพลงที่มีลิขสิทธิ์ในที่สาธารณะอาจผิดกฎ — ใช้ในวงเพื่อนเท่านั้น
 - **โมเดลเสียง RVC ที่ใช้เป็นของส่วนตัว ไม่ได้แจกจ่ายมากับ repo นี้** และไม่ใช้เชิงพาณิชย์ตามความประสงค์ของ
   เจ้าของเสียงต้นทาง — ถ้าจะทำ voice cloning เอง ต้องหาข้อมูลเสียง/โมเดลของตัวเอง
-- **⚠️ ยังไม่มี rate limiting** — ใครก็ตามที่ DM หรือ @mention บอทได้ ใช้ทรัพยากร (GPU/LLM/API quota)
-  ได้ไม่จำกัด เหมาะกับเซิร์ฟเวอร์ปิด/คนที่ไว้ใจเท่านั้น ดูรายละเอียดที่ [ROADMAP.md](ROADMAP.md) หัวข้อความปลอดภัย
+- มี rate limiting พื้นฐานแล้ว (cooldown ต่อ user, guild allowlist ผ่าน `.env`, โควตา SerpApi ต่อวัน) —
+  ดูรายละเอียด/ปรับค่าได้ที่ [ROADMAP.md](ROADMAP.md) หัวข้อความปลอดภัย
 
 ## 📜 License
 
