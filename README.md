@@ -321,6 +321,9 @@ python tools/test_voice_pipeline.py
   เจ้าของเสียงต้นทาง — ถ้าจะทำ voice cloning เอง ต้องหาข้อมูลเสียง/โมเดลของตัวเอง
 - มี rate limiting พื้นฐานแล้ว (cooldown ต่อ user, guild allowlist ผ่าน `.env`, โควตา SerpApi ต่อวัน) —
   ดูรายละเอียด/ปรับค่าได้ที่ [ROADMAP.md](ROADMAP.md) หัวข้อความปลอดภัย
+- ผ่าน code review ภายนอกมาแล้ว 2 รอบ (โครงสร้าง + ความปลอดภัย) — จุดที่พบและยังไม่ได้แก้ (เช่น `bot.py`
+  เริ่มยาวเกินไป, บั๊ก `SONG_STRIP` ตัดชื่อเพลงที่มีคำว่า "ขอ" ผิด, dict บาง module โตไม่จำกัด) บันทึกไว้ที่
+  [ROADMAP.md](ROADMAP.md) หัวข้อ "ผลตรวจโค้ดจาก code review ภายนอก"
 
 ## 📜 License
 
