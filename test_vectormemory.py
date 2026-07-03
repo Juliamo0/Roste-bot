@@ -140,3 +140,47 @@ class TestRerankShortCircuit:
             result = asyncio.run(vectormemory.rerank_with_llm("q", ["อันเดียว"]))
             mock_cls.assert_not_called()
         assert result == ["อันเดียว"]
+
+
+# ── 4) ingest_pdf — cap จำนวนหน้า กัน PDF ที่มีหน้าเยอะผิดปกติทำ extract_text ช้า/ค้าง ──
+
+class TestIngestPdfPageCap:
+    def _fake_pages(self, n):
+        pages = []
+        for i in range(n):
+            p = MagicMock()
+            p.extract_text.return_value = f"page {i} unique-marker-{i}"
+            pages.append(p)
+        return pages
+
+    def test_pages_beyond_cap_not_extracted(self, monkeypatch):
+        monkeypatch.setattr(vectormemory, "MAX_PDF_PAGES", 2)
+        fake_pages = self._fake_pages(5)
+        fake_reader = MagicMock()
+        fake_reader.pages = fake_pages
+        mock_coll = MagicMock()
+
+        with patch("vectormemory.PdfReader", return_value=fake_reader), \
+             patch("vectormemory.get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])), \
+             patch("vectormemory._pdf_collection", return_value=mock_coll):
+            asyncio.run(vectormemory.ingest_pdf(1, "test.pdf", b"fake bytes"))
+
+        for i in range(2):
+            fake_pages[i].extract_text.assert_called_once()
+        for i in range(2, 5):
+            fake_pages[i].extract_text.assert_not_called()
+
+    def test_under_cap_all_pages_extracted(self, monkeypatch):
+        monkeypatch.setattr(vectormemory, "MAX_PDF_PAGES", 200)
+        fake_pages = self._fake_pages(3)
+        fake_reader = MagicMock()
+        fake_reader.pages = fake_pages
+        mock_coll = MagicMock()
+
+        with patch("vectormemory.PdfReader", return_value=fake_reader), \
+             patch("vectormemory.get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])), \
+             patch("vectormemory._pdf_collection", return_value=mock_coll):
+            asyncio.run(vectormemory.ingest_pdf(1, "test.pdf", b"fake bytes"))
+
+        for p in fake_pages:
+            p.extract_text.assert_called_once()

@@ -37,6 +37,7 @@ RERANK_SCORE_MIN = 5    # ด่าน 2 (LLM): คะแนน 0-10 ขั้�
 PDF_CHUNK_SIZE = 800
 PDF_CHUNK_OVERLAP = 100
 MAX_CHUNKS_PER_PDF = 300   # กันไฟล์ใหญ่มากทำให้บอทค้างนานเกิน (embed ทีละ chunk แบบ sequential)
+MAX_PDF_PAGES = 200        # กัน PDF ที่มีจำนวนหน้าเยอะผิดปกติ (เช่นไฟล์ประสงค์ร้าย) ทำ extract_text ช้า/ค้าง
 
 _client = chromadb.PersistentClient(path="chroma_db")
 
@@ -145,7 +146,11 @@ async def ingest_pdf(user_id: int, filename: str, pdf_bytes: bytes) -> int:
     คืนจำนวน chunk ที่เก็บสำเร็จ (0 = อ่านไม่ได้/ไม่มีข้อความ/embedding พัง)"""
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
-        full_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        pages = reader.pages
+        if len(pages) > MAX_PDF_PAGES:
+            print(f"   ⚠️ vectormemory: PDF {filename!r} มี {len(pages)} หน้า — อ่านแค่ {MAX_PDF_PAGES} หน้าแรก")
+            pages = pages[:MAX_PDF_PAGES]
+        full_text = "\n".join(page.extract_text() or "" for page in pages)
     except Exception as e:
         print(f"   ⚠️ vectormemory: อ่าน PDF ไม่สำเร็จ ({e})")
         return 0

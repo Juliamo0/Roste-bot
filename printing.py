@@ -5,6 +5,7 @@
 # ============================================================
 import os
 import re
+import time
 import asyncio
 
 # ---------- ⚙️ ตั้งค่าระบบพิมพ์ (แก้ตรงนี้) ----------
@@ -19,6 +20,9 @@ PRINTER_NAME = "Canon E3300 series"
 MAX_COPIES_NO_CONFIRM = 5      # เกินกี่ชุดต้องยืนยัน
 MAX_PAGES_NO_CONFIRM = 20      # ไฟล์เกินกี่หน้าต้องยืนยัน
 
+# งานที่รอ "ยืนยัน" ค้างได้นานสุดกี่วิ ก่อนถือว่าหมดอายุ (กันพิมพ์ยันเก่าย้อนกลับมาโดยไม่ตั้งใจ)
+PENDING_PRINT_EXPIRY_SEC = 5 * 60
+
 # โฟลเดอร์เก็บไฟล์ที่ดาวน์โหลดมาจาก Discord เพื่อพิมพ์
 PRINT_DIR = "print_jobs"
 
@@ -28,6 +32,17 @@ PRINT_TRIGGERS = ("พิมพ์", "ปริ้น", "ปริ๊น", "ป�
 # ---------- สถานะภายใน ----------
 print_lock = asyncio.Lock()       # ล็อกตอนกำลังพิมพ์ (พิมพ์ได้ทีละงาน)
 pending_prints = {}               # user_id -> งานที่รอ "ยืนยัน" (กรณีงานใหญ่)
+
+
+def pop_pending_if_valid(user_id: int):
+    """คืน job ที่ยังไม่หมดอายุ (แล้วเอาออกจาก pending_prints) — คืน None ถ้าไม่มีหรือหมดอายุแล้ว
+    (หมดอายุ = ลบทิ้งไปด้วยเลย กันพิมพ์คำว่า "ยืนยัน" ในบริบทอื่นแล้วดันไปสั่งงานเก่า)"""
+    job = pending_prints.pop(user_id, None)
+    if job is None:
+        return None
+    if time.monotonic() - job.get("queued_at", 0.0) > PENDING_PRINT_EXPIRY_SEC:
+        return None
+    return job
 
 
 def find_sumatra():
@@ -191,6 +206,7 @@ async def start_print_request(message, user_id, user_name, attachment, text):
 
     # งานใหญ่เกินเกณฑ์ → ขอยืนยันก่อน
     if copies > MAX_COPIES_NO_CONFIRM or pages > MAX_PAGES_NO_CONFIRM:
+        job["queued_at"] = time.monotonic()
         pending_prints[user_id] = job
         await message.reply(
             f"พอดีเห็นว่างานที่ให้พิมพ์ค่อนข้างเยอะอยู่นะคะ {message.author.mention} "
@@ -227,6 +243,12 @@ async def run_print_job(message, job):
                 f"{job['mention']} พิมพ์งานเสร็จเรียบร้อยแล้วค่ะ มารับงานที่เครื่องพิมพ์ได้เลย "
                 "รอสเต้พร้อมรับคำสั่งต่อแล้วนะคะ"
             )
+            # ลบไฟล์ทิ้งหลังพิมพ์สำเร็จ — เอกสารอาจเป็นเรื่องส่วนตัว ไม่ควรค้างบนดิสก์ตลอดไป
+            # (พิมพ์ไม่สำเร็จ — เก็บไฟล์ไว้ก่อน เผื่อต้อง debug/ลองพิมพ์ใหม่โดยไม่ต้องอัปโหลดซ้ำ)
+            try:
+                os.remove(job["path"])
+            except OSError as e:
+                print(f"   ⚠️ ลบไฟล์ print job ไม่สำเร็จ: {e}")
         else:
             await message.channel.send(
                 f"{job['mention']} ขอโทษค่ะ พิมพ์ไม่สำเร็จ — {err} "

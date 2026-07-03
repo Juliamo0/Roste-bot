@@ -18,3 +18,8 @@ _print_ids_raw = os.getenv("PRINT_ALLOWED_USER_IDS", "")
 PRINT_ALLOWED_USER_IDS = [
     int(uid.strip()) for uid in _print_ids_raw.split(",") if uid.strip()
 ]
+
+_guild_ids_raw = os.getenv("ALLOWED_GUILD_IDS", "")
+ALLOWED_GUILD_IDS = [
+    int(gid.strip()) for gid in _guild_ids_raw.split(",") if gid.strip()
+]
