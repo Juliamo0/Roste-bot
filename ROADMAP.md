@@ -259,6 +259,62 @@ test_voice.py test_printing.py test_music.py`)
 
 ---
 
+## 🔍 ผลตรวจโค้ดจาก code review ภายนอก (3 ก.ค. 2569) — ทราบแล้ว ยังไม่ได้แก้
+
+ขอ code review ตรงๆ 2 รอบ (โครงสร้าง + ความปลอดภัย) เจอจุดที่ยังไม่เคยจดไว้ในนี้ — บันทึกไว้ก่อน
+ยังไม่ได้ลงมือแก้ (ยกเว้น 2 ข้อที่รอบความปลอดภัยเสนอมาแต่จริงๆ แก้ไปแล้วก่อนหน้า: SerpAPI daily quota
+guard และ web-search-result injection label — ทั้งสองมีอยู่แล้วใน `bot.py`)
+
+### 🏗️ โครงสร้างโค้ด
+- **`bot.py` ~2,000 บรรทัดกำลังกลายเป็น God Object** — ทำหน้าที่อย่างน้อย 8 อย่างในไฟล์เดียว: Discord event
+  handling, tool definitions+handlers (weather/oil/outage/search), ประกอบ prompt, ลูป tool-calling,
+  จัดการ history/summarization, TTS orchestration, karaoke playback, print dispatch — ตัดกันไปเรื่อยๆ
+  ทุกฟีเจอร์ใหม่จะกองลงไฟล์นี้ ผู้ตรวจแนะนำแยกเป็น `tools_weather.py`/`tools_search.py` (tool handlers)
+  + `llm.py` (`ask_ollama` + ลูป tool-calling) เหลือ `bot.py` เป็นแค่ event router ~300 บรรทัด
+- **Dispatch ด้วย keyword matching เปราะ** — `wants_print = "พิมพ์" in text`, `wants_song = "เพลง" in text
+  and (...)` scale ไม่ได้ เช่น "ช่วยพิมพ์เนื้อเพลงให้หน่อย" จะโดน `wants_song` จับผิด ระยะยาวควรย้าย intent
+  พวกนี้เป็น tool ให้ LLM ตัดสินใจแทน (มีโครง tool-calling อยู่แล้ว แค่ยังไม่ย้าย intent เก่าเข้าไป)
+  - **บั๊กจริงที่ยืนยันแล้ว:** `SONG_STRIP` ใน `music.py` ใช้ `str.replace()` แบบ substring ธรรมดา (ไม่ใช่
+    word-boundary) และมีคำสั้นอย่าง `"ขอ"` อยู่ในลิสต์ — เพลงชื่อ **"ขอโทษ"** จะถูกตัดคำว่า `"ขอ"` ออกจาก
+    กลางชื่อเพลงเอง กลายเป็น `"โทษ"` ทำให้หาเพลงไม่เจอ ต้องแก้เป็น split-then-filter แทน replace ตรงๆ
+- **สถานะกระจายอยู่ใน module-level globals** — `_last_message_at`, `_SEARCH_CACHE`, `_user_locks`,
+  `pending_prints`, `_active_users` เป็น dict ระดับ module ทั้งหมด หายเมื่อ restart (cooldown, cache,
+  pending print job) และทำให้เทสต้อง monkeypatch ข้าม module ยังไม่เจ็บวันนี้ แต่จะเจ็บตอนอยากทำ
+  `/status` command หรือ multi-process
+- **ความจำสองระบบทับซ้อนกัน** — `memory.py` (keyword recall) + `vectormemory.py` (semantic recall)
+  ทำงานคู่กันแล้ว dedupe กันเองใน `ask_ollama` ด้วย exact string match (`[s for s in vec_recalled if s
+  not in recalled]`) ซึ่งพลาดได้ถ้าข้อความต่างกันนิดเดียว — คำถามที่ต้องตอบก่อนตัดสินใจ: keyword recall
+  ยังจับอะไรที่ vector recall จับไม่ได้จริงไหม ถ้าไม่ → ยุบเหลือระบบเดียว ลดโค้ด ~400 บรรทัด
+- **ตัวเลข/ค่าตั้งค่ากระจัดกระจาย ไม่มีที่รวม** — ครึ่งหนึ่งอยู่ใน `.env` (secrets, `PRINT_ALLOWED_USER_IDS`,
+  `ALLOWED_GUILD_IDS`) ครึ่งหนึ่ง hardcode ในโค้ด เช่น **`PRINTER_NAME = "Canon E3300 series"` ที่
+  `printing.py:17`** ทั้งที่มี `.env` พร้อมใช้แล้ว — คน clone ไปใช้เครื่องพิมพ์อื่นต้องแก้โค้ดตรงๆ
+
+### 🔒 ความปลอดภัยที่เหลือ (เพิ่มเติมจากตารางด้านบน)
+| ระดับ | ปัญหา | รายละเอียด |
+|-------|-------|-----------|
+| 🟡 Low (DoS) | `_last_message_at` และ `_SEARCH_CACHE` โตไม่จำกัด | `_cache_get` เช็ค TTL ตอนอ่านแต่ไม่เคยลบ entry หมดอายุออกจริง — โตตามจำนวน user id/query ที่ไม่ซ้ำไปเรื่อยๆ ไม่มีวันหด (ต่างจาก `_seen_msg_ids` ที่ใช้ `deque(maxlen=200)` ถูกต้องแล้ว) |
+| 🟡 Low | PII ในล็อก | `bot.py` print `message.content` เต็มๆ ลง console ทุกข้อความที่เห็น — ถ้าย้ายไป logging ต้อง redact เนื้อหาผู้ใช้ด้วย ไม่ใช่แค่เปลี่ยน print→logger ตรงๆ |
+| 🟢 Low (ไม่กระทบ runtime) | `os.system()` กับ f-string path ใน dev scripts | `tools/make_tts_raw.py:43`, `tools/adjust_raw.py:102` ต่อ path เข้า shell string ตรงๆ ถ้า path มี `"`/`;` = command injection ได้ แต่เป็นสคริปต์ offline ไม่กระทบบอทจริง ควรเปลี่ยนเป็น `subprocess.run([...])` ให้เป็นนิสัยเดียวกับที่เหลือ |
+| Medium (ยอมรับความเสี่ยงไว้ก่อน) | DM ไม่มี allowlist มีแค่ cooldown | `ALLOWED_GUILD_IDS` จำกัดได้แค่ guild ไม่ครอบคลุม DM — cooldown 3s/user จำกัดอัตราได้ แต่คนแปลกหน้าที่รู้จักบอทยังเปิด DM คุยรัวๆ ต่อเนื่องได้ (เผา GPU สะสม แม้ SerpAPI มี daily quota guard กันไว้แล้ว) |
+
+### 🚀 ข้อเสนอพัฒนาต่อ (นอก roadmap หลัก — เรียงตามคุณค่าต่อความเสถียร/ดูแลรักษา)
+1. **Structured logging แทน print** — ย้ายไป `logging` + `RotatingFileHandler` ได้ระดับ log/timestamp
+   และมีล็อกย้อนหลังดูได้ตอนบอทมีปัญหาตอนตี 3 (ตอนนี้ปิด console = หายหมด) ต้อง redact เนื้อหาผู้ใช้ด้วย
+2. **Config validation ตอน startup (fail-fast)** — เช็ค `DISCORD_TOKEN`/`PRINTER_NAME`/SumatraPDF
+   ติดตั้งจริงก่อนบอทออนไลน์ แทนที่จะไปเจอ error ตอนผู้ใช้สั่งพิมพ์
+3. **Auto-recovery ของ voice worker** — มี `.alive` check แล้ว แต่ควร auto-respawn เมื่อ subprocess ตาย
+   แทนที่จะปิด TTS ถาวรจนกว่าจะ restart บอทเอง
+4. **คำสั่ง `/status`** — ดูสถานะ worker, โควตา SerpAPI ที่เหลือ, จำนวน active users, print queue จาก
+   Discord โดยไม่ต้องดู console
+5. **Global GPU concurrency guard** — รวม `voice_lock`/`print_lock` หรือ limit จำนวน TTS job พร้อมกัน
+   กัน VRAM OOM เมื่อหลายห้องเรียกพร้อมกัน
+6. **Tooling คุณภาพโค้ด** — เพิ่ม `ruff`/`mypy` + pre-commit, พิจารณาแตก `bot.py` เป็น package แยก
+   handlers/tools/voice/memory (ดูหัวข้อโครงสร้างโค้ดด้านบน)
+7. **Test เพิ่มสำหรับ injection & auth** — ล็อกพฤติกรรมความปลอดภัยไว้ไม่ให้ regress: user ที่ไม่อยู่ใน
+   allowlist สั่งพิมพ์, PDF ที่มีคำสั่งแฝง, ชื่อไฟล์ path-traversal (`../../x.pdf`)
+
+---
+
 ## ⏳ กำลังค้างอยู่ (เริ่มแล้ว ยังไม่จบ)
 
 _(ไม่มีตอนนี้ — เฟส 3d ย้ายไปอยู่ในหมวด ✅ เสร็จแล้วด้านบนแล้ว)_
