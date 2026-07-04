@@ -54,13 +54,13 @@
 
 | ไฟล์ | ประเภท | จำนวน tests |
 |------|--------|-------------|
-| `test_bot.py` | pytest | 80 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding, persona-slip filter, rate limiting, karaoke outro |
+| `test_bot.py` | pytest | 83 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding, persona-slip filter, rate limiting, karaoke outro, fewshot ไม่มีข้อเท็จจริงตายตัว |
 | `test_memory.py` | pytest | 56 — facts, recall, parse, summaries, supersede/consolidation |
 | `test_realtime.py` | pytest | 51 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
 | `test_vectormemory.py` | pytest | 15 — rerank fail-safe (output หลุดฟอร์แมต, temperature, edge case), PDF page cap |
 | `test_voice.py` | pytest | 25 — streaming segment order/fail-safe, f5_preprocess (ปี/หน่วย), worker hang timeout |
 | `test_printing.py` | pytest | 9 — print_jobs cleanup, pending_prints expiry |
-| `test_music.py` | pytest | 4 — song_requests.json entry cap |
+| `test_music.py` | pytest | 9 — song_requests.json entry cap, extract_song_query tokenize |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
 รัน unit tests ทั้งหมด: `pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py test_printing.py test_music.py`
@@ -123,6 +123,7 @@
 |-------------------|-----------|-------------------|
 | `TMD_TOKEN` | พยากรณ์อากาศจากกรมอุตุฯ (แม่นสำหรับไทย) | Open-Meteo (ฟรี ไม่ต้องใช้ key) |
 | `SERPAPI_KEY` | ค้นเว็บ + หาร้านผ่าน Google จริง (250 ครั้ง/เดือน) | DuckDuckGo (ฟรี ไม่ต้องใช้ key) |
+| `PRINTER_NAME` | ชื่อเครื่องพิมพ์ที่ตั้งค่าไว้ใน Windows | ค่า default ในโค้ด (`Canon E3300 series`) |
 
 > `config.py` เป็นแค่ตัวโหลดค่าจาก `.env` (ไม่มีค่าลับในไฟล์เอง) ไม่ต้องแก้อะไรในนั้น
 
@@ -321,9 +322,13 @@ python tools/test_voice_pipeline.py
   เจ้าของเสียงต้นทาง — ถ้าจะทำ voice cloning เอง ต้องหาข้อมูลเสียง/โมเดลของตัวเอง
 - มี rate limiting พื้นฐานแล้ว (cooldown ต่อ user, guild allowlist ผ่าน `.env`, โควตา SerpApi ต่อวัน) —
   ดูรายละเอียด/ปรับค่าได้ที่ [ROADMAP.md](ROADMAP.md) หัวข้อความปลอดภัย
-- ผ่าน code review ภายนอกมาแล้ว 2 รอบ (โครงสร้าง + ความปลอดภัย) — จุดที่พบและยังไม่ได้แก้ (เช่น `bot.py`
-  เริ่มยาวเกินไป, บั๊ก `SONG_STRIP` ตัดชื่อเพลงที่มีคำว่า "ขอ" ผิด, dict บาง module โตไม่จำกัด) บันทึกไว้ที่
-  [ROADMAP.md](ROADMAP.md) หัวข้อ "ผลตรวจโค้ดจาก code review ภายนอก"
+- **ล็อกของบอทเก็บที่ `logs/bot.log`** (rotating file, 5MB × 3 backups) ดูย้อนหลังได้แม้ปิด console ไปแล้ว
+  — เนื้อหาข้อความผู้ใช้ (PII) ไม่ถูกเขียนลงไฟล์โดย default (อยู่ระดับ DEBUG) เห็นแค่ผู้ส่ง/DM/mention
+- ผ่าน code review ภายนอกมาแล้ว 3 รอบ (โครงสร้าง + ความปลอดภัย ×2) — เก็บครบทุกข้อความเสี่ยงต่ำ/กลางแล้ว
+  (PDF ต่อ user มีเพดาน, DM มี allowlist แบบ opt-in, dict ใน memory ไม่โตไม่จำกัดแล้ว, `os.system` ใน
+  dev scripts เปลี่ยนเป็น `subprocess.run`) จุดที่ยังเหลือเป็นเรื่องโครงสร้างระยะยาว (เช่น `bot.py`
+  เริ่มยาวเกินไป, dispatch ด้วย keyword ยังเปราะ) บันทึกไว้ที่ [ROADMAP.md](ROADMAP.md) หัวข้อ
+  "ผลตรวจโค้ดจาก code review ภายนอก"
 
 ## 📜 License
 

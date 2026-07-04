@@ -16,6 +16,8 @@ songs/
 song_requests.json
 # ไฟล์เพลง karaoke cover (ไฟล์ใหญ่ + อาจมีลิขสิทธิ์)
 karaoke/
+# ล็อกไฟล์ของบอท (rotating file handler) — มี metadata ผู้ใช้ (ใครทัก/DM หรือไม่) ไม่ควร commit
+logs/
 
 # ===== ไฟล์ขยะของ Python =====
 __pycache__/

@@ -8,6 +8,7 @@
 
 import asyncio
 import os
+import subprocess
 import sys
 import time
 
@@ -40,15 +41,17 @@ async def _make_wav(name: str, text: str) -> float:
     await tts.save(mp3_path)
 
     # แปลงเป็น wav ด้วย ffmpeg (ไม่บีบอัด PCM 16-bit 24kHz)
-    ret = os.system(
-        f'ffmpeg -y -loglevel error -i "{mp3_path}" -ar 24000 -ac 1 -sample_fmt s16 "{wav_path}"'
+    # ใช้ subprocess.run แบบ list args แทน os.system(f"...") — กัน command injection ถ้า path มี "/;
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", mp3_path,
+         "-ar", "24000", "-ac", "1", "-sample_fmt", "s16", wav_path]
     )
     os.remove(mp3_path)  # ลบ mp3 ชั่วคราว
 
     elapsed = time.perf_counter() - t0
 
-    if ret != 0:
-        print(f"  ⚠️  ffmpeg คืน exit code {ret} — ตรวจสอบว่า ffmpeg ติดตั้งแล้ว (winget install ffmpeg)")
+    if result.returncode != 0:
+        print(f"  ⚠️  ffmpeg คืน exit code {result.returncode} — ตรวจสอบว่า ffmpeg ติดตั้งแล้ว (winget install ffmpeg)")
     return elapsed
 
 

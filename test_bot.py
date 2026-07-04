@@ -627,6 +627,44 @@ class TestToolLoopFailSafe:
         assert reply
 
 
+# ── FEWSHOT_EXAMPLES ต้องไม่มีข้อเท็จจริงเปลี่ยนแปลงได้ฝังตายตัว ──────────────────
+#    บั๊กจริงที่เจอ: ตัวอย่างเก่ามีวันที่ "2 มิถุนายน" ฝังไว้ในคำตอบ assistant ทำให้โมเดล 8B
+#    ข้ามการเรียก get_current_time ไปเลย แล้วคัดลอกวันที่จากตัวอย่างมาตอบตรงๆ ทุกครั้ง
+#    (ยืนยันจาก log จริงว่าไม่มีการเรียก tool เกิดขึ้นเลยทั้งสองครั้งที่ถูกถาม)
+
+class TestFewshotNoStaleFacts:
+    def test_no_thai_month_names_in_assistant_replies(self):
+        import persona
+        months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                  "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        for msg in persona.FEWSHOT_EXAMPLES:
+            if msg["role"] != "assistant":
+                continue
+            for month in months:
+                assert month not in msg["content"], (
+                    f"พบชื่อเดือน {month!r} ในตัวอย่าง assistant reply — เสี่ยงโมเดลจำวันที่ตายตัว "
+                    f"แทนเรียก get_current_time จริง: {msg['content']!r}")
+
+    def test_no_clock_time_digits_in_assistant_replies(self):
+        import re
+        import persona
+        for msg in persona.FEWSHOT_EXAMPLES:
+            if msg["role"] != "assistant":
+                continue
+            assert not re.search(r"\d{1,2}:\d{2}", msg["content"]), (
+                f"พบรูปแบบเวลา HH:MM ในตัวอย่าง assistant reply: {msg['content']!r}")
+
+    def test_no_oil_price_figures_in_assistant_replies(self):
+        import re
+        import persona
+        for msg in persona.FEWSHOT_EXAMPLES:
+            if msg["role"] != "assistant":
+                continue
+            assert not re.search(r"\d+\s*บาท", msg["content"]), (
+                f"พบตัวเลขราคา (บาท) ฝังตายตัวในตัวอย่าง assistant reply — เสี่ยงโมเดลจำราคาตายตัว "
+                f"แทนเรียก get_oil_price จริง: {msg['content']!r}")
+
+
 # ── fix_persona_slips — ดักคำหลุดคาแร็กเตอร์ (validation layer) ──────────────────
 
 class TestFixPersonaSlips:
@@ -687,6 +725,98 @@ class TestCooldown:
         bot._check_cooldown(111, now=100.0)
         assert bot._check_cooldown(222, now=100.1) is True  # คนละ user ไม่โดน cooldown ร่วม
 
+    def test_stale_entries_purged_on_next_write(self):
+        bot._last_message_at[111] = 0.0   # ตั้งเวลาเก่ามากไว้ล่วงหน้า
+        bot._check_cooldown(222, now=10_000.0)  # ห่างเกิน _COOLDOWN_STALE_SEC (3600) แล้ว
+        assert 111 not in bot._last_message_at
+
+    def test_fresh_entries_not_purged(self):
+        bot._check_cooldown(111, now=100.0)
+        bot._check_cooldown(222, now=200.0)   # ห่างจากกันแค่ 100s ไม่ถึง stale threshold
+        assert 111 in bot._last_message_at
+
+
+class TestUserLocksCleanup:
+    """get_user_lock — จำกัดจำนวน lock สะสม กวาด lock ที่ไม่ได้ถูกใช้งานอยู่ทิ้งเมื่อเกิน _USER_LOCKS_MAX
+    (ปลอดภัย — get_user_lock สร้าง Lock ใหม่ให้เองถ้ามีคนต้องใช้อีกหลังโดนกวาดไปแล้ว)"""
+
+    def setup_method(self):
+        bot._user_locks.clear()
+
+    def test_purge_removes_only_unlocked_entries(self):
+        locked_mock = MagicMock()
+        locked_mock.locked.return_value = True
+        unlocked_mock = MagicMock()
+        unlocked_mock.locked.return_value = False
+        bot._user_locks[1] = locked_mock
+        bot._user_locks[2] = unlocked_mock
+
+        bot._purge_unlocked_locks()
+
+        assert 1 in bot._user_locks       # ยังถืออยู่ ห้ามลบ
+        assert 2 not in bot._user_locks   # ไม่ได้ถือ ลบได้
+
+    def test_get_user_lock_triggers_purge_when_over_cap(self, monkeypatch):
+        monkeypatch.setattr(bot, "_USER_LOCKS_MAX", 1)
+        unlocked_mock = MagicMock()
+        unlocked_mock.locked.return_value = False
+        bot._user_locks[1] = unlocked_mock
+
+        bot.get_user_lock(2)
+
+        assert 1 not in bot._user_locks
+        assert 2 in bot._user_locks
+
+    def test_new_lock_created_if_not_exists(self):
+        result = bot.get_user_lock(999)
+        assert isinstance(result, asyncio.Lock)
+        assert 999 in bot._user_locks
+
+
+class TestSearchCachePurge:
+    """_cache_set — ลบ entry ที่หมดอายุ (เกิน _CACHE_TTL) ทิ้งจริงตอนเขียนใหม่ทุกครั้ง
+    (เดิม _cache_get เช็ค TTL ตอนอ่านแต่ไม่เคยลบออกจริง — dict โตไม่จำกัดตามจำนวน query ที่ไม่ซ้ำ)"""
+
+    def setup_method(self):
+        bot._SEARCH_CACHE.clear()
+
+    def test_stale_entries_purged_on_write(self, monkeypatch):
+        monkeypatch.setattr(bot, "_CACHE_TTL", 100)
+        with patch("time.time", return_value=0.0):
+            bot._cache_set("web", "old query", "old result")
+        with patch("time.time", return_value=200.0):   # เกิน TTL(100) แล้ว
+            bot._cache_set("web", "new query", "new result")
+        assert ("web", "old query") not in bot._SEARCH_CACHE
+        assert ("web", "new query") in bot._SEARCH_CACHE
+
+    def test_fresh_entries_not_purged(self, monkeypatch):
+        monkeypatch.setattr(bot, "_CACHE_TTL", 3600)
+        with patch("time.time", return_value=0.0):
+            bot._cache_set("web", "q1", "r1")
+        with patch("time.time", return_value=10.0):
+            bot._cache_set("web", "q2", "r2")
+        assert ("web", "q1") in bot._SEARCH_CACHE
+        assert ("web", "q2") in bot._SEARCH_CACHE
+
+
+class TestActiveUsersCleanup:
+    """_track_active_user — เพดานกันโตไม่จำกัด เกินแล้วเคลียร์ทั้งชุด (ไม่เสียข้อมูลถาวร เพราะ
+    Condition A/B ใน ask_ollama summarize ประวัติเก็บลงไฟล์แยกอยู่แล้ว)"""
+
+    def setup_method(self):
+        bot._active_users.clear()
+
+    def test_adds_user_normally(self):
+        bot._track_active_user(123)
+        assert 123 in bot._active_users
+
+    def test_clears_all_when_over_cap(self, monkeypatch):
+        monkeypatch.setattr(bot, "_ACTIVE_USERS_MAX", 2)
+        bot._active_users.add(1)
+        bot._active_users.add(2)
+        bot._track_active_user(3)
+        assert bot._active_users == {3}
+
 
 class TestGuildAllowlist:
     """_guild_allowed — จำกัด guild ที่บอทตอบ (ไม่ตั้ง ALLOWED_GUILD_IDS = ตอบทุกที่ เหมือนเดิม)"""
@@ -706,6 +836,27 @@ class TestGuildAllowlist:
     def test_guild_not_in_allowlist_blocked(self, monkeypatch):
         monkeypatch.setattr(bot, "ALLOWED_GUILD_IDS", [111, 222])
         assert bot._guild_allowed(999) is False
+
+
+class TestDmAllowlist:
+    """_dm_allowed — จำกัดคนที่ DM บอทได้ (ไม่ตั้ง DM_ALLOWED_USER_IDS = เปิดรับทุกคน เหมือนเดิม)
+    ALLOWED_GUILD_IDS ไม่คุม DM เลย นี่คือ allowlist แยกต่างหากสำหรับ DM โดยเฉพาะ"""
+
+    def test_non_dm_always_allowed_regardless_of_allowlist(self, monkeypatch):
+        monkeypatch.setattr(bot, "DM_ALLOWED_USER_IDS", [999])
+        assert bot._dm_allowed(12345, is_dm=False) is True
+
+    def test_empty_allowlist_allows_any_dm(self, monkeypatch):
+        monkeypatch.setattr(bot, "DM_ALLOWED_USER_IDS", [])
+        assert bot._dm_allowed(12345, is_dm=True) is True
+
+    def test_user_in_allowlist_passes(self, monkeypatch):
+        monkeypatch.setattr(bot, "DM_ALLOWED_USER_IDS", [111, 222])
+        assert bot._dm_allowed(111, is_dm=True) is True
+
+    def test_user_not_in_allowlist_blocked(self, monkeypatch):
+        monkeypatch.setattr(bot, "DM_ALLOWED_USER_IDS", [111, 222])
+        assert bot._dm_allowed(999, is_dm=True) is False
 
 
 class TestSerpapiQuotaGuard:

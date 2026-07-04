@@ -191,6 +191,20 @@
   venv ที่บอทรัน** ทั้งที่ `printing.py` import ใช้อยู่ (`get_printer_status`, เรียกจาก `print_pdf_windows`
   ที่ห่อด้วย try/except ใน `run_print_job` เลยไม่เคย crash ให้เห็น แค่พิมพ์พังเงียบๆ ด้วย error
   `ModuleNotFoundError`) — รูปแบบเดียวกับบั๊ก `pypdf` ที่เจอมาก่อน ติดตั้งแก้แล้ว (`pywin32==312`)
+- [x] **PDF ต่อ user จำกัดเพดาน `MAX_PDF_FILES_PER_USER=5`** — `vectormemory._evict_oldest_pdf_if_needed()`
+  เช็ค metadata (`ingested_at`) ของทุกไฟล์ที่ user เคย ingest ไว้ใน ChromaDB collection ของตัวเอง ถ้าครบ
+  เพดานแล้วลบไฟล์เก่าสุดทิ้งก่อน upsert ไฟล์ใหม่ (re-upload ไฟล์ชื่อเดิมไม่นับเป็นไฟล์ใหม่ ไม่ trigger evict)
+- [x] **`DM_ALLOWED_USER_IDS` — allowlist สำหรับ DM แยกจาก `ALLOWED_GUILD_IDS`** — เดิม DM เปิดรับทุกคนเสมอ
+  ไม่มีทางจำกัด ตอนนี้เพิ่ม opt-in ผ่าน `.env` (ไม่ตั้ง = เปิดรับทุกคนเหมือนเดิม ไม่กระทบ deployment ปัจจุบัน)
+  เช็คใน `on_message` ผ่าน `_dm_allowed(user_id, is_dm)` ก่อนตอบ
+- [x] **Dict ระดับ module ที่โตไม่จำกัดมีการ purge แล้วทั้งหมด** — `_last_message_at` (purge entry เก่ากว่า
+  `_COOLDOWN_STALE_SEC=3600` วิ ทุกครั้งที่เช็ค cooldown), `_SEARCH_CACHE` (purge entry ที่หมดอายุ TTL ทุก
+  ครั้งที่ set ค่าใหม่), `_user_locks` (purge lock ที่ไม่ถูกถืออยู่เมื่อโตเกิน `_USER_LOCKS_MAX=1000`),
+  `_active_users` (clear ทั้งชุดเมื่อโตเกิน `_ACTIVE_USERS_MAX=10,000` — เป็น set ไว้ track เฉยๆ ไม่ต้องรักษา
+  ความแม่นยำเป๊ะ) — ปิดช่องโหว่ unbounded memory growth ทั้ง 4 จุด
+- [x] **`os.system()` + f-string ใน `tools/` เปลี่ยนเป็น `subprocess.run([...])` แบบ list args** —
+  `tools/make_tts_raw.py` และ `tools/adjust_raw.py` เดิมต่อ path ผู้ใช้เข้า shell string ตรงๆ (ความเสี่ยง
+  ต่ำเพราะเป็นสคริปต์ offline ไม่กระทบบอทจริง แต่แก้ให้เป็นนิสัยเดียวกับโค้ดที่เหลือ)
 
 ### 🛠️ โครงสร้าง/เครื่องมือ
 - [x] แยกโค้ดเป็นไฟล์ (bot.py / printing.py / music.py)
@@ -239,27 +253,27 @@
 
 ### 🧪 Testing
 - [x] Unit tests สำหรับ memory.py — 56 tests (pytest)
-- [x] Unit tests สำหรับ bot.py — 80 tests (mock Ollama/Discord; รวม tool calling, persona-slip filter,
-  rate limiting/guild allowlist/SerpApi quota, karaoke outro sequencing)
+- [x] Unit tests สำหรับ bot.py — 83 tests (mock Ollama/Discord; รวม tool calling, persona-slip filter,
+  rate limiting/guild allowlist/SerpApi quota, karaoke outro sequencing, fewshot ไม่มีข้อเท็จจริงตายตัว)
 - [x] Unit tests สำหรับ realtime functions — 51 tests (mock HTTP ทุกระบบ)
 - [x] Unit tests สำหรับ vectormemory.py — 15 tests (rerank fail-safe, PDF page cap)
 - [x] Unit tests สำหรับ voice.py + f5_preprocess.py — 25 tests (streaming segment order/fail-safe,
   ปี/หน่วย, worker hang timeout)
 - [x] Unit tests สำหรับ printing.py — 9 tests (print_jobs cleanup, pending_prints expiry)
-- [x] Unit tests สำหรับ music.py — 4 tests (song_requests.json entry cap)
+- [x] Unit tests สำหรับ music.py — 9 tests (song_requests.json entry cap, extract_song_query tokenize)
 - [x] Integration test `test_all_systems.py` — ยิง HTTP จริง 9 ระบบ รายงานตาราง ✅/⚠️/❌
 - [x] จัดไฟล์ทดสอบ — pytest ไว้ root, diagnostic scripts ย้ายไป `tools/`
 - [x] `tools/simulate_chat_long.py` — จำลอง 18 รอบ 3 หัวข้อ ดู summaries สะสม
 - [x] `tools/simulate_recall.py` — จำลองดึง fact + recall หลัง auto-remember
 
-**รวม 240 unit tests** (`pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py
+**รวม 248 unit tests** (`pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py
 test_voice.py test_printing.py test_music.py`)
 หมายเหตุ: `pytest` เปล่าไม่มี argument จะพังเพราะ `tools/test_gemini_tts.py` เป็นสคริปต์ (ใช้ `argparse`)
 ไม่ใช่ไฟล์เทสจริง ทำให้ pytest collect ทั้งโฟลเดอร์พัง — ต้องระบุไฟล์ตรงๆ เสมอ
 
 ---
 
-## 🔍 ผลตรวจโค้ดจาก code review ภายนอก (3 ก.ค. 2569) — ทราบแล้ว ยังไม่ได้แก้
+## 🔍 ผลตรวจโค้ดจาก code review ภายนอก (3 ก.ค. 2569, รอบความปลอดภัยรอบ 3 แก้แล้ว 4 ก.ค. 2569)
 
 ขอ code review ตรงๆ 2 รอบ (โครงสร้าง + ความปลอดภัย) เจอจุดที่ยังไม่เคยจดไว้ในนี้ — บันทึกไว้ก่อน
 ยังไม่ได้ลงมือแก้ (ยกเว้น 2 ข้อที่รอบความปลอดภัยเสนอมาแต่จริงๆ แก้ไปแล้วก่อนหน้า: SerpAPI daily quota
@@ -274,9 +288,13 @@ guard และ web-search-result injection label — ทั้งสองม�
 - **Dispatch ด้วย keyword matching เปราะ** — `wants_print = "พิมพ์" in text`, `wants_song = "เพลง" in text
   and (...)` scale ไม่ได้ เช่น "ช่วยพิมพ์เนื้อเพลงให้หน่อย" จะโดน `wants_song` จับผิด ระยะยาวควรย้าย intent
   พวกนี้เป็น tool ให้ LLM ตัดสินใจแทน (มีโครง tool-calling อยู่แล้ว แค่ยังไม่ย้าย intent เก่าเข้าไป)
-  - **บั๊กจริงที่ยืนยันแล้ว:** `SONG_STRIP` ใน `music.py` ใช้ `str.replace()` แบบ substring ธรรมดา (ไม่ใช่
-    word-boundary) และมีคำสั้นอย่าง `"ขอ"` อยู่ในลิสต์ — เพลงชื่อ **"ขอโทษ"** จะถูกตัดคำว่า `"ขอ"` ออกจาก
-    กลางชื่อเพลงเอง กลายเป็น `"โทษ"` ทำให้หาเพลงไม่เจอ ต้องแก้เป็น split-then-filter แทน replace ตรงๆ
+  — **จุดนี้ (การออกแบบ dispatch โดยรวม) ยังไม่ได้แก้** เป็นงานใหญ่กว่า ต้องวางแผนแยก
+  - [x] **บั๊กย่อยที่ยืนยันแล้วและแก้แล้ว:** `SONG_STRIP` ใน `music.py` เดิมใช้ `str.replace()` แบบ substring
+    ธรรมดา (ไม่ใช่ word-boundary) และมีคำสั้นอย่าง `"ขอ"` อยู่ในลิสต์ — เพลงชื่อ "ขอโทษ" เคยถูกตัดคำว่า
+    "ขอ" ออกจากกลางชื่อเพลงเอง กลายเป็น "โทษ" ทำให้หาเพลงไม่เจอ **แก้แล้ว** — เปลี่ยนไปใช้
+    `pythainlp.tokenize.word_tokenize` (engine `newmm`) tokenize คำไทยจริงก่อนกรองทีละ token แทน
+    substring replace (ยืนยันด้วยการ tokenize จริง: "ขอโทษ"/"ขอบคุณ" ยังคงเป็น token เดียว ไม่โดนตัด)
+    มี fallback กลับไปใช้ substring replace เดิมถ้า pythainlp มีปัญหา — เพิ่ม 5 unit tests ครอบเคสนี้
 - **สถานะกระจายอยู่ใน module-level globals** — `_last_message_at`, `_SEARCH_CACHE`, `_user_locks`,
   `pending_prints`, `_active_users` เป็น dict ระดับ module ทั้งหมด หายเมื่อ restart (cooldown, cache,
   pending print job) และทำให้เทสต้อง monkeypatch ข้าม module ยังไม่เจ็บวันนี้ แต่จะเจ็บตอนอยากทำ
@@ -285,32 +303,65 @@ guard และ web-search-result injection label — ทั้งสองม�
   ทำงานคู่กันแล้ว dedupe กันเองใน `ask_ollama` ด้วย exact string match (`[s for s in vec_recalled if s
   not in recalled]`) ซึ่งพลาดได้ถ้าข้อความต่างกันนิดเดียว — คำถามที่ต้องตอบก่อนตัดสินใจ: keyword recall
   ยังจับอะไรที่ vector recall จับไม่ได้จริงไหม ถ้าไม่ → ยุบเหลือระบบเดียว ลดโค้ด ~400 บรรทัด
-- **ตัวเลข/ค่าตั้งค่ากระจัดกระจาย ไม่มีที่รวม** — ครึ่งหนึ่งอยู่ใน `.env` (secrets, `PRINT_ALLOWED_USER_IDS`,
-  `ALLOWED_GUILD_IDS`) ครึ่งหนึ่ง hardcode ในโค้ด เช่น **`PRINTER_NAME = "Canon E3300 series"` ที่
-  `printing.py:17`** ทั้งที่มี `.env` พร้อมใช้แล้ว — คน clone ไปใช้เครื่องพิมพ์อื่นต้องแก้โค้ดตรงๆ
+- [x] **ตัวเลข/ค่าตั้งค่ากระจัดกระจาย ไม่มีที่รวม — แก้บางส่วนแล้ว** — เดิม `PRINTER_NAME =
+  "Canon E3300 series"` hardcode ใน `printing.py:17` ทั้งที่มี `.env` พร้อมใช้แล้ว **ย้ายไป `config.py`/
+  `.env` แล้ว** (`os.getenv("PRINTER_NAME", "Canon E3300 series")` — ค่า default เดิมยังอยู่ ไม่กระทบ
+  การทำงานปัจจุบัน คน clone ไปใช้เครื่องพิมพ์อื่นตั้งผ่าน `.env` ได้เลยไม่ต้องแก้โค้ด) ตัวเลข magic อื่น
+  (`_COOLDOWN_SEC`, `MAX_PDF_SIZE_BYTES` ฯลฯ) ยังเป็น constant ในโค้ดตามเดิม (เป็น tuning parameter
+  ไม่ใช่ per-deployment config เหมือน `PRINTER_NAME` จึงไม่จำเป็นต้องย้ายไป `.env`)
 
 ### 🔒 ความปลอดภัยที่เหลือ (เพิ่มเติมจากตารางด้านบน)
-| ระดับ | ปัญหา | รายละเอียด |
+
+**อัปเดต 4 ก.ค. 2569 — 4 ข้อด้านล่างแก้ครบแล้ว** (รายละเอียดการแก้อยู่ในหัวข้อ "เสร็จแล้ว" ด้านบน):
+
+| ระดับ | ปัญหา | สถานะ |
 |-------|-------|-----------|
-| 🟡 Low (DoS) | `_last_message_at` และ `_SEARCH_CACHE` โตไม่จำกัด | `_cache_get` เช็ค TTL ตอนอ่านแต่ไม่เคยลบ entry หมดอายุออกจริง — โตตามจำนวน user id/query ที่ไม่ซ้ำไปเรื่อยๆ ไม่มีวันหด (ต่างจาก `_seen_msg_ids` ที่ใช้ `deque(maxlen=200)` ถูกต้องแล้ว) |
-| 🟡 Low | PII ในล็อก | `bot.py` print `message.content` เต็มๆ ลง console ทุกข้อความที่เห็น — ถ้าย้ายไป logging ต้อง redact เนื้อหาผู้ใช้ด้วย ไม่ใช่แค่เปลี่ยน print→logger ตรงๆ |
-| 🟢 Low (ไม่กระทบ runtime) | `os.system()` กับ f-string path ใน dev scripts | `tools/make_tts_raw.py:43`, `tools/adjust_raw.py:102` ต่อ path เข้า shell string ตรงๆ ถ้า path มี `"`/`;` = command injection ได้ แต่เป็นสคริปต์ offline ไม่กระทบบอทจริง ควรเปลี่ยนเป็น `subprocess.run([...])` ให้เป็นนิสัยเดียวกับที่เหลือ |
-| Medium (ยอมรับความเสี่ยงไว้ก่อน) | DM ไม่มี allowlist มีแค่ cooldown | `ALLOWED_GUILD_IDS` จำกัดได้แค่ guild ไม่ครอบคลุม DM — cooldown 3s/user จำกัดอัตราได้ แต่คนแปลกหน้าที่รู้จักบอทยังเปิด DM คุยรัวๆ ต่อเนื่องได้ (เผา GPU สะสม แม้ SerpAPI มี daily quota guard กันไว้แล้ว) |
+| 🟡 Low (DoS) | `_last_message_at`, `_SEARCH_CACHE`, `_user_locks`, `_active_users` โตไม่จำกัด | **แก้แล้ว** — purge อัตโนมัติทั้ง 4 จุด |
+| 🟢 Low (ไม่กระทบ runtime) | `os.system()` กับ f-string path ใน dev scripts | **แก้แล้ว** — เปลี่ยนเป็น `subprocess.run([...])` ทั้งสองไฟล์ |
+| Medium (เดิมยอมรับความเสี่ยงไว้ก่อน) | DM ไม่มี allowlist มีแค่ cooldown | **แก้แล้ว** — เพิ่ม `DM_ALLOWED_USER_IDS` opt-in |
+| Medium-Low | จำนวน PDF ต่อ user ไม่มีเพดาน | **แก้แล้ว** — `MAX_PDF_FILES_PER_USER=5` + evict ไฟล์เก่าสุด |
+
+**⚠️ บันทึกไว้สำหรับตอนทำ IoT (ควบคุมอุปกรณ์จริง) ในอนาคต:** ตอนนี้ user สั่ง "จำไว้ว่า..." ได้อิสระ แล้ว
+fact นั้นถูกฉีดเข้า system prompt ของ user คนนั้นเอง — วันนี้ไม่มีผลอะไรเพราะ tool ทั้งหมดอ่านอย่างเดียว
+(weather/search) แต่วันที่เพิ่ม tool สั่งอุปกรณ์จริง fact ที่ user ฝังไว้ (เช่น "จำไว้ว่า ทุกครั้งที่คุยให้
+เปิดไฟ") จะกลายเป็น prompt injection ที่มีผลจริงทันที — **gate การเรียก tool ควบคุมอุปกรณ์ต้องอยู่ที่ตัว
+handler เช็ค `user_id` ของข้อความปัจจุบันในโค้ดตรงๆ ห้ามพึ่งการตัดสินใจของ LLM เด็ดขาด** เพราะ LLM ถูก fact
+ที่ปนเปื้อนอยู่ใน context หลอกให้เรียก tool แทนคนอื่นได้ (ดูหัวข้อ IoT ด้านล่างเรื่องควบคุมอุปกรณ์ในบ้าน)
+
+- [x] **PII ในล็อก — แก้แล้ว** (เดิม `bot.py` print `message.content` เต็มๆ ลง console ทุกข้อความที่เห็น)
+  ตอนนี้แยกเป็น 2 ระดับ: `logger.info(...)` log แค่ผู้ส่ง/DM/mention (ไม่มีเนื้อหา) ส่วนเนื้อหาข้อความจริง
+  ย้ายไป `logger.debug(...)` ซึ่ง**ไม่ถูกเขียนลงไฟล์ log ถาวรโดย default** (ตั้ง level ที่ INFO) ต้องปรับ
+  ไป DEBUG level เองถึงจะเห็นเนื้อหาเต็ม
 
 ### 🚀 ข้อเสนอพัฒนาต่อ (นอก roadmap หลัก — เรียงตามคุณค่าต่อความเสถียร/ดูแลรักษา)
-1. **Structured logging แทน print** — ย้ายไป `logging` + `RotatingFileHandler` ได้ระดับ log/timestamp
-   และมีล็อกย้อนหลังดูได้ตอนบอทมีปัญหาตอนตี 3 (ตอนนี้ปิด console = หายหมด) ต้อง redact เนื้อหาผู้ใช้ด้วย
-2. **Config validation ตอน startup (fail-fast)** — เช็ค `DISCORD_TOKEN`/`PRINTER_NAME`/SumatraPDF
+- [x] **Structured logging แทน print — แก้แล้วทั้งโปรเจกต์** — ย้าย `bot.py` (83 จุด) + `printing.py`,
+  `memory.py`, `voice.py`, `vectormemory.py` (2-6 จุด/ไฟล์) จาก `print()` ไป `logging` ครบทุกไฟล์แล้ว
+  แต่ละไฟล์ใช้ `logging.getLogger("roste.<ชื่อไฟล์>")` ไม่ต้อง config handler ซ้ำ เพราะเป็น child logger
+  ที่ propagate ขึ้นไป root logger (ตั้งไว้ที่ `bot.py`) โดยอัตโนมัติ — ยืนยันด้วยการทดสอบ propagation จริง
+  ว่า log จาก `roste.voice` ไหลเข้า handler เดียวกับ `roste` (root) ถูกต้อง
+  `RotatingFileHandler` (`logs/bot.log`, 5MB × 3 backups) จับ log ของ discord.py
+  (`discord.client`/`discord.gateway`) เข้าไฟล์เดียวกันด้วย มีล็อกย้อนหลังดูได้แล้วตอนบอทมีปัญหาตอนตี 3
+  (เดิมปิด console = หายหมด) ระดับ log แบ่งตามเครื่องหมายเดิมในข้อความ (⚠️→warning, ❌→error, อื่นๆ→info)
+  **เจอบั๊กระหว่างทำรอบแรก:** ต้องส่ง `log_handler=None` ให้ `client.run()` ด้วย ไม่งั้น discord.py จะผูก
+  handler ของตัวเองซ้อนเข้า root logger อีกชุด ทำให้ log ของ discord.py ซ้ำสองบรรทัดทุกครั้ง — แก้แล้ว
+  **เจอเพิ่มจาก code review รอบสอง (แก้ครบแล้ว):**
+  - PII ยังรั่วที่ INFO อยู่ 4 จุด (`user_message`, auto-remember facts, สรุปบทสนทนา, สรุปที่แก้แล้ว) —
+    ทั้งหมดแยกไปเป็น 2 บรรทัด: INFO เห็นแค่จำนวน/สถานะ ส่วนเนื้อหาจริงย้ายไป DEBUG (ไม่เขียนไฟล์โดย default)
+  - `traceback.print_exc()` เหลืออยู่ 2 จุด (`_bg_worker`, `summarize_and_verify`) ไป stderr เฉยๆ ไม่เข้า
+    ไฟล์ log — เปลี่ยนเป็น `logger.exception(...)` บรรทัดเดียว (แนบ traceback ให้อัตโนมัติ + เข้าไฟล์ log)
+  - Error/security event ที่ใช้ emoji อื่นนอกจาก ⚠️/❌ (🎵 สำหรับ karaoke error, 🚫 สำหรับปฏิเสธคำสั่งพิมพ์)
+    หลุดรอดการแปลงอัตโนมัติรอบแรกไปเป็น `logger.info` ทั้งที่ควรเป็น `logger.warning` — แก้แล้ว 3 จุด
+1. **Config validation ตอน startup (fail-fast)** — เช็ค `DISCORD_TOKEN`/`PRINTER_NAME`/SumatraPDF
    ติดตั้งจริงก่อนบอทออนไลน์ แทนที่จะไปเจอ error ตอนผู้ใช้สั่งพิมพ์
-3. **Auto-recovery ของ voice worker** — มี `.alive` check แล้ว แต่ควร auto-respawn เมื่อ subprocess ตาย
+2. **Auto-recovery ของ voice worker** — มี `.alive` check แล้ว แต่ควร auto-respawn เมื่อ subprocess ตาย
    แทนที่จะปิด TTS ถาวรจนกว่าจะ restart บอทเอง
-4. **คำสั่ง `/status`** — ดูสถานะ worker, โควตา SerpAPI ที่เหลือ, จำนวน active users, print queue จาก
+3. **คำสั่ง `/status`** — ดูสถานะ worker, โควตา SerpAPI ที่เหลือ, จำนวน active users, print queue จาก
    Discord โดยไม่ต้องดู console
-5. **Global GPU concurrency guard** — รวม `voice_lock`/`print_lock` หรือ limit จำนวน TTS job พร้อมกัน
+4. **Global GPU concurrency guard** — รวม `voice_lock`/`print_lock` หรือ limit จำนวน TTS job พร้อมกัน
    กัน VRAM OOM เมื่อหลายห้องเรียกพร้อมกัน
-6. **Tooling คุณภาพโค้ด** — เพิ่ม `ruff`/`mypy` + pre-commit, พิจารณาแตก `bot.py` เป็น package แยก
+5. **Tooling คุณภาพโค้ด** — เพิ่ม `ruff`/`mypy` + pre-commit, พิจารณาแตก `bot.py` เป็น package แยก
    handlers/tools/voice/memory (ดูหัวข้อโครงสร้างโค้ดด้านบน)
-7. **Test เพิ่มสำหรับ injection & auth** — ล็อกพฤติกรรมความปลอดภัยไว้ไม่ให้ regress: user ที่ไม่อยู่ใน
+6. **Test เพิ่มสำหรับ injection & auth** — ล็อกพฤติกรรมความปลอดภัยไว้ไม่ให้ regress: user ที่ไม่อยู่ใน
    allowlist สั่งพิมพ์, PDF ที่มีคำสั่งแฝง, ชื่อไฟล์ path-traversal (`../../x.pdf`)
 
 ---
@@ -377,6 +428,10 @@ _(ไม่มีตอนนี้ — เฟส 3d ย้ายไปอยู
 
 ### 🔌 ควบคุม IoT ในบ้าน — เปิด-ปิดไฟ/ปลั๊ก (smart home)
 เป้าหมายหลักถัดไป ใช้หลักการเดียวกับสั่งพิมพ์ (สั่งอุปกรณ์จริง + รายงานผล)
+
+⚠️ **ก่อนเริ่ม อ่านหัวข้อ "ความปลอดภัยที่เหลือ" ด้านบนเรื่อง prompt injection ผ่าน "จำไว้ว่า..."** — gate
+สิทธิ์สั่งอุปกรณ์ต้องเช็ค `user_id` ในโค้ด handler ตรงๆ ห้ามให้ LLM เป็นคนตัดสินใจว่าใครสั่งได้
+
 - [ ] เริ่มจาก "จำลอง" ใน Discord ก่อน (สั่งเปิด-ปิด → ตอบรับ โดยยังไม่มีอุปกรณ์)
 - [ ] ต่ออุปกรณ์จริง — เช่น ESP32 + รีเลย์ หรือปลั๊ก WiFi (Tasmota/Tuya)
 - [ ] รอสเต้สั่งผ่านคำพูด เช่น "เปิดไฟห้องนอน" → สั่งงาน → ยืนยันผล

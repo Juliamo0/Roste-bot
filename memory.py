@@ -14,6 +14,10 @@
 # ============================================================
 import os
 import json
+import logging
+
+# ไม่ต้อง config handler เอง — bot.py ตั้ง root logger ไว้แล้ว (rotating file + console)
+logger = logging.getLogger("roste.memory")
 
 MEMORY_DIR = "memory"
 os.makedirs(MEMORY_DIR, exist_ok=True)
@@ -50,7 +54,7 @@ def load_memory(user_id):
             mem.setdefault("summaries", [])
             return mem
         except Exception as e:
-            print(f"   ↳ อ่านความจำไม่สำเร็จ: {e}")
+            logger.warning(f"   ↳ อ่านความจำไม่สำเร็จ: {e}")
     return {"name": "", "facts": [], "history": [], "summaries": []}
 
 
@@ -60,7 +64,7 @@ def save_memory(user_id, mem):
         with open(_memory_path(user_id), "w", encoding="utf-8") as f:
             json.dump(mem, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"   ↳ บันทึกความจำไม่สำเร็จ: {e}")
+        logger.warning(f"   ↳ บันทึกความจำไม่สำเร็จ: {e}")
 
 
 # ============================================================

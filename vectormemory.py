@@ -18,12 +18,16 @@
 # ============================================================
 import io
 import json
+import logging
 import re
 import time
 
 import aiohttp
 import chromadb
 from pypdf import PdfReader
+
+# ไม่ต้อง config handler เอง — bot.py ตั้ง root logger ไว้แล้ว (rotating file + console)
+logger = logging.getLogger("roste.vectormemory")
 
 OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
 EMBED_MODEL = "bge-m3"   # ต้อง `ollama pull bge-m3` ก่อนใช้ (~1.2GB, รองรับไทยดี)
@@ -38,6 +42,9 @@ PDF_CHUNK_SIZE = 800
 PDF_CHUNK_OVERLAP = 100
 MAX_CHUNKS_PER_PDF = 300   # กันไฟล์ใหญ่มากทำให้บอทค้างนานเกิน (embed ทีละ chunk แบบ sequential)
 MAX_PDF_PAGES = 200        # กัน PDF ที่มีจำนวนหน้าเยอะผิดปกติ (เช่นไฟล์ประสงค์ร้าย) ทำ extract_text ช้า/ค้าง
+MAX_PDF_FILES_PER_USER = 5 # จำกัดจำนวนไฟล์ PDF สะสมต่อ user — เกินแล้วลบไฟล์เก่าสุดทิ้งอัตโนมัติ
+                           # (กัน chroma_db/ โตไม่จำกัดถ้าคนแปลกหน้า DM ส่ง PDF มาเรื่อยๆ — ได้ฟีเจอร์
+                           # "ลืมไฟล์เก่า" มาด้วยในตัว)
 
 _client = chromadb.PersistentClient(path="chroma_db")
 
@@ -58,7 +65,7 @@ async def get_embedding(text: str, _retried: bool = False) -> list | None:
         if not _retried:
             return await get_embedding(text, _retried=True)
         err = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-        print(f"   ⚠️ vectormemory: ทำ embedding ไม่สำเร็จ ({err})")
+        logger.warning(f"   ⚠️ vectormemory: ทำ embedding ไม่สำเร็จ ({err})")
         return None
 
 
@@ -111,7 +118,7 @@ async def rerank_with_llm(query: str, candidates: list, top_n: int = 3) -> list:
         ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
         return [c for c, s in ranked if isinstance(s, (int, float)) and s >= RERANK_SCORE_MIN][:top_n]
     except Exception as e:
-        print(f"   ⚠️ vectormemory: rerank ไม่สำเร็จ ({type(e).__name__}: {e}) — ไม่ inject รอบนี้")
+        logger.warning(f"   ⚠️ vectormemory: rerank ไม่สำเร็จ ({type(e).__name__}: {e}) — ไม่ inject รอบนี้")
         return []
 
 
@@ -148,21 +155,24 @@ async def ingest_pdf(user_id: int, filename: str, pdf_bytes: bytes) -> int:
         reader = PdfReader(io.BytesIO(pdf_bytes))
         pages = reader.pages
         if len(pages) > MAX_PDF_PAGES:
-            print(f"   ⚠️ vectormemory: PDF {filename!r} มี {len(pages)} หน้า — อ่านแค่ {MAX_PDF_PAGES} หน้าแรก")
+            logger.warning(f"   ⚠️ vectormemory: PDF {filename!r} มี {len(pages)} หน้า — อ่านแค่ {MAX_PDF_PAGES} หน้าแรก")
             pages = pages[:MAX_PDF_PAGES]
         full_text = "\n".join(page.extract_text() or "" for page in pages)
     except Exception as e:
-        print(f"   ⚠️ vectormemory: อ่าน PDF ไม่สำเร็จ ({e})")
+        logger.warning(f"   ⚠️ vectormemory: อ่าน PDF ไม่สำเร็จ ({e})")
         return 0
 
     chunks = _chunk_text(full_text)
     if not chunks:
         return 0
     if len(chunks) > MAX_CHUNKS_PER_PDF:
-        print(f"   ⚠️ vectormemory: PDF {filename!r} ยาวเกิน — เก็บแค่ {MAX_CHUNKS_PER_PDF} chunk แรก")
+        logger.warning(f"   ⚠️ vectormemory: PDF {filename!r} ยาวเกิน — เก็บแค่ {MAX_CHUNKS_PER_PDF} chunk แรก")
         chunks = chunks[:MAX_CHUNKS_PER_PDF]
 
     coll = _pdf_collection(user_id)
+    _evict_oldest_pdf_if_needed(coll, filename)
+
+    now = time.time()
     ids, embeddings, documents, metadatas = [], [], [], []
     for i, chunk in enumerate(chunks):
         emb = await get_embedding(chunk)
@@ -171,12 +181,34 @@ async def ingest_pdf(user_id: int, filename: str, pdf_bytes: bytes) -> int:
         ids.append(f"{filename}::{i}")
         embeddings.append(emb)
         documents.append(chunk)
-        metadatas.append({"filename": filename, "chunk": i})
+        metadatas.append({"filename": filename, "chunk": i, "ingested_at": now})
 
     if not ids:
         return 0
     coll.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
     return len(ids)
+
+
+def _evict_oldest_pdf_if_needed(coll, new_filename: str) -> None:
+    """ถ้า user มีไฟล์ PDF สะสมอยู่แล้วครบ MAX_PDF_FILES_PER_USER (ไม่นับไฟล์ที่กำลังอัปโหลดซ้ำชื่อเดิม
+    เพราะ upsert จะทับของเดิมอยู่แล้ว ไม่ได้เพิ่มจำนวนไฟล์จริง) ลบไฟล์ที่เก่าสุด (ingested_at น้อยสุด) ทิ้ง
+    ก่อนเพิ่มไฟล์ใหม่ — กัน chroma_db/ โตไม่จำกัดถ้ามีคนส่ง PDF มาเรื่อยๆ"""
+    existing = coll.get(include=["metadatas"])
+    metadatas = existing.get("metadatas") or []
+    oldest_ts_by_file = {}
+    for m in metadatas:
+        fn = m.get("filename")
+        if fn is None or fn == new_filename:
+            continue
+        ts = m.get("ingested_at", 0)
+        if fn not in oldest_ts_by_file or ts < oldest_ts_by_file[fn]:
+            oldest_ts_by_file[fn] = ts
+
+    if len(oldest_ts_by_file) >= MAX_PDF_FILES_PER_USER:
+        oldest_filename = min(oldest_ts_by_file, key=oldest_ts_by_file.get)
+        coll.delete(where={"filename": oldest_filename})
+        logger.info(f"   🗑️ vectormemory: ลบ PDF เก่าสุด {oldest_filename!r} ทิ้ง "
+                    f"(เกินเพดาน {MAX_PDF_FILES_PER_USER} ไฟล์/user)")
 
 
 async def query_pdf(user_id: int, question: str, top_k: int = 3) -> list:
