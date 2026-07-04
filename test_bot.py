@@ -268,6 +268,9 @@ class TestSummarizeAndVerify:
 
 
 # ── flush_user_history ────────────────────────────────────────────────────────
+#    หมายเหตุ: flush_user_history/summarize_and_verify ย้ายไป chat.py แล้ว (bot.py แค่
+#    re-export) — patch summarize_and_verify ต้องชี้ไป chat ตรงๆ เพราะ flush_user_history
+#    เรียกมันผ่าน __globals__ ของ chat ที่นิยามทั้งคู่ ไม่ใช่ของ bot
 
 class TestFlushUserHistory:
     def setup_method(self):
@@ -278,7 +281,7 @@ class TestFlushUserHistory:
         user_id = 30
         _init_mem(tmp_path, user_id)
         mock_sav = AsyncMock()
-        with patch("bot.summarize_and_verify", mock_sav):
+        with patch("chat.summarize_and_verify", mock_sav):
             asyncio.run(bot.flush_user_history(user_id))
         mock_sav.assert_not_called()
 
@@ -288,7 +291,7 @@ class TestFlushUserHistory:
         history = _make_history(4)
         _init_mem(tmp_path, user_id, history=history)
         mock_sav = AsyncMock()
-        with patch("bot.summarize_and_verify", mock_sav):
+        with patch("chat.summarize_and_verify", mock_sav):
             asyncio.run(bot.flush_user_history(user_id))
         mock_sav.assert_called_once_with(user_id, history)
 
@@ -296,7 +299,7 @@ class TestFlushUserHistory:
         monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
         user_id = 32
         _init_mem(tmp_path, user_id, history=_make_history(4))
-        with patch("bot.summarize_and_verify", AsyncMock()):
+        with patch("chat.summarize_and_verify", AsyncMock()):
             asyncio.run(bot.flush_user_history(user_id))
         assert _load_saved(tmp_path, user_id)["history"] == []
 
@@ -515,6 +518,8 @@ class TestToolHandlers:
 
 # ── tool loop fail-safe (ผ่าน ask_ollama เต็ม) — โมเดลเรียกมั่ว/ฟอร์แมตเพี้ยน/handler พัง ──
 #    ต้องไม่ crash ask_ollama ทั้งฟังก์ชัน ไม่ว่าเกิดอะไรขึ้นกับ tool call
+#    หมายเหตุ: ask_ollama ย้ายไป chat.py แล้ว (bot.py แค่ re-export) — patch _chat_once ต้องชี้ไป
+#    chat ตรงๆ เพราะ ask_ollama เรียกมันผ่าน __globals__ ของ chat ที่นิยามทั้งคู่ ไม่ใช่ของ bot
 
 class TestToolLoopFailSafe:
     def setup_method(self):
@@ -536,7 +541,7 @@ class TestToolLoopFailSafe:
             {"content": "", "tool_calls": [tool_call]},
             {"content": "ตอนนี้บ่ายสามโมงค่ะ", "tool_calls": None},
         ]
-        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)), \
+        with patch.object(chat, "_chat_once", AsyncMock(side_effect=responses)), \
              patch.object(llm_tools, "get_thai_datetime", return_value="บ่ายสามโมง"):
             reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "ตอนนี้กี่โมง"))
         assert "บ่ายสามโมง" in reply
@@ -552,7 +557,7 @@ class TestToolLoopFailSafe:
             {"content": "", "tool_calls": [tool_call]},
             {"content": "ขอโทษค่ะ ทำแบบนั้นไม่ได้นะคะ", "tool_calls": None},
         ]
-        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)):
+        with patch.object(chat, "_chat_once", AsyncMock(side_effect=responses)):
             reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "บินไปดวงจันทร์หน่อย"))
         assert reply  # ไม่ crash — ได้ reply กลับมาตามปกติ
 
@@ -568,7 +573,7 @@ class TestToolLoopFailSafe:
             {"content": "", "tool_calls": [tool_call]},
             {"content": "หืม ขอโทษค่ะ ลองถามใหม่อีกทีนะคะ", "tool_calls": None},
         ]
-        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)):
+        with patch.object(chat, "_chat_once", AsyncMock(side_effect=responses)):
             reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "ค้นเว็บหน่อย"))
         assert reply
 
@@ -586,7 +591,7 @@ class TestToolLoopFailSafe:
             {"content": "", "tool_calls": [tool_call]},
             {"content": "ขอโทษค่ะ ระบบอากาศมีปัญหาตอนนี้", "tool_calls": None},
         ]
-        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)):
+        with patch.object(chat, "_chat_once", AsyncMock(side_effect=responses)):
             reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "พรุ่งนี้ฝนตกไหม"))
         assert reply  # exception ข้างใน handler ต้องไม่หลุดขึ้นไป crash ask_ollama
 
@@ -604,7 +609,7 @@ class TestToolLoopFailSafe:
             {"content": "", "tool_calls": calls},
             {"content": "ตอนนี้บ่ายสามโมง น้ำมันปตท. 33 บาทค่ะ", "tool_calls": None},
         ]
-        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)), \
+        with patch.object(chat, "_chat_once", AsyncMock(side_effect=responses)), \
              patch.object(llm_tools, "get_thai_datetime", return_value="บ่ายสามโมง"), \
              patch.object(llm_tools, "get_oil_price", AsyncMock(return_value="ปตท. 33 บาท")) as mo:
             reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "กี่โมงแล้ว น้ำมันราคาเท่าไหร่"))
@@ -624,7 +629,7 @@ class TestToolLoopFailSafe:
             {"content": "", "tool_calls": [tool_call]},
             {"content": "พรุ่งนี้ฝนตกช่วงบ่ายค่ะ", "tool_calls": None},
         ]
-        with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)), \
+        with patch.object(chat, "_chat_once", AsyncMock(side_effect=responses)), \
              patch.object(llm_tools, "get_weather_tmd", AsyncMock(return_value=None)), \
              patch.object(llm_tools, "get_weather", AsyncMock(return_value="ฝนตกบ่าย")) as mw:
             reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "พรุ่งนี้ต้องพกร่มไหม"))
