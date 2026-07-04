@@ -62,7 +62,7 @@ async def phase1_tool_selection():
 
     passed = failed = 0
     for case in TOOL_SELECTION_CASES:
-        msg = await bot._chat_once([{"role": "user", "content": case["msg"]}])
+        msg = await bot._chat_once([{"role": "user", "content": case["msg"]}], tools=bot.TOOLS)
         tool_calls = msg.get("tool_calls") or []
         got_tool = tool_calls[0]["function"]["name"] if tool_calls else None
         ok = got_tool == case["expect_tool"]

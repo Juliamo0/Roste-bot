@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import bot
+import llm_tools
 import memory
 import vectormemory
 import websearch
@@ -457,39 +458,42 @@ class TestStripUngroundedOptionalArgs:
 
 
 # ── _tool_* handlers — เรียกตรงๆ (ไม่ผ่าน ask_ollama) mock เฉพาะฟังก์ชันดึงข้อมูลจริงข้างใน ──
+#    หมายเหตุ: handler พวกนี้ย้ายไป llm_tools.py แล้ว (bot.py แค่ re-export) — patch ต้องชี้ไป
+#    llm_tools ตรงๆ เพราะ handler เรียก get_thai_datetime/get_weather*/get_oil_price/_search_places
+#    ผ่าน __globals__ ของโมดูลที่นิยามมันเอง (llm_tools) ไม่ใช่ของ bot ที่ import ชื่อมาวาง
 
 class TestToolHandlers:
     def test_get_current_time_uses_real_clock(self):
-        with patch.object(bot, "get_thai_datetime", return_value="วันจันทร์ บ่ายสามโมง"):
+        with patch.object(llm_tools, "get_thai_datetime", return_value="วันจันทร์ บ่ายสามโมง"):
             result = asyncio.run(bot._tool_get_current_time({}, {}))
         assert "วันจันทร์" in result
 
     def test_get_weather_defaults_to_home_province_when_missing(self):
-        with patch.object(bot, "get_weather_tmd", AsyncMock(return_value=None)), \
-             patch.object(bot, "get_weather", AsyncMock(return_value="ร้อน 35°C")) as mw:
+        with patch.object(llm_tools, "get_weather_tmd", AsyncMock(return_value=None)), \
+             patch.object(llm_tools, "get_weather", AsyncMock(return_value="ร้อน 35°C")) as mw:
             result = asyncio.run(bot._tool_get_weather({}, {}))
         mw.assert_called_once_with(bot.HOME_PROVINCE_NAME)
         assert "ร้อน 35" in result
 
     def test_get_weather_prefers_tmd_over_open_meteo(self):
-        with patch.object(bot, "get_weather_tmd", AsyncMock(return_value="TMD data")), \
-             patch.object(bot, "get_weather", AsyncMock(return_value="OpenMeteo data")) as mow:
+        with patch.object(llm_tools, "get_weather_tmd", AsyncMock(return_value="TMD data")), \
+             patch.object(llm_tools, "get_weather", AsyncMock(return_value="OpenMeteo data")) as mow:
             result = asyncio.run(bot._tool_get_weather({"province": "เชียงใหม่"}, {}))
         mow.assert_not_called()
         assert "TMD data" in result
 
     def test_get_oil_price_defaults_to_ptt(self):
-        with patch.object(bot, "get_oil_price", AsyncMock(return_value="ปตท. 33.34")) as mo:
+        with patch.object(llm_tools, "get_oil_price", AsyncMock(return_value="ปตท. 33.34")) as mo:
             asyncio.run(bot._tool_get_oil_price({}, {}))
         mo.assert_called_once_with("ptt")
 
     def test_get_oil_price_accepts_code_directly(self):
-        with patch.object(bot, "get_oil_price", AsyncMock(return_value="เชลล์ 34")) as mo:
+        with patch.object(llm_tools, "get_oil_price", AsyncMock(return_value="เชลล์ 34")) as mo:
             asyncio.run(bot._tool_get_oil_price({"brand": "shell"}, {}))
         mo.assert_called_once_with("shell")
 
     def test_get_oil_price_maps_thai_name_to_code(self):
-        with patch.object(bot, "get_oil_price", AsyncMock(return_value="บางจาก 32")) as mo:
+        with patch.object(llm_tools, "get_oil_price", AsyncMock(return_value="บางจาก 32")) as mo:
             asyncio.run(bot._tool_get_oil_price({"brand": "บางจาก"}, {}))
         mo.assert_called_once_with("bcp")
 
@@ -498,12 +502,12 @@ class TestToolHandlers:
         assert "จังหวัด" in result
 
     def test_search_places_falls_back_to_saved_location(self):
-        with patch.object(bot, "_search_places", AsyncMock(return_value="ผลลัพธ์")) as msp:
+        with patch.object(llm_tools, "_search_places", AsyncMock(return_value="ผลลัพธ์")) as msp:
             asyncio.run(bot._tool_search_places({"query": "ก๋วยเตี๋ยว"}, {"facts": ["อยู่ชุมพร"]}))
         msp.assert_called_once_with("ก๋วยเตี๋ยว", "ชุมพร")
 
     def test_search_web_returns_failure_message_when_empty(self):
-        with patch.object(bot, "search_web", return_value=""):
+        with patch.object(llm_tools, "search_web", return_value=""):
             result = asyncio.run(bot._tool_search_web({"query": "ทดสอบ"}, {}))
         assert "ไม่พบข้อมูล" in result or "ห้ามเดา" in result
 
@@ -532,7 +536,7 @@ class TestToolLoopFailSafe:
             {"content": "ตอนนี้บ่ายสามโมงค่ะ", "tool_calls": None},
         ]
         with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)), \
-             patch.object(bot, "get_thai_datetime", return_value="บ่ายสามโมง"):
+             patch.object(llm_tools, "get_thai_datetime", return_value="บ่ายสามโมง"):
             reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "ตอนนี้กี่โมง"))
         assert "บ่ายสามโมง" in reply
 
@@ -600,8 +604,8 @@ class TestToolLoopFailSafe:
             {"content": "ตอนนี้บ่ายสามโมง น้ำมันปตท. 33 บาทค่ะ", "tool_calls": None},
         ]
         with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)), \
-             patch.object(bot, "get_thai_datetime", return_value="บ่ายสามโมง"), \
-             patch.object(bot, "get_oil_price", AsyncMock(return_value="ปตท. 33 บาท")) as mo:
+             patch.object(llm_tools, "get_thai_datetime", return_value="บ่ายสามโมง"), \
+             patch.object(llm_tools, "get_oil_price", AsyncMock(return_value="ปตท. 33 บาท")) as mo:
             reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "กี่โมงแล้ว น้ำมันราคาเท่าไหร่"))
         mo.assert_called_once_with("ptt")
         assert reply
@@ -620,8 +624,8 @@ class TestToolLoopFailSafe:
             {"content": "พรุ่งนี้ฝนตกช่วงบ่ายค่ะ", "tool_calls": None},
         ]
         with patch.object(bot, "_chat_once", AsyncMock(side_effect=responses)), \
-             patch.object(bot, "get_weather_tmd", AsyncMock(return_value=None)), \
-             patch.object(bot, "get_weather", AsyncMock(return_value="ฝนตกบ่าย")) as mw:
+             patch.object(llm_tools, "get_weather_tmd", AsyncMock(return_value=None)), \
+             patch.object(llm_tools, "get_weather", AsyncMock(return_value="ฝนตกบ่าย")) as mw:
             reply = asyncio.run(bot.ask_ollama(user_id, "ผู้ทดสอบ", "พรุ่งนี้ต้องพกร่มไหม"))
         # ต้องเรียก get_weather ด้วยจังหวัดบ้าน (fallback) ไม่ใช่ "กรุงเทพมหานคร" ที่โมเดลเดามา
         mw.assert_called_once_with(bot.HOME_PROVINCE_NAME)
