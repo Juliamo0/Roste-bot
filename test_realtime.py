@@ -11,6 +11,7 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import bot
+import datasources
 import websearch
 
 
@@ -228,18 +229,18 @@ _TMD_DAILY = {
 
 class TestGetWeatherTmd:
     def test_no_token_returns_none(self):
-        with patch.object(bot, "TMD_TOKEN", ""):
+        with patch.object(datasources, "TMD_TOKEN", ""):
             assert asyncio.run(bot.get_weather_tmd("ชุมพร")) is None
 
     def test_placeholder_token_returns_none(self):
-        with patch.object(bot, "TMD_TOKEN", "วาง_token"):
+        with patch.object(datasources, "TMD_TOKEN", "วาง_token"):
             assert asyncio.run(bot.get_weather_tmd("ชุมพร")) is None
 
     def test_with_token_formats_output(self):
         mock = _make_session_mock(json_data=_TMD_DAILY)
-        with patch.object(bot, "TMD_TOKEN", "real_token"), \
+        with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock), \
-             patch.object(bot, "get_weather_tmd_hourly_today", AsyncMock(return_value="")):
+             patch.object(datasources, "get_weather_tmd_hourly_today", AsyncMock(return_value="")):
             result = asyncio.run(bot.get_weather_tmd("ชุมพร"))
         assert result is not None
         assert "ชุมพร" in result
@@ -247,23 +248,23 @@ class TestGetWeatherTmd:
 
     def test_with_token_shows_temp(self):
         mock = _make_session_mock(json_data=_TMD_DAILY)
-        with patch.object(bot, "TMD_TOKEN", "real_token"), \
+        with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock), \
-             patch.object(bot, "get_weather_tmd_hourly_today", AsyncMock(return_value="")):
+             patch.object(datasources, "get_weather_tmd_hourly_today", AsyncMock(return_value="")):
             result = asyncio.run(bot.get_weather_tmd("ชุมพร"))
         assert "35" in result and "25" in result   # tc_max, tc_min
 
     def test_http_401_returns_none(self):
         mock = _make_session_mock(status=401)
-        with patch.object(bot, "TMD_TOKEN", "real_token"), \
+        with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock):
             assert asyncio.run(bot.get_weather_tmd("ชุมพร")) is None
 
     def test_rain_time_appended_if_present(self):
         mock = _make_session_mock(json_data=_TMD_DAILY)
-        with patch.object(bot, "TMD_TOKEN", "real_token"), \
+        with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock), \
-             patch.object(bot, "get_weather_tmd_hourly_today",
+             patch.object(datasources, "get_weather_tmd_hourly_today",
                           AsyncMock(return_value="14:00-16:00 น.")):
             result = asyncio.run(bot.get_weather_tmd("ชุมพร"))
         assert "14:00-16:00 น." in result
@@ -273,7 +274,7 @@ class TestGetWeatherTmd:
 
 class TestGetWeatherTmdHourlyToday:
     def test_no_token_returns_empty(self):
-        with patch.object(bot, "TMD_TOKEN", ""):
+        with patch.object(datasources, "TMD_TOKEN", ""):
             assert asyncio.run(bot.get_weather_tmd_hourly_today("ชุมพร")) == ""
 
     def test_rainy_consecutive_hours_grouped(self):
@@ -288,7 +289,7 @@ class TestGetWeatherTmdHourlyToday:
             }]
         }
         mock = _make_session_mock(json_data=data)
-        with patch.object(bot, "TMD_TOKEN", "real_token"), \
+        with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock):
             result = asyncio.run(bot.get_weather_tmd_hourly_today("ชุมพร"))
         assert "10:00-11:00 น." in result
@@ -304,7 +305,7 @@ class TestGetWeatherTmdHourlyToday:
             }]
         }
         mock = _make_session_mock(json_data=data)
-        with patch.object(bot, "TMD_TOKEN", "real_token"), \
+        with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock):
             result = asyncio.run(bot.get_weather_tmd_hourly_today("ชุมพร"))
         assert result == ""
@@ -320,7 +321,7 @@ class TestGetWeatherTmdHourlyToday:
             }]
         }
         mock = _make_session_mock(json_data=data)
-        with patch.object(bot, "TMD_TOKEN", "real_token"), \
+        with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock):
             result = asyncio.run(bot.get_weather_tmd_hourly_today("ชุมพร"))
         assert result == ""
@@ -346,25 +347,25 @@ _FORECAST = {
 
 class TestGetWeather:
     def test_location_found_returns_formatted_output(self):
-        with patch.object(bot, "_get_json", AsyncMock(side_effect=[_GEO, _FORECAST])):
+        with patch.object(datasources, "_get_json", AsyncMock(side_effect=[_GEO, _FORECAST])):
             result = asyncio.run(bot.get_weather("Chumphon"))
         assert "Chumphon" in result
         assert "ฝนเล็กน้อย" in result   # weather_code=61
 
     def test_three_days_in_output(self):
-        with patch.object(bot, "_get_json", AsyncMock(side_effect=[_GEO, _FORECAST])):
+        with patch.object(datasources, "_get_json", AsyncMock(side_effect=[_GEO, _FORECAST])):
             result = asyncio.run(bot.get_weather("Chumphon"))
         assert "วันนี้" in result
         assert "พรุ่งนี้" in result
         assert "มะรืนนี้" in result
 
     def test_location_not_found_returns_error(self):
-        with patch.object(bot, "_get_json", AsyncMock(return_value={"results": []})):
+        with patch.object(datasources, "_get_json", AsyncMock(return_value={"results": []})):
             result = asyncio.run(bot.get_weather("NoSuchPlace"))
         assert "หาตำแหน่งของ" in result
 
     def test_geocoding_exception_returns_error(self):
-        with patch.object(bot, "_get_json", AsyncMock(side_effect=Exception("network"))):
+        with patch.object(datasources, "_get_json", AsyncMock(side_effect=Exception("network"))):
             result = asyncio.run(bot.get_weather("Chumphon"))
         assert "ดึงข้อมูลอากาศไม่สำเร็จ" in result
 
