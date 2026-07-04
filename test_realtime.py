@@ -11,6 +11,7 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import bot
+import websearch
 
 
 # ── aiohttp session mock ──────────────────────────────────────────────────────
@@ -371,29 +372,33 @@ class TestGetWeather:
 # ── 9. search_web_serpapi ─────────────────────────────────────────────────────
 
 class TestSearchWebSerpapi:
+    """หมายเหตุ: search_web_serpapi ย้ายไป websearch.py แล้ว (bot.py แค่ re-export) —
+    patch _serpapi_get ต้องชี้ไป websearch ตรงๆ เพราะฟังก์ชันนี้เรียก _serpapi_get ผ่าน
+    __globals__ ของโมดูลที่นิยามมันเอง (websearch) ไม่ใช่ของ bot ที่ import มา"""
+
     def setup_method(self):
-        bot._SEARCH_CACHE.clear()
+        websearch._SEARCH_CACHE.clear()
 
     def test_returns_formatted_results(self):
         data = {"organic_results": [
             {"title": "ข่าว AI", "snippet": "AI ล่าสุด", "link": "https://example.com/ai"}
         ]}
-        with patch.object(bot, "_serpapi_get", return_value=data):
+        with patch.object(websearch, "_serpapi_get", return_value=data):
             result = bot.search_web_serpapi("ข่าว AI")
         assert "ข่าว AI" in result
         assert "example.com" in result
 
     def test_no_organic_results_returns_empty(self):
-        with patch.object(bot, "_serpapi_get", return_value={"organic_results": []}):
+        with patch.object(websearch, "_serpapi_get", return_value={"organic_results": []}):
             assert bot.search_web_serpapi("ข่าว") == ""
 
     def test_serpapi_error_returns_empty(self):
-        with patch.object(bot, "_serpapi_get", return_value=None):
+        with patch.object(websearch, "_serpapi_get", return_value=None):
             assert bot.search_web_serpapi("ข่าว") == ""
 
     def test_result_is_cached_on_second_call(self):
         data = {"organic_results": [{"title": "X", "snippet": "Y", "link": "https://x.com"}]}
-        with patch.object(bot, "_serpapi_get", return_value=data) as mock_fn:
+        with patch.object(websearch, "_serpapi_get", return_value=data) as mock_fn:
             bot.search_web_serpapi("cache-test-query")
             bot.search_web_serpapi("cache-test-query")
         assert mock_fn.call_count == 1   # ครั้งที่สองใช้ cache
@@ -403,14 +408,14 @@ class TestSearchWebSerpapi:
 
 class TestSearchPlacesSerpapi:
     def setup_method(self):
-        bot._SEARCH_CACHE.clear()
+        websearch._SEARCH_CACHE.clear()
 
     def test_filters_low_review_places(self):
         data = {"local_results": [
             {"title": "ร้านดัง", "rating": 4.5, "reviews": 100, "address": "ใจกลางเมือง"},
             {"title": "ร้านใหม่", "rating": 4.0, "reviews": 5},  # < 10 รีวิว → กรองออก
         ]}
-        with patch.object(bot, "_serpapi_get", return_value=data):
+        with patch.object(websearch, "_serpapi_get", return_value=data):
             result = bot.search_places_serpapi("ร้านอาหาร", "ชุมพร")
         assert "ร้านดัง" in result
         assert "ร้านใหม่" not in result
@@ -420,16 +425,16 @@ class TestSearchPlacesSerpapi:
             {"title": "ร้านB", "rating": 3.5, "reviews": 50, "address": "ซอย 2"},
             {"title": "ร้านA", "rating": 4.8, "reviews": 200, "address": "ถนนหลัก"},
         ]}
-        with patch.object(bot, "_serpapi_get", return_value=data):
+        with patch.object(websearch, "_serpapi_get", return_value=data):
             result = bot.search_places_serpapi("ร้านอาหาร", "ชุมพร")
         assert result.index("ร้านA") < result.index("ร้านB")
 
     def test_empty_local_results_returns_empty(self):
-        with patch.object(bot, "_serpapi_get", return_value={"local_results": []}):
+        with patch.object(websearch, "_serpapi_get", return_value={"local_results": []}):
             assert bot.search_places_serpapi("ร้านอาหาร", "ชุมพร") == ""
 
     def test_serpapi_error_returns_empty(self):
-        with patch.object(bot, "_serpapi_get", return_value=None):
+        with patch.object(websearch, "_serpapi_get", return_value=None):
             assert bot.search_places_serpapi("ร้านอาหาร", "ชุมพร") == ""
 
     def test_place_results_fallback_used(self):
@@ -438,7 +443,7 @@ class TestSearchPlacesSerpapi:
             "local_results": [],
             "place_results": {"title": "สวนสาธารณะ", "rating": 4.2, "reviews": 30}
         }
-        with patch.object(bot, "_serpapi_get", return_value=data):
+        with patch.object(websearch, "_serpapi_get", return_value=data):
             result = bot.search_places_serpapi("สวนสาธารณะ", "ชุมพร")
         assert "สวนสาธารณะ" in result
 
@@ -446,12 +451,15 @@ class TestSearchPlacesSerpapi:
 # ── 11. search_web ────────────────────────────────────────────────────────────
 
 class TestSearchWeb:
+    """หมายเหตุ: search_web ย้ายไป websearch.py แล้ว — patch SERPAPI_KEY/search_web_serpapi
+    ต้องชี้ไป websearch ตรงๆ ด้วยเหตุผลเดียวกับ TestSearchWebSerpapi ด้านบน"""
+
     def setup_method(self):
-        bot._SEARCH_CACHE.clear()
+        websearch._SEARCH_CACHE.clear()
 
     def test_uses_serpapi_when_key_present(self):
-        with patch.object(bot, "SERPAPI_KEY", "fake_key"), \
-             patch.object(bot, "search_web_serpapi", return_value="ผลจาก SerpApi") as mock_sp:
+        with patch.object(websearch, "SERPAPI_KEY", "fake_key"), \
+             patch.object(websearch, "search_web_serpapi", return_value="ผลจาก SerpApi") as mock_sp:
             result = bot.search_web("ข่าว AI")
         mock_sp.assert_called_once()
         assert "ผลจาก SerpApi" in result
@@ -463,13 +471,13 @@ class TestSearchWeb:
                 {"title": "ผล DDG", "body": "เนื้อหา", "href": "https://ddg.com"}
             ])
         ))
-        with patch.object(bot, "SERPAPI_KEY", ""), \
+        with patch.object(websearch, "SERPAPI_KEY", ""), \
              patch.dict("sys.modules", {"ddgs": mock_ddgs_module}):
             result = bot.search_web("คำค้น")
         assert "ผล DDG" in result
 
     def test_ddg_import_error_returns_install_message(self):
-        with patch.object(bot, "SERPAPI_KEY", ""), \
+        with patch.object(websearch, "SERPAPI_KEY", ""), \
              patch.dict("sys.modules", {"ddgs": None}):
             result = bot.search_web("ข่าว")
         assert "ยังไม่ได้ติดตั้ง" in result or "ddgs" in result
@@ -482,8 +490,8 @@ class TestSearchWeb:
                 {"title": "DDG fallback", "body": "content", "href": "https://x.com"}
             ])
         ))
-        with patch.object(bot, "SERPAPI_KEY", "fake_key"), \
-             patch.object(bot, "search_web_serpapi", return_value=""), \
+        with patch.object(websearch, "SERPAPI_KEY", "fake_key"), \
+             patch.object(websearch, "search_web_serpapi", return_value=""), \
              patch.dict("sys.modules", {"ddgs": mock_ddgs_module}):
             result = bot.search_web("ข่าว")
         assert "DDG fallback" in result
