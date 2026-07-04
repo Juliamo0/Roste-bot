@@ -25,6 +25,7 @@ OUT_SR          = 40000   # sample rate output — RVC มาตรฐานใ�
 # ──────────────────────────────────────────────────────────────────────────────
 
 import os
+import subprocess
 import sys
 import time
 import glob
@@ -95,12 +96,14 @@ def _use_ffmpeg(in_path: str, out_path: str, sr: int) -> None:
         filters += _atempo_chain(effective_tempo)
 
     filter_str = ",".join(filters) if filters else "anull"
-    cmd = (
-        f'ffmpeg -y -loglevel error -i "{in_path}" '
-        f'-af "{filter_str}" -ar {OUT_SR} -ac 1 -sample_fmt s16 "{out_path}"'
-    )
-    if os.system(cmd) != 0:
-        raise RuntimeError(f"ffmpeg failed — คำสั่ง: {cmd}")
+    # ใช้ subprocess.run แบบ list args แทน os.system(f"...") — กัน command injection ถ้า path มี "/;
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error", "-i", in_path,
+        "-af", filter_str, "-ar", str(OUT_SR), "-ac", "1", "-sample_fmt", "s16", out_path,
+    ]
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed — คำสั่ง: {' '.join(cmd)}")
 
 
 # ── main process ───────────────────────────────────────────────────────────────

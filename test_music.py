@@ -55,3 +55,31 @@ class TestSongRequestCap:
             music.log_song_request("user", f"song{i}", found=True)
         data = json.loads(log_path.read_text(encoding="utf-8"))
         assert len(data) <= 10
+
+
+# ── extract_song_query — tokenize คำไทยจริงแทน substring replace ────────────────
+#    บั๊กจริงที่เจอ (code review ภายนอกชี้จุด): SONG_STRIP มีคำสั้นอย่าง "ขอ" อยู่ในลิสต์
+#    ตัว substring replace เดิมจะตัด "ขอ" ออกจากกลางชื่อเพลงที่บังเอิญมีคำนี้ปนอยู่ เช่น "ขอโทษ"
+
+class TestExtractSongQuery:
+    def test_song_name_containing_ko_not_mangled(self):
+        # เพลงชื่อ "ขอโทษ" ต้องไม่โดนตัดคำว่า "ขอ" ออกจากกลางคำ
+        assert music.extract_song_query("ร้องเพลงขอโทษ") == "ขอโทษ"
+
+    def test_strips_common_trigger_words(self):
+        assert music.extract_song_query("ร้องเพลง Monster หน่อยค่ะ") == "Monster"
+
+    def test_song_name_containing_kob_khun_not_mangled(self):
+        # "ขอบคุณ" มีคำว่า "ขอ" ซ่อนอยู่เหมือนกัน (แม้ไม่ใช่คำเดียวกันเป๊ะ) ต้องรอดเหมือนกัน
+        assert music.extract_song_query("เปิดเพลงขอบคุณให้ฟังหน่อย") == "ขอบคุณ"
+
+    def test_english_song_name_with_trigger_word_kept(self):
+        assert music.extract_song_query("ขอเพลง Blinding Lights หน่อย") == "Blinding Lights"
+
+    def test_pythainlp_failure_falls_back_to_substring_replace(self, monkeypatch):
+        # ถ้า tokenize พังไม่ว่าเหตุผลอะไร ต้องยัง extract ได้ (ผลอาจไม่แม่นเท่า แต่ไม่ crash)
+        import pythainlp.tokenize
+        monkeypatch.setattr(pythainlp.tokenize, "word_tokenize",
+                             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+        result = music.extract_song_query("ร้องเพลง Monster หน่อย")
+        assert "Monster" in result

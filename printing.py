@@ -7,14 +7,22 @@ import os
 import re
 import time
 import asyncio
+import logging
+
+# ไม่ต้อง config handler เอง — bot.py ตั้ง root logger ไว้แล้ว (rotating file + console)
+# log ที่นี่จะไหลเข้าไฟล์เดียวกันอัตโนมัติผ่าน logger hierarchy (roste.printing → root)
+logger = logging.getLogger("roste.printing")
 
 # ---------- ⚙️ ตั้งค่าระบบพิมพ์ (แก้ตรงนี้) ----------
 # โหมดพิมพ์: False = "จำลอง" (ไม่สั่งเครื่องจริง แค่หน่วงเวลา+แจ้งสถานะ ไว้ทดสอบ)
 #            True  = "ของจริง" (สั่ง SumatraPDF พิมพ์จริง)
 PRINT_REAL_MODE = True
 
-# ชื่อเครื่องพิมพ์ (ใส่ให้ตรงกับใน Settings > Printers & scanners)
-PRINTER_NAME = "Canon E3300 series"
+# ชื่อเครื่องพิมพ์ — ย้ายไปตั้งค่าใน .env แล้ว (PRINTER_NAME) กันคน clone ไปใช้เครื่องอื่นต้องแก้โค้ดตรงๆ
+try:
+    from config import PRINTER_NAME
+except ImportError:
+    PRINTER_NAME = "Canon E3300 series"
 
 # เกณฑ์ "งานใหญ่" ที่ต้องให้ยืนยันก่อนพิมพ์
 MAX_COPIES_NO_CONFIRM = 5      # เกินกี่ชุดต้องยืนยัน
@@ -232,7 +240,7 @@ async def run_print_job(message, job):
                     print_pdf_windows, job["path"], job["copies"], PRINTER_NAME)
             else:
                 # โหมดจำลอง: หน่วงเวลาเสมือนกำลังพิมพ์ (2 วิ/ชุด)
-                print(f"   🖨️ [จำลอง] พิมพ์ {job['filename']} × {job['copies']} ชุด ({job['pages']} หน้า)")
+                logger.info(f"   🖨️ [จำลอง] พิมพ์ {job['filename']} × {job['copies']} ชุด ({job['pages']} หน้า)")
                 await asyncio.sleep(min(2 * job["copies"], 10))
                 ok, err = True, ""
         except Exception as e:
@@ -248,7 +256,7 @@ async def run_print_job(message, job):
             try:
                 os.remove(job["path"])
             except OSError as e:
-                print(f"   ⚠️ ลบไฟล์ print job ไม่สำเร็จ: {e}")
+                logger.warning(f"   ⚠️ ลบไฟล์ print job ไม่สำเร็จ: {e}")
         else:
             await message.channel.send(
                 f"{job['mention']} ขอโทษค่ะ พิมพ์ไม่สำเร็จ — {err} "

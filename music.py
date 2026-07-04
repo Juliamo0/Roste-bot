@@ -32,11 +32,21 @@ def _normalize_song(s):
 
 
 def extract_song_query(text):
-    """ดึง 'ชื่อเพลง' ออกจากข้อความสั่ง"""
-    q = text
-    for w in SONG_STRIP:
-        q = q.replace(w, " ")
-    return re.sub(r"\s+", " ", q).strip()
+    """ดึง 'ชื่อเพลง' ออกจากข้อความสั่ง — tokenize คำไทยจริงก่อนกรองออกทีละคำ (ไม่ใช่ substring
+    replace แบบเดิม) กัน SONG_STRIP กินตัวอักษรกลางชื่อเพลง เช่น เพลงชื่อ "ขอโทษ" ไม่ควรโดนตัดคำว่า
+    "ขอ" ออกจากกลางคำ (บั๊กจริงที่เจอจาก code review — substring replace เดิมทำแบบนั้น)"""
+    try:
+        from pythainlp.tokenize import word_tokenize
+        tokens = word_tokenize(text, engine="newmm")
+    except Exception:
+        # pythainlp มีปัญหา — fallback ไปวิธีเดิม (substring replace) ดีกว่าไม่ทำงานเลย
+        q = text
+        for w in SONG_STRIP:
+            q = q.replace(w, " ")
+        return re.sub(r"\s+", " ", q).strip()
+
+    kept = [t for t in tokens if t.strip() and t not in SONG_STRIP]
+    return re.sub(r"\s+", " ", " ".join(kept)).strip()
 
 
 def find_karaoke(query: str):

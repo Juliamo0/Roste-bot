@@ -184,3 +184,65 @@ class TestIngestPdfPageCap:
 
         for p in fake_pages:
             p.extract_text.assert_called_once()
+
+
+# ── MAX_PDF_FILES_PER_USER — จำกัดจำนวนไฟล์ PDF สะสมต่อ user ─────────────────────
+#    เกินแล้วลบไฟล์เก่าสุดทิ้งอัตโนมัติ กัน chroma_db/ โตไม่จำกัดถ้ามีคนส่ง PDF มาเรื่อยๆ
+
+class TestPdfPerUserFileCap:
+    def test_evict_removes_oldest_file_when_over_cap(self, monkeypatch):
+        monkeypatch.setattr(vectormemory, "MAX_PDF_FILES_PER_USER", 2)
+        mock_coll = MagicMock()
+        mock_coll.get.return_value = {
+            "metadatas": [
+                {"filename": "old.pdf", "chunk": 0, "ingested_at": 100.0},
+                {"filename": "old.pdf", "chunk": 1, "ingested_at": 100.0},
+                {"filename": "newer.pdf", "chunk": 0, "ingested_at": 200.0},
+            ]
+        }
+        vectormemory._evict_oldest_pdf_if_needed(mock_coll, "brand_new.pdf")
+        mock_coll.delete.assert_called_once_with(where={"filename": "old.pdf"})
+
+    def test_no_eviction_when_under_cap(self, monkeypatch):
+        monkeypatch.setattr(vectormemory, "MAX_PDF_FILES_PER_USER", 5)
+        mock_coll = MagicMock()
+        mock_coll.get.return_value = {
+            "metadatas": [
+                {"filename": "a.pdf", "chunk": 0, "ingested_at": 100.0},
+                {"filename": "b.pdf", "chunk": 0, "ingested_at": 200.0},
+            ]
+        }
+        vectormemory._evict_oldest_pdf_if_needed(mock_coll, "c.pdf")
+        mock_coll.delete.assert_not_called()
+
+    def test_reuploading_same_filename_does_not_trigger_eviction(self, monkeypatch):
+        # อัปโหลดไฟล์ชื่อเดิมซ้ำ ไม่ควรถูกนับเป็นไฟล์ใหม่ (upsert ทับของเดิมอยู่แล้ว ไม่ได้เพิ่มจำนวนไฟล์จริง)
+        monkeypatch.setattr(vectormemory, "MAX_PDF_FILES_PER_USER", 2)
+        mock_coll = MagicMock()
+        mock_coll.get.return_value = {
+            "metadatas": [
+                {"filename": "a.pdf", "chunk": 0, "ingested_at": 100.0},
+                {"filename": "b.pdf", "chunk": 0, "ingested_at": 200.0},
+            ]
+        }
+        vectormemory._evict_oldest_pdf_if_needed(mock_coll, "a.pdf")
+        mock_coll.delete.assert_not_called()
+
+    def test_ingest_pdf_calls_eviction_before_upsert(self, monkeypatch):
+        monkeypatch.setattr(vectormemory, "MAX_PDF_FILES_PER_USER", 1)
+        mock_coll = MagicMock()
+        mock_coll.get.return_value = {
+            "metadatas": [{"filename": "old.pdf", "chunk": 0, "ingested_at": 100.0}]
+        }
+        fake_reader = MagicMock()
+        page = MagicMock()
+        page.extract_text.return_value = "some pdf text content here"
+        fake_reader.pages = [page]
+
+        with patch("vectormemory.PdfReader", return_value=fake_reader), \
+             patch("vectormemory.get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])), \
+             patch("vectormemory._pdf_collection", return_value=mock_coll):
+            asyncio.run(vectormemory.ingest_pdf(1, "new.pdf", b"fake bytes"))
+
+        mock_coll.delete.assert_called_once_with(where={"filename": "old.pdf"})
+        mock_coll.upsert.assert_called_once()

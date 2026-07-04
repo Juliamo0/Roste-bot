@@ -23,6 +23,7 @@ F5 warm worker:
 import asyncio
 import io
 import json
+import logging
 import os
 import queue
 import re
@@ -34,6 +35,9 @@ import uuid
 from pathlib import Path
 
 import soundfile as sf
+
+# ไม่ต้อง config handler เอง — bot.py ตั้ง root logger ไว้แล้ว (rotating file + console)
+logger = logging.getLogger("roste.voice")
 
 # ── constants ──────────────────────────────────────────────────────────────────
 VOICE       = "th-TH-PremwadeeNeural"
@@ -576,7 +580,7 @@ def _gen_one_segment(
             _rvc_convert(f5_wav, out_path, worker)
             return out_path
         except Exception as e:
-            print(f"   ⚠️ F5 segment {label} พัง (ครั้งที่ {attempt}): {e}")
+            logger.warning(f"   ⚠️ F5 segment {label} พัง (ครั้งที่ {attempt}): {e}")
 
     try:
         raw_wav = os.path.join(tmp_dir, f"{label}_raw.wav")
@@ -584,10 +588,10 @@ def _gen_one_segment(
         _edge_tts(seg, raw_wav)
         _adjust(raw_wav, adj_wav)
         _rvc_convert(adj_wav, out_path, worker)
-        print(f"   🎙️ segment {label} ใช้ edge-tts fallback")
+        logger.info(f"   🎙️ segment {label} ใช้ edge-tts fallback")
         return out_path
     except Exception as e:
-        print(f"   ⚠️ edge-tts fallback segment {label} พังด้วย ({e}) — ข้าม segment นี้")
+        logger.warning(f"   ⚠️ edge-tts fallback segment {label} พังด้วย ({e}) — ข้าม segment นี้")
         return None
 
 
@@ -621,9 +625,11 @@ def text_to_roste_voice_segments(
             from f5_preprocess import preprocess_for_f5
             preprocessed, warns = preprocess_for_f5(text)
             for w in warns:
-                print(f"   ⚠️ F5 preprocess: {w}")
+                logger.warning(f"   ⚠️ F5 preprocess: {w}")
             segments = _split_thai_text(preprocessed, max_chars=300)
-            print(f"   🔤 F5 gen_text ({len(preprocessed)}c, {len(segments)} ส่วน): {preprocessed!r}")
+            # เนื้อหาข้อความจริง (มาจากบทสนทนา) แยกไป DEBUG — INFO เห็นแค่จำนวนตัวอักษร/segment
+            logger.info(f"   🔤 F5 gen_text ({len(preprocessed)}c, {len(segments)} ส่วน)")
+            logger.debug(f"   🔤 F5 gen_text เนื้อหา: {preprocessed!r}")
             for i, seg in enumerate(segments):
                 out_path = os.path.join(out_dir, f"{uid}_{i}_rvc.wav")
                 got = _gen_one_segment(
