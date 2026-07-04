@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import bot
+import chat
 import llm_tools
 import memory
 import vectormemory
@@ -743,7 +744,9 @@ class TestCooldown:
 
 class TestUserLocksCleanup:
     """get_user_lock — จำกัดจำนวน lock สะสม กวาด lock ที่ไม่ได้ถูกใช้งานอยู่ทิ้งเมื่อเกิน _USER_LOCKS_MAX
-    (ปลอดภัย — get_user_lock สร้าง Lock ใหม่ให้เองถ้ามีคนต้องใช้อีกหลังโดนกวาดไปแล้ว)"""
+    (ปลอดภัย — get_user_lock สร้าง Lock ใหม่ให้เองถ้ามีคนต้องใช้อีกหลังโดนกวาดไปแล้ว)
+    หมายเหตุ: ฟังก์ชันจริงอยู่ใน chat.py แล้ว (bot.py แค่ re-export) — patch _USER_LOCKS_MAX ต้องชี้ไป
+    chat ตรงๆ เพราะ get_user_lock อ่านค่านี้จาก __globals__ ของโมดูลที่นิยามมัน ไม่ใช่ของ bot"""
 
     def setup_method(self):
         bot._user_locks.clear()
@@ -762,7 +765,7 @@ class TestUserLocksCleanup:
         assert 2 not in bot._user_locks   # ไม่ได้ถือ ลบได้
 
     def test_get_user_lock_triggers_purge_when_over_cap(self, monkeypatch):
-        monkeypatch.setattr(bot, "_USER_LOCKS_MAX", 1)
+        monkeypatch.setattr(chat, "_USER_LOCKS_MAX", 1)
         unlocked_mock = MagicMock()
         unlocked_mock.locked.return_value = False
         bot._user_locks[1] = unlocked_mock
@@ -808,7 +811,9 @@ class TestSearchCachePurge:
 
 class TestActiveUsersCleanup:
     """_track_active_user — เพดานกันโตไม่จำกัด เกินแล้วเคลียร์ทั้งชุด (ไม่เสียข้อมูลถาวร เพราะ
-    Condition A/B ใน ask_ollama summarize ประวัติเก็บลงไฟล์แยกอยู่แล้ว)"""
+    Condition A/B ใน ask_ollama summarize ประวัติเก็บลงไฟล์แยกอยู่แล้ว)
+    หมายเหตุ: ฟังก์ชันจริงอยู่ใน chat.py แล้ว (bot.py แค่ re-export) — patch _ACTIVE_USERS_MAX ต้องชี้ไป
+    chat ตรงๆ ด้วยเหตุผลเดียวกับ TestUserLocksCleanup ด้านบน"""
 
     def setup_method(self):
         bot._active_users.clear()
@@ -818,7 +823,7 @@ class TestActiveUsersCleanup:
         assert 123 in bot._active_users
 
     def test_clears_all_when_over_cap(self, monkeypatch):
-        monkeypatch.setattr(bot, "_ACTIVE_USERS_MAX", 2)
+        monkeypatch.setattr(chat, "_ACTIVE_USERS_MAX", 2)
         bot._active_users.add(1)
         bot._active_users.add(2)
         bot._track_active_user(3)
