@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import bot
 import memory
 import vectormemory
+import websearch
 
 
 # ── aiohttp mock helpers ──────────────────────────────────────────────────────
@@ -775,13 +776,15 @@ class TestUserLocksCleanup:
 
 class TestSearchCachePurge:
     """_cache_set — ลบ entry ที่หมดอายุ (เกิน _CACHE_TTL) ทิ้งจริงตอนเขียนใหม่ทุกครั้ง
-    (เดิม _cache_get เช็ค TTL ตอนอ่านแต่ไม่เคยลบออกจริง — dict โตไม่จำกัดตามจำนวน query ที่ไม่ซ้ำ)"""
+    (เดิม _cache_get เช็ค TTL ตอนอ่านแต่ไม่เคยลบออกจริง — dict โตไม่จำกัดตามจำนวน query ที่ไม่ซ้ำ)
+    หมายเหตุ: ฟังก์ชันจริงอยู่ใน websearch.py (bot.py แค่ re-export) — patch _CACHE_TTL ต้องชี้ไป
+    websearch ตรงๆ เพราะ _cache_set อ่านค่านี้จาก __globals__ ของโมดูลที่นิยามมัน ไม่ใช่ของ bot"""
 
     def setup_method(self):
-        bot._SEARCH_CACHE.clear()
+        websearch._SEARCH_CACHE.clear()
 
     def test_stale_entries_purged_on_write(self, monkeypatch):
-        monkeypatch.setattr(bot, "_CACHE_TTL", 100)
+        monkeypatch.setattr(websearch, "_CACHE_TTL", 100)
         with patch("time.time", return_value=0.0):
             bot._cache_set("web", "old query", "old result")
         with patch("time.time", return_value=200.0):   # เกิน TTL(100) แล้ว
@@ -790,7 +793,7 @@ class TestSearchCachePurge:
         assert ("web", "new query") in bot._SEARCH_CACHE
 
     def test_fresh_entries_not_purged(self, monkeypatch):
-        monkeypatch.setattr(bot, "_CACHE_TTL", 3600)
+        monkeypatch.setattr(websearch, "_CACHE_TTL", 3600)
         with patch("time.time", return_value=0.0):
             bot._cache_set("web", "q1", "r1")
         with patch("time.time", return_value=10.0):
@@ -860,11 +863,14 @@ class TestDmAllowlist:
 
 
 class TestSerpapiQuotaGuard:
-    """_serpapi_quota_ok — กันสแปมเผาโควตา SerpApi ทั้งเดือน (free plan 250/เดือน) หมดในไม่กี่นาที"""
+    """_serpapi_quota_ok — กันสแปมเผาโควตา SerpApi ทั้งเดือน (free plan 250/เดือน) หมดในไม่กี่นาที
+    หมายเหตุ: ฟังก์ชันจริงอยู่ใน websearch.py (bot.py แค่ re-export) — ต้องตั้งค่า
+    _serpapi_quota_date/_serpapi_quota_count ผ่าน websearch ตรงๆ เพราะ global ในฟังก์ชันอ่าน/เขียน
+    __globals__ ของโมดูลที่นิยามมัน (websearch) ไม่ใช่ของ bot"""
 
     def setup_method(self):
-        bot._serpapi_quota_date = None
-        bot._serpapi_quota_count = 0
+        websearch._serpapi_quota_date = None
+        websearch._serpapi_quota_count = 0
 
     def test_allows_up_to_daily_limit(self):
         for _ in range(bot._SERPAPI_DAILY_LIMIT):
@@ -877,8 +883,8 @@ class TestSerpapiQuotaGuard:
 
     def test_resets_when_stored_date_is_stale(self):
         from datetime import date, timedelta
-        bot._serpapi_quota_date = date.today() - timedelta(days=1)
-        bot._serpapi_quota_count = bot._SERPAPI_DAILY_LIMIT  # สมมติเมื่อวานเต็มโควตาแล้ว
+        websearch._serpapi_quota_date = date.today() - timedelta(days=1)
+        websearch._serpapi_quota_count = bot._SERPAPI_DAILY_LIMIT  # สมมติเมื่อวานเต็มโควตาแล้ว
         assert bot._serpapi_quota_ok() is True  # ข้ามวันแล้ว ต้อง reset ให้นับใหม่
 
 
