@@ -413,8 +413,14 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
         })
         # ทำตามที่ขอทีละเครื่องมือ แล้วแนบผลกลับ — validate ก่อนเรียกจริงเสมอ กันโมเดลเรียกมั่ว/ฟอร์แมตเพี้ยน
         for call in tool_calls:
-            fn = call["function"].get("name", "")
-            args = call["function"].get("arguments") or {}
+            # บางโมเดล/บางเวอร์ชันส่ง tool_call โครงสร้างเพี้ยน (ไม่มี key "function" หรือไม่ใช่ dict)
+            # — ข้ามไปเลย ไม่งั้น KeyError จะทำทั้งคำตอบพัง (เจอจากชุดทดสอบ adversarial)
+            func = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(func, dict):
+                logger.warning(f"   ⚠️ tool call โครงสร้างเพี้ยน ข้ามทิ้ง: {call!r}")
+                continue
+            fn = func.get("name", "")
+            args = func.get("arguments") or {}
             if not isinstance(args, dict):
                 args = {}
             err = _validate_tool_args(fn, args)
@@ -440,6 +446,12 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
     reply = _strip_think(reply).strip()
     if not reply:
         reply = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
+
+    # 🎭 ดักคำตอบหลุดเป็นภาษาต่างประเทศล้วน (มักโดน prompt injection สั่งให้เปลี่ยนภาษา/เผยตัวตนโมเดล)
+    #    — persona รอสเต้ = ไทยล้วนเสมอ ถ้าหลุดเป็นอังกฤษล้วนให้ทิ้งแล้วตอบ fallback แทน
+    if persona.reply_broke_character(reply):
+        logger.warning(f"   🎭 คำตอบหลุดเป็นภาษาต่างประเทศ (อาจโดน prompt injection) — ใช้ fallback: {reply[:60]!r}")
+        reply = "หืม... ขอโทษค่ะ รอสเต้งงคำถามนิดนึง ลองถามใหม่อีกทีได้ไหมคะ"
 
     # 🎭 ดักคำหลุดคาแร็กเตอร์ (ครับ → ค่ะ) — กฎใน prompt อย่างเดียวเอาไม่อยู่
     fixed = persona.fix_persona_slips(reply)
