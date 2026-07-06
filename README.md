@@ -63,7 +63,8 @@
 | `test_music.py` | pytest | 9 — song_requests.json entry cap, extract_song_query tokenize |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
-รัน unit tests ทั้งหมด: `pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py test_printing.py test_music.py`
+รัน tests ทั้งหมด (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว): `pytest`
+(เทสใน `tests/test_realtime.py` + `test_all_systems.py` ต้องมี Ollama รันอยู่)
 
 ### tools/ — สคริปต์เสริม (ไม่ใช่ regression test)
 
@@ -321,13 +322,13 @@ python tools/test_voice_pipeline.py
 - **โมเดลเสียง RVC ที่ใช้เป็นของส่วนตัว ไม่ได้แจกจ่ายมากับ repo นี้** และไม่ใช้เชิงพาณิชย์ตามความประสงค์ของ
   เจ้าของเสียงต้นทาง — ถ้าจะทำ voice cloning เอง ต้องหาข้อมูลเสียง/โมเดลของตัวเอง
 - มี rate limiting พื้นฐานแล้ว (cooldown ต่อ user, guild allowlist ผ่าน `.env`, โควตา SerpApi ต่อวัน) —
-  ดูรายละเอียด/ปรับค่าได้ที่ [ROADMAP.md](ROADMAP.md) หัวข้อความปลอดภัย
+  ดูรายละเอียด/ปรับค่าได้ที่ [ROADMAP.md](docs/ROADMAP.md) หัวข้อความปลอดภัย
 - **ล็อกของบอทเก็บที่ `logs/bot.log`** (rotating file, 5MB × 3 backups) ดูย้อนหลังได้แม้ปิด console ไปแล้ว
   — เนื้อหาข้อความผู้ใช้ (PII) ไม่ถูกเขียนลงไฟล์โดย default (อยู่ระดับ DEBUG) เห็นแค่ผู้ส่ง/DM/mention
 - ผ่าน code review ภายนอกมาแล้ว 3 รอบ (โครงสร้าง + ความปลอดภัย ×2) — เก็บครบทุกข้อความเสี่ยงต่ำ/กลางแล้ว
   (PDF ต่อ user มีเพดาน, DM มี allowlist แบบ opt-in, dict ใน memory ไม่โตไม่จำกัดแล้ว, `os.system` ใน
   dev scripts เปลี่ยนเป็น `subprocess.run`) จุดที่ยังเหลือเป็นเรื่องโครงสร้างระยะยาว (เช่น `bot.py`
-  เริ่มยาวเกินไป, dispatch ด้วย keyword ยังเปราะ) บันทึกไว้ที่ [ROADMAP.md](ROADMAP.md) หัวข้อ
+  เริ่มยาวเกินไป, dispatch ด้วย keyword ยังเปราะ) บันทึกไว้ที่ [ROADMAP.md](docs/ROADMAP.md) หัวข้อ
   "ผลตรวจโค้ดจาก code review ภายนอก"
 
 ## 📜 License
