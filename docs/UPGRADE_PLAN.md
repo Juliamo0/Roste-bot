@@ -19,10 +19,8 @@
    `ask_ollama` อยู่ chat.py → resolve `_chat_once` จาก globals ของ chat → ต้อง `patch.object(chat, "_chat_once", ...)` **ไม่ใช่** `bot._chat_once`
 2. **Isolate memory ในเทส** — `monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))` ทุกครั้งที่เรียก ask_ollama ไม่งั้นเขียนทับ `memory/` จริง
 3. **กัน recall ยิงจริง** — `monkeypatch.setattr(vectormemory, "query_pdf", AsyncMock(return_value=[]))` และ `query_conversation_memory` เช่นกัน
-4. **อย่ารัน `pytest` เปล่า** — มันไล่ collect เข้า `f5_venv/`/`rvc_venv/`/`tools/` แล้วตายที่ `tools/test_gemini_tts.py` (argparse SystemExit ตอน import) ให้รันระบุไฟล์:
-   `python -m pytest -q test_bot.py test_music.py test_printing.py test_memory.py test_vectormemory.py test_voice.py`
-   (มี 221 tests ต้องเขียวเสมอ — งานเสริม: เพิ่ม `pytest.ini` ที่ `norecursedirs = tools f5_venv rvc_venv chroma_db memory ...`)
-5. **Live Ollama tests** ต้องมี Ollama รันอยู่ (`qwen3:8b` + `bge-m3` embedding) — `curl -s http://localhost:11434/api/tags` เช็คก่อน
+4. **เทสอยู่ใน `tests/`** — มี `pytest.ini` ตั้ง `pythonpath=.` (ให้ `import bot` ได้จาก tests/) + `testpaths=tests` + `norecursedirs` แล้ว รัน `python -m pytest` เปล่าได้เลย (272 tests) หรือระบุไฟล์ `python -m pytest tests/test_bot.py` ก็ได้ — โมดูลหลัก .py ยังอยู่ root (ไม่ใช่ package) รันบอทด้วย `python bot.py` เหมือนเดิม
+5. **Live Ollama tests** (`tests/test_realtime.py`, `test_all_systems.py`) ต้องมี Ollama รันอยู่ (`qwen3:8b` + `bge-m3` embedding) — `curl -s http://localhost:11434/api/tags` เช็คก่อน
 6. **Logging** — ทุกโมดูลใช้ `logging.getLogger("roste.<ชื่อ>")` ไม่ใช้ `print()`
 7. **สภาพแวดล้อม** — Windows, Python 3.13, มีทั้ง PowerShell และ bash (git bash)
 
@@ -245,7 +243,7 @@ Tool-calling **สตรีมไม่ได้** — `tool_calls` มาตอ
 ---
 
 ## ✅ Definition of Done (ทุกงาน)
-- [ ] unit suite เขียว: `python -m pytest -q test_bot.py test_music.py test_printing.py test_memory.py test_vectormemory.py test_voice.py`
+- [ ] เทสเขียว: `python -m pytest -q` (272 tests, ต้องมี Ollama รันสำหรับ realtime) — หรือ offline เท่านั้น `python -m pytest -q --ignore=tests/test_realtime.py --ignore=tests/test_all_systems.py` (221)
 - [ ] `python -c "import bot, chat, ollama_client, llm_tools, datasources, websearch"` ไม่ error (ไม่มี circular)
 - [ ] เพิ่มเทสครอบพฤติกรรมใหม่ (ไม่ใช่แค่ให้ผ่าน)
 - [ ] chat.py ยัง Discord-free / ollama_client.py ยังไม่ import llm_tools/chat

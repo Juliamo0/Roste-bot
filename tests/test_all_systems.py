@@ -16,8 +16,8 @@ import time
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# ── ให้ import bot.py จากโฟลเดอร์เดียวกัน ────────────────────────────────────
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ── ให้ import bot.py จาก root ของโปรเจกต์ (parent ของ tests/) ───────────────
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bot
 
 ROWS = []  # [(ระบบ, สถานะ, รายละเอียด)]

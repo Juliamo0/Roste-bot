@@ -14,7 +14,7 @@ import sys, os, time, json
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 BOT_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SOURCE_MP3 = os.path.join(BOT_DIR, "1_Lai_ref_(Vocals).mp3")
+SOURCE_MP3 = os.path.join(BOT_DIR, "ref_audio", "1_Lai_ref_(Vocals).mp3")
 OUT_DIR    = os.path.join(BOT_DIR, "f5_out", "ref_test")
 os.makedirs(OUT_DIR, exist_ok=True)
 
