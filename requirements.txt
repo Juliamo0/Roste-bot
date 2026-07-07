@@ -8,8 +8,13 @@ ddgs==9.14.4
 pypdf==6.14.2
 pywin32==312
 PyNaCl==1.5.0
+# discord.py 2.7 ต้องมี davey (DAVE E2EE voice) ไม่งั้น channel.connect() จะ RuntimeError
+# — บอทไม่ crash แต่ฟีเจอร์เสียงทั้งหมด (TTS/karaoke) เงียบหายทั้งที่ log แค่ warning ตอน start
+davey==0.1.6
 chromadb==1.5.9
 python-dotenv==1.2.2
+# websearch.py (_serpapi_get) ใช้ตรงๆ — เดิมไม่ได้ pin ไว้ รอดมาเพราะติดมากับ dependency อื่นโดยบังเอิญ
+requests==2.34.2
 
 # sentence-streaming TTS — ตัดประโยคไทย (crfcut) + เสียงสำรอง
 pythainlp==5.3.4
