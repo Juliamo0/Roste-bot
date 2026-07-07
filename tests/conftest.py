@@ -9,4 +9,6 @@ _fake_config = ModuleType("config")
 _fake_config.DISCORD_TOKEN = "fake-test-token-abc123xyz"
 _fake_config.TMD_TOKEN = ""
 _fake_config.SERPAPI_KEY = ""
+_fake_config.OLLAMA_URL = "http://localhost:11434/api/chat"
+_fake_config.OLLAMA_MODEL = "qwen3:8b"
 sys.modules.setdefault("config", _fake_config)
