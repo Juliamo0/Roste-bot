@@ -1052,6 +1052,11 @@ class TestPlayKaraokeOutro:
         monkeypatch.setattr(bot, "_generate_tts", fake_generate_tts)
         monkeypatch.setattr(bot, "_play_wav", fake_play_wav)
         monkeypatch.setattr(bot.music, "voice_lock", asyncio.Lock())
+        # _play_karaoke สร้าง discord.FFmpegPCMAudio(song_path) ตรงๆ ก่อนเรียก bot_vc.play —
+        # ของจริงต้องมี ffmpeg ติดตั้งอยู่ในเครื่อง (ไม่มีบน CI runner) ต้อง mock ทิ้งไม่งั้น
+        # ClientException("ffmpeg not found") จะโดน except ของ _play_karaoke กลืนเงียบๆ ทำให้
+        # เทสนี้ผ่านบนเครื่อง dev (มี ffmpeg) แต่ fail บน CI (ไม่มี ffmpeg) แบบวัดผิดเรื่อง
+        monkeypatch.setattr(discord, "FFmpegPCMAudio", MagicMock())
 
         asyncio.run(bot._play_karaoke(message, "song.wav", "Monster"))
 
@@ -1088,6 +1093,8 @@ class TestPlayKaraokeOutro:
         monkeypatch.setattr(bot, "_generate_tts", fake_generate_tts)
         monkeypatch.setattr(bot, "_play_wav", fake_play_wav)
         monkeypatch.setattr(bot.music, "voice_lock", asyncio.Lock())
+        # เหตุผลเดียวกับเทสด้านบน — กัน ffmpeg ที่ไม่มีบน CI runner ทำให้เทสวัดผิดเรื่อง
+        monkeypatch.setattr(discord, "FFmpegPCMAudio", MagicMock())
 
         asyncio.run(bot._play_karaoke(message, "song.wav", "Monster"))
 
