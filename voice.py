@@ -60,7 +60,11 @@ _OUT_DIR     = _ROOT / "rvc_out"
 # ── F5-TTS constants ───────────────────────────────────────────────────────────
 _F5_VENV_PY   = _ROOT / "f5_venv" / "Scripts" / "python.exe"
 _F5_WORKER_PY = _ROOT / "f5_worker.py"
-F5_REF_AUDIO  = str(_ROOT / "f5_out" / "ref_test" / "lai_seg4_160s.wav")
+F5_REF_AUDIO  = str(_ROOT / "ref_audio" / "lai_seg4_160s.wav")
+# เดิมชี้เข้า f5_out/ref_test/ ซึ่งอยู่ใน .gitignore (โฟลเดอร์ output ชั่วคราว) — clone ใหม่จะ
+# ไม่มีไฟล์นี้ ทำให้ F5 หายเงียบ (fallback ไป edge-tts โดยไม่มี error ให้เห็น) ย้ายมาไว้ที่
+# ref_audio/ ซึ่งเป็นที่ตั้งใจเก็บไฟล์ reference เสียงโดยเฉพาะ (ยัง gitignore เหมือนเดิมผ่าน
+# กฎ *.wav — ไม่ commit ไฟล์เสียงจริงขึ้น GitHub แค่ให้เป็นที่เดียวที่ควรวางไฟล์นี้)
 F5_REF_TEXT   = "ตีสอง ตีสาม ตีสี่ อะไรทรงเนี้ยแบบก่อนเช้าอ่ะ มันจะเป็นช่วงผีออกอะไรสักอย่างนึง แหลมบาดก็แบบว่า"
 F5_SPEED      = 1.0
 F5_STEPS      = 32
