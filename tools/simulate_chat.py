@@ -53,9 +53,10 @@ def snapshot(mem_module, label=""):
 
 async def main():
     import bot
+    import chat
     import memory
 
-    MAX       = bot.MAX_HISTORY_PAIRS           # 8
+    MAX       = memory.MAX_HISTORY_PAIRS           # 8
     TRIGGER   = MAX + 1                         # 9
     mem_path  = os.path.join(memory.MEMORY_DIR, f"{TEST_USER_ID}.json")
 
@@ -80,12 +81,12 @@ async def main():
         print(f"  👤  {msg}")
 
         # เรียก ask_ollama (สร้าง background task summarize เองถ้า history ล้น)
-        reply = await bot.ask_ollama(TEST_USER_ID, TEST_USER_NAME, msg)
+        reply = await chat.ask_ollama(TEST_USER_ID, TEST_USER_NAME, msg)
         short = reply[:110] + ("…" if len(reply) > 110 else "")
         print(f"  🤖  {short}")
 
         # เลียนแบบ on_message: ยิง auto_remember เบื้องหลัง
-        t = asyncio.create_task(bot.auto_remember(TEST_USER_ID, TEST_USER_NAME, msg))
+        t = asyncio.create_task(chat.auto_remember(TEST_USER_ID, TEST_USER_NAME, msg))
         background_tasks.append(t)
 
         # snapshot ทันที (background อาจยังไม่เสร็จ)
