@@ -1,0 +1,3 @@
+# รอสเต้ (Roste) — dependencies เพิ่มเติมสำหรับรันเทส (ไม่ต้องใช้ตอนรันบอทจริง)
+# ติดตั้ง: pip install -r requirements.txt -r requirements-dev.txt
+pytest==9.1.1

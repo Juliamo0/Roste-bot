@@ -7,12 +7,11 @@ echo            Starting Roste Bot
 echo ============================================
 echo.
 
-REM --- Check Python ---
-where python >nul 2>&1
-if errorlevel 1 (
-    echo [X] Python not found.
-    echo     Install Python from https://www.python.org/downloads/
-    echo     Remember to tick "Add Python to PATH" during install.
+REM --- Check project venv (run setup.bat first if missing) ---
+REM ตั้งใจไม่เรียก `python` เฉยๆ อีกต่อไป — เดิม start.bat ใช้ python จาก PATH ซึ่งอาจไม่ใช่
+REM ตัวเดียวกับที่ setup.bat/dev ใช้ตอนติดตั้ง library ทำให้ dependency ไม่ตรงกันแบบเงียบๆ
+if not exist "venv\Scripts\python.exe" (
+    echo [X] venv\ not found. Run setup.bat first to create it and install libraries.
     echo.
     pause
     exit /b
@@ -40,7 +39,7 @@ if errorlevel 1 (
 echo [OK] Starting bot... (To stop: press Ctrl+C here, or just close this window)
 echo.
 
-python bot.py
+venv\Scripts\python.exe bot.py
 
 echo.
 echo ============================================
