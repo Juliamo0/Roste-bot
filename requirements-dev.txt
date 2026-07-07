@@ -1,3 +1,6 @@
 # รอสเต้ (Roste) — dependencies เพิ่มเติมสำหรับรันเทส (ไม่ต้องใช้ตอนรันบอทจริง)
 # ติดตั้ง: pip install -r requirements.txt -r requirements-dev.txt
 pytest==9.1.1
+# แปลง pytest FAILED เป็น GitHub Actions ::error:: annotation — เห็นสาเหตุ fail จริงผ่าน
+# checks API (annotations) ได้โดยไม่ต้อง sign in ดู raw log (raw log ต้อง auth เสมอ)
+pytest-github-actions-annotate-failures==0.4.2
