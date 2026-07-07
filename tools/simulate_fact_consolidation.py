@@ -28,6 +28,7 @@ os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import bot      # noqa: E402
+import chat     # noqa: E402
 import memory   # noqa: E402
 
 TEST_USER_ID = 666_666_666_666_666_666   # ไม่ชนกับ test user สคริปต์อื่น (111/222/333/444/555)
@@ -56,7 +57,7 @@ async def main():
     for i, msg in enumerate(msgs, 1):
         hr()
         print(f"  รอบ {i}: {msg!r}")
-        await bot.auto_remember(TEST_USER_ID, TEST_USER_NAME, msg)
+        await chat.auto_remember(TEST_USER_ID, TEST_USER_NAME, msg)
         mem = memory.load_memory(TEST_USER_ID)
         for f in mem["facts"]:
             tag = "❌ superseded" if isinstance(f, dict) and f.get("superseded") else "✅ current"

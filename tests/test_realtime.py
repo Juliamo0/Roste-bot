@@ -59,57 +59,57 @@ _FAKE_OIL_HTML = (
 
 class TestThaiDatetime:
     def test_contains_be_year(self):
-        result = bot.get_thai_datetime()
+        result = datasources.get_thai_datetime()
         be_year = datetime.now().year + 543
         assert f"พ.ศ. {be_year}" in result
 
     def test_contains_time_suffix(self):
-        assert "น." in bot.get_thai_datetime()
+        assert "น." in datasources.get_thai_datetime()
 
     def test_contains_thai_day_name(self):
         days = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
-        assert any(d in bot.get_thai_datetime() for d in days)
+        assert any(d in datasources.get_thai_datetime() for d in days)
 
     def test_contains_thai_month(self):
         months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
                   "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-        assert any(m in bot.get_thai_datetime() for m in months)
+        assert any(m in datasources.get_thai_datetime() for m in months)
 
     def test_utc_plus_7_offset(self):
         """ปี พ.ศ. ต้องตรงกับเวลา UTC+7 ไม่ใช่ UTC"""
         from datetime import timezone, timedelta
         now_thai = datetime.now(timezone.utc) + timedelta(hours=7)
         be_year = now_thai.year + 543
-        assert f"พ.ศ. {be_year}" in bot.get_thai_datetime()
+        assert f"พ.ศ. {be_year}" in datasources.get_thai_datetime()
 
 
 # ── 2. parse_oil_html ─────────────────────────────────────────────────────────
 
 class TestParseOilHtml:
     def test_default_brand_ptt_shows_prices(self):
-        result = bot.parse_oil_html(_FAKE_OIL_HTML)
+        result = datasources.parse_oil_html(_FAKE_OIL_HTML)
         assert "ปตท." in result
         assert "42.38" in result
         assert "33.34" in result
 
     def test_specific_brand_bcp(self):
-        result = bot.parse_oil_html(_FAKE_OIL_HTML, "bcp")
+        result = datasources.parse_oil_html(_FAKE_OIL_HTML, "bcp")
         assert "บางจาก" in result
         assert "40.00" in result
         assert "ปตท." not in result
 
     def test_unknown_brand_falls_back_to_first(self):
-        result = bot.parse_oil_html(_FAKE_OIL_HTML, "unknown")
+        result = datasources.parse_oil_html(_FAKE_OIL_HTML, "unknown")
         assert "ปตท." in result
 
     def test_date_in_output(self):
-        assert "22/06/2569" in bot.parse_oil_html(_FAKE_OIL_HTML)
+        assert "22/06/2569" in datasources.parse_oil_html(_FAKE_OIL_HTML)
 
     def test_source_tag_in_output(self):
-        assert "Kapook" in bot.parse_oil_html(_FAKE_OIL_HTML)
+        assert "Kapook" in datasources.parse_oil_html(_FAKE_OIL_HTML)
 
     def test_empty_html_returns_error(self):
-        result = bot.parse_oil_html("<html><body>no brand data</body></html>")
+        result = datasources.parse_oil_html("<html><body>no brand data</body></html>")
         assert "ไม่สำเร็จ" in result
 
 
@@ -119,14 +119,14 @@ class TestGetOilPrice:
     def test_success_parses_html(self):
         mock = _make_session_mock(text_data=_FAKE_OIL_HTML)
         with patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_oil_price("ptt"))
+            result = asyncio.run(datasources.get_oil_price("ptt"))
         assert "ปตท." in result
         assert "42.38" in result
 
     def test_network_exception_returns_error_string(self):
         mock = _make_session_mock(exception=Exception("connection refused"))
         with patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_oil_price())
+            result = asyncio.run(datasources.get_oil_price())
         assert "ดึงราคาน้ำมันไม่สำเร็จ" in result
 
 
@@ -134,31 +134,31 @@ class TestGetOilPrice:
 
 class TestParsePeaDate:
     def test_epoch_zero_gives_1970_utc7(self):
-        result = bot._parse_pea_date("/Date(0)/")
+        result = datasources._parse_pea_date("/Date(0)/")
         assert result is not None
         assert result.year == 1970
         assert result.hour == 7  # UTC+7
 
     def test_known_epoch(self):
         # 1751302800000 ms = 2025-07-01 00:00 UTC+7
-        result = bot._parse_pea_date("/Date(1751302800000)/")
+        result = datasources._parse_pea_date("/Date(1751302800000)/")
         assert result is not None
         assert result.year == 2025
         assert result.month == 7
         assert result.day == 1
 
     def test_empty_string_returns_none(self):
-        assert bot._parse_pea_date("") is None
+        assert datasources._parse_pea_date("") is None
 
     def test_none_returns_none(self):
-        assert bot._parse_pea_date(None) is None
+        assert datasources._parse_pea_date(None) is None
 
     def test_no_digits_returns_none(self):
         # "abc" has no digits — regex won't match
-        assert bot._parse_pea_date("/Date(abc)/") is None
+        assert datasources._parse_pea_date("/Date(abc)/") is None
 
     def test_plain_number_parses(self):
-        assert bot._parse_pea_date("0") is not None
+        assert datasources._parse_pea_date("0") is not None
 
 
 # ── 5. get_power_outage ───────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ class TestGetPowerOutage:
         ]}
         mock = _make_session_mock(json_data=data)
         with patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_power_outage(69, "ชุมพร"))
+            result = asyncio.run(datasources.get_power_outage(69, "ชุมพร"))
         assert "ยังไม่มีประกาศ" in result
 
     def test_future_matching_item_shows_in_output(self):
@@ -187,7 +187,7 @@ class TestGetPowerOutage:
         ]}
         mock = _make_session_mock(json_data=data)
         with patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_power_outage(69, "ชุมพร"))
+            result = asyncio.run(datasources.get_power_outage(69, "ชุมพร"))
         assert "อำเภอเมือง" in result
 
     def test_past_items_filtered_out(self):
@@ -198,19 +198,19 @@ class TestGetPowerOutage:
         ]}
         mock = _make_session_mock(json_data=data)
         with patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_power_outage(69, "ชุมพร"))
+            result = asyncio.run(datasources.get_power_outage(69, "ชุมพร"))
         assert "ยังไม่มีประกาศ" in result
 
     def test_http_non_200_returns_status_message(self):
         mock = _make_session_mock(status=500)
         with patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_power_outage())
+            result = asyncio.run(datasources.get_power_outage())
         assert "500" in result or "ดึงข้อมูลตัดไฟไม่ได้" in result
 
     def test_network_exception_returns_error_message(self):
         mock = _make_session_mock(exception=Exception("timeout"))
         with patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_power_outage())
+            result = asyncio.run(datasources.get_power_outage())
         assert "เชื่อมต่อ" in result or "ไม่ได้" in result
 
 
@@ -230,18 +230,18 @@ _TMD_DAILY = {
 class TestGetWeatherTmd:
     def test_no_token_returns_none(self):
         with patch.object(datasources, "TMD_TOKEN", ""):
-            assert asyncio.run(bot.get_weather_tmd("ชุมพร")) is None
+            assert asyncio.run(datasources.get_weather_tmd("ชุมพร")) is None
 
     def test_placeholder_token_returns_none(self):
         with patch.object(datasources, "TMD_TOKEN", "วาง_token"):
-            assert asyncio.run(bot.get_weather_tmd("ชุมพร")) is None
+            assert asyncio.run(datasources.get_weather_tmd("ชุมพร")) is None
 
     def test_with_token_formats_output(self):
         mock = _make_session_mock(json_data=_TMD_DAILY)
         with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock), \
              patch.object(datasources, "get_weather_tmd_hourly_today", AsyncMock(return_value="")):
-            result = asyncio.run(bot.get_weather_tmd("ชุมพร"))
+            result = asyncio.run(datasources.get_weather_tmd("ชุมพร"))
         assert result is not None
         assert "ชุมพร" in result
         assert "ฝนตกเล็กน้อย" in result   # cond=5
@@ -251,14 +251,14 @@ class TestGetWeatherTmd:
         with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock), \
              patch.object(datasources, "get_weather_tmd_hourly_today", AsyncMock(return_value="")):
-            result = asyncio.run(bot.get_weather_tmd("ชุมพร"))
+            result = asyncio.run(datasources.get_weather_tmd("ชุมพร"))
         assert "35" in result and "25" in result   # tc_max, tc_min
 
     def test_http_401_returns_none(self):
         mock = _make_session_mock(status=401)
         with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock):
-            assert asyncio.run(bot.get_weather_tmd("ชุมพร")) is None
+            assert asyncio.run(datasources.get_weather_tmd("ชุมพร")) is None
 
     def test_rain_time_appended_if_present(self):
         mock = _make_session_mock(json_data=_TMD_DAILY)
@@ -266,7 +266,7 @@ class TestGetWeatherTmd:
              patch("aiohttp.ClientSession", mock), \
              patch.object(datasources, "get_weather_tmd_hourly_today",
                           AsyncMock(return_value="14:00-16:00 น.")):
-            result = asyncio.run(bot.get_weather_tmd("ชุมพร"))
+            result = asyncio.run(datasources.get_weather_tmd("ชุมพร"))
         assert "14:00-16:00 น." in result
 
 
@@ -275,7 +275,7 @@ class TestGetWeatherTmd:
 class TestGetWeatherTmdHourlyToday:
     def test_no_token_returns_empty(self):
         with patch.object(datasources, "TMD_TOKEN", ""):
-            assert asyncio.run(bot.get_weather_tmd_hourly_today("ชุมพร")) == ""
+            assert asyncio.run(datasources.get_weather_tmd_hourly_today("ชุมพร")) == ""
 
     def test_rainy_consecutive_hours_grouped(self):
         today = datetime.now().strftime("%Y-%m-%d")
@@ -291,7 +291,7 @@ class TestGetWeatherTmdHourlyToday:
         mock = _make_session_mock(json_data=data)
         with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_weather_tmd_hourly_today("ชุมพร"))
+            result = asyncio.run(datasources.get_weather_tmd_hourly_today("ชุมพร"))
         assert "10:00-11:00 น." in result
         assert "16:00 น." in result
 
@@ -307,7 +307,7 @@ class TestGetWeatherTmdHourlyToday:
         mock = _make_session_mock(json_data=data)
         with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_weather_tmd_hourly_today("ชุมพร"))
+            result = asyncio.run(datasources.get_weather_tmd_hourly_today("ชุมพร"))
         assert result == ""
 
     def test_different_day_data_ignored(self):
@@ -323,7 +323,7 @@ class TestGetWeatherTmdHourlyToday:
         mock = _make_session_mock(json_data=data)
         with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock):
-            result = asyncio.run(bot.get_weather_tmd_hourly_today("ชุมพร"))
+            result = asyncio.run(datasources.get_weather_tmd_hourly_today("ชุมพร"))
         assert result == ""
 
 
@@ -348,25 +348,25 @@ _FORECAST = {
 class TestGetWeather:
     def test_location_found_returns_formatted_output(self):
         with patch.object(datasources, "_get_json", AsyncMock(side_effect=[_GEO, _FORECAST])):
-            result = asyncio.run(bot.get_weather("Chumphon"))
+            result = asyncio.run(datasources.get_weather("Chumphon"))
         assert "Chumphon" in result
         assert "ฝนเล็กน้อย" in result   # weather_code=61
 
     def test_three_days_in_output(self):
         with patch.object(datasources, "_get_json", AsyncMock(side_effect=[_GEO, _FORECAST])):
-            result = asyncio.run(bot.get_weather("Chumphon"))
+            result = asyncio.run(datasources.get_weather("Chumphon"))
         assert "วันนี้" in result
         assert "พรุ่งนี้" in result
         assert "มะรืนนี้" in result
 
     def test_location_not_found_returns_error(self):
         with patch.object(datasources, "_get_json", AsyncMock(return_value={"results": []})):
-            result = asyncio.run(bot.get_weather("NoSuchPlace"))
+            result = asyncio.run(datasources.get_weather("NoSuchPlace"))
         assert "หาตำแหน่งของ" in result
 
     def test_geocoding_exception_returns_error(self):
         with patch.object(datasources, "_get_json", AsyncMock(side_effect=Exception("network"))):
-            result = asyncio.run(bot.get_weather("Chumphon"))
+            result = asyncio.run(datasources.get_weather("Chumphon"))
         assert "ดึงข้อมูลอากาศไม่สำเร็จ" in result
 
 
@@ -422,23 +422,23 @@ class TestSearchWebSerpapi:
             {"title": "ข่าว AI", "snippet": "AI ล่าสุด", "link": "https://example.com/ai"}
         ]}
         with patch.object(websearch, "_serpapi_get", return_value=data):
-            result = bot.search_web_serpapi("ข่าว AI")
+            result = websearch.search_web_serpapi("ข่าว AI")
         assert "ข่าว AI" in result
         assert "example.com" in result
 
     def test_no_organic_results_returns_empty(self):
         with patch.object(websearch, "_serpapi_get", return_value={"organic_results": []}):
-            assert bot.search_web_serpapi("ข่าว") == ""
+            assert websearch.search_web_serpapi("ข่าว") == ""
 
     def test_serpapi_error_returns_empty(self):
         with patch.object(websearch, "_serpapi_get", return_value=None):
-            assert bot.search_web_serpapi("ข่าว") == ""
+            assert websearch.search_web_serpapi("ข่าว") == ""
 
     def test_result_is_cached_on_second_call(self):
         data = {"organic_results": [{"title": "X", "snippet": "Y", "link": "https://x.com"}]}
         with patch.object(websearch, "_serpapi_get", return_value=data) as mock_fn:
-            bot.search_web_serpapi("cache-test-query")
-            bot.search_web_serpapi("cache-test-query")
+            websearch.search_web_serpapi("cache-test-query")
+            websearch.search_web_serpapi("cache-test-query")
         assert mock_fn.call_count == 1   # ครั้งที่สองใช้ cache
 
 
@@ -454,7 +454,7 @@ class TestSearchPlacesSerpapi:
             {"title": "ร้านใหม่", "rating": 4.0, "reviews": 5},  # < 10 รีวิว → กรองออก
         ]}
         with patch.object(websearch, "_serpapi_get", return_value=data):
-            result = bot.search_places_serpapi("ร้านอาหาร", "ชุมพร")
+            result = websearch.search_places_serpapi("ร้านอาหาร", "ชุมพร")
         assert "ร้านดัง" in result
         assert "ร้านใหม่" not in result
 
@@ -464,16 +464,16 @@ class TestSearchPlacesSerpapi:
             {"title": "ร้านA", "rating": 4.8, "reviews": 200, "address": "ถนนหลัก"},
         ]}
         with patch.object(websearch, "_serpapi_get", return_value=data):
-            result = bot.search_places_serpapi("ร้านอาหาร", "ชุมพร")
+            result = websearch.search_places_serpapi("ร้านอาหาร", "ชุมพร")
         assert result.index("ร้านA") < result.index("ร้านB")
 
     def test_empty_local_results_returns_empty(self):
         with patch.object(websearch, "_serpapi_get", return_value={"local_results": []}):
-            assert bot.search_places_serpapi("ร้านอาหาร", "ชุมพร") == ""
+            assert websearch.search_places_serpapi("ร้านอาหาร", "ชุมพร") == ""
 
     def test_serpapi_error_returns_empty(self):
         with patch.object(websearch, "_serpapi_get", return_value=None):
-            assert bot.search_places_serpapi("ร้านอาหาร", "ชุมพร") == ""
+            assert websearch.search_places_serpapi("ร้านอาหาร", "ชุมพร") == ""
 
     def test_place_results_fallback_used(self):
         """ถ้าไม่มี local_results แต่มี place_results (สถานที่เดียว) ต้องแสดงได้"""
@@ -482,7 +482,7 @@ class TestSearchPlacesSerpapi:
             "place_results": {"title": "สวนสาธารณะ", "rating": 4.2, "reviews": 30}
         }
         with patch.object(websearch, "_serpapi_get", return_value=data):
-            result = bot.search_places_serpapi("สวนสาธารณะ", "ชุมพร")
+            result = websearch.search_places_serpapi("สวนสาธารณะ", "ชุมพร")
         assert "สวนสาธารณะ" in result
 
 
@@ -498,7 +498,7 @@ class TestSearchWeb:
     def test_uses_serpapi_when_key_present(self):
         with patch.object(websearch, "SERPAPI_KEY", "fake_key"), \
              patch.object(websearch, "search_web_serpapi", return_value="ผลจาก SerpApi") as mock_sp:
-            result = bot.search_web("ข่าว AI")
+            result = websearch.search_web("ข่าว AI")
         mock_sp.assert_called_once()
         assert "ผลจาก SerpApi" in result
 
@@ -511,13 +511,13 @@ class TestSearchWeb:
         ))
         with patch.object(websearch, "SERPAPI_KEY", ""), \
              patch.dict("sys.modules", {"ddgs": mock_ddgs_module}):
-            result = bot.search_web("คำค้น")
+            result = websearch.search_web("คำค้น")
         assert "ผล DDG" in result
 
     def test_ddg_import_error_returns_install_message(self):
         with patch.object(websearch, "SERPAPI_KEY", ""), \
              patch.dict("sys.modules", {"ddgs": None}):
-            result = bot.search_web("ข่าว")
+            result = websearch.search_web("ข่าว")
         assert "ยังไม่ได้ติดตั้ง" in result or "ddgs" in result
 
     def test_serpapi_empty_falls_back_to_ddg(self):
@@ -531,5 +531,5 @@ class TestSearchWeb:
         with patch.object(websearch, "SERPAPI_KEY", "fake_key"), \
              patch.object(websearch, "search_web_serpapi", return_value=""), \
              patch.dict("sys.modules", {"ddgs": mock_ddgs_module}):
-            result = bot.search_web("ข่าว")
+            result = websearch.search_web("ข่าว")
         assert "DDG fallback" in result

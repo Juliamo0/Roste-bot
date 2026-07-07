@@ -22,6 +22,7 @@ os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import bot     # noqa: E402 — หลัง chdir/sys.path เพื่อให้ config/memory paths ถูกต้อง
+import chat    # noqa: E402
 import memory  # noqa: E402
 
 TEST_USER_ID   = 333_333_333_333_333_333
@@ -118,11 +119,11 @@ def _sum_text(s) -> str:
 async def drain(label="", timeout=DRAIN_TIMEOUT):
     """รอ background queue ว่างจนงานเสร็จหมด"""
     tag = f" ({label})" if label else ""
-    if bot._bg_queue.empty() and bot._bg_queue._unfinished_tasks == 0:
+    if chat._bg_queue.empty() and chat._bg_queue._unfinished_tasks == 0:
         return
     print(f"   ⏳ รอ background queue{tag}...")
     try:
-        await asyncio.wait_for(bot._bg_queue.join(), timeout=timeout)
+        await asyncio.wait_for(chat._bg_queue.join(), timeout=timeout)
         print("   ✅ background queue ว่างแล้ว")
     except asyncio.TimeoutError:
         print(f"   ⚠️  timeout {timeout}s — ดำเนินต่อ")
@@ -131,9 +132,9 @@ async def drain(label="", timeout=DRAIN_TIMEOUT):
 # ── phase 1: สร้าง summaries ─────────────────────────────────────────────────
 
 async def build_summaries():
-    bot._ensure_bg_worker()
+    chat._ensure_bg_worker()
 
-    MAX     = bot.MAX_HISTORY_PAIRS
+    MAX     = memory.MAX_HISTORY_PAIRS
     TRIGGER = MAX + 1
     N       = len(SETUP_MESSAGES)
     mem_path = os.path.join(memory.MEMORY_DIR, f"{TEST_USER_ID}.json")
@@ -153,8 +154,8 @@ async def build_summaries():
         short_msg = msg[:55] + ("…" if len(msg) > 55 else "")
         print(f"  รอบ {i:2d}/{N}{flag}  {short_msg}")
 
-        reply = await bot.ask_ollama(TEST_USER_ID, TEST_USER_NAME, msg)
-        bot._enqueue_bg(bot.auto_remember(TEST_USER_ID, TEST_USER_NAME, msg))
+        reply = await chat.ask_ollama(TEST_USER_ID, TEST_USER_NAME, msg)
+        chat._enqueue_bg(chat.auto_remember(TEST_USER_ID, TEST_USER_NAME, msg))
 
         if is_trigger:
             await drain()

@@ -34,6 +34,7 @@ os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import bot     # noqa: E402 — หลัง chdir/sys.path เพื่อให้ config/memory paths ถูกต้อง
+import chat    # noqa: E402
 import memory  # noqa: E402
 
 # ── ค่าคงที่ ──────────────────────────────────────────────────────────────────
@@ -101,11 +102,11 @@ async def drain(label="", timeout=DRAIN_TIMEOUT):
     """รอ background queue ว่างจนงานเสร็จหมด (ใช้ queue.join แทน all_tasks)"""
     tag = f" ({label})" if label else ""
     # ไม่มีงานค้างใน queue — return ทันที
-    if bot._bg_queue.empty() and bot._bg_queue._unfinished_tasks == 0:
+    if chat._bg_queue.empty() and chat._bg_queue._unfinished_tasks == 0:
         return 0
     print(f"   ⏳ รอ background queue{tag}...")
     try:
-        await asyncio.wait_for(bot._bg_queue.join(), timeout=timeout)
+        await asyncio.wait_for(chat._bg_queue.join(), timeout=timeout)
         print(f"   ✅ background queue ว่างแล้ว")
     except asyncio.TimeoutError:
         print(f"   ⚠️  timeout {timeout}s — queue อาจยังไม่ว่าง ดำเนินต่อ")
@@ -115,7 +116,7 @@ async def drain(label="", timeout=DRAIN_TIMEOUT):
 # ── main ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    bot._ensure_bg_worker()   # เริ่ม background queue worker ก่อนรอบแรก
+    chat._ensure_bg_worker()   # เริ่ม background queue worker ก่อนรอบแรก
 
     # simulate ทดสอบ memory/summarization เท่านั้น — ปิด realtime (maps/weather/oil)
     # เพื่อกัน requests/SerpAPI ที่อาจไม่ได้ติดตั้งใน environment นี้
@@ -123,7 +124,7 @@ async def main():
         return None
     bot.get_realtime_context = _no_realtime
 
-    MAX      = bot.MAX_HISTORY_PAIRS          # 8 คู่ = 16 msgs
+    MAX      = memory.MAX_HISTORY_PAIRS          # 8 คู่ = 16 msgs
     DRAIN_FROM = 7                            # drain ตั้งแต่รอบที่ 7 (Condition A คาดว่า fire)
     N        = len(MESSAGES)
     mem_path = os.path.join(memory.MEMORY_DIR, f"{TEST_USER_ID}.json")
@@ -152,11 +153,11 @@ async def main():
         print(f"รอบ {i:2d}/{N}  {phase}{flag}")
         print(f"  👤  {msg}")
 
-        reply = await bot.ask_ollama(TEST_USER_ID, TEST_USER_NAME, msg)
+        reply = await chat.ask_ollama(TEST_USER_ID, TEST_USER_NAME, msg)
 
         # แสดงตอบ (ตัดสั้นถ้ายาว) + ตรวจว่ามี notice phrase ท้ายตอบไหม
         has_notice = "\n\n" in reply and any(
-            p in reply for p in bot._SUMMARY_NOTICE_PHRASES
+            p in reply for p in chat._SUMMARY_NOTICE_PHRASES
         )
         if has_notice:
             main_part, notice_part = reply.rsplit("\n\n", 1)
@@ -168,7 +169,7 @@ async def main():
             print(f"  🤖  {short}")
 
         # เลียนแบบ on_message: ส่ง auto_remember เข้า background queue
-        bot._enqueue_bg(bot.auto_remember(TEST_USER_ID, TEST_USER_NAME, msg))
+        chat._enqueue_bg(chat.auto_remember(TEST_USER_ID, TEST_USER_NAME, msg))
 
         if is_trigger:
             # drain ก่อน snapshot — กัน summarize_and_verify ยังไม่เขียนลงไฟล์
@@ -190,7 +191,7 @@ async def main():
     # ── flush history ที่ค้างอยู่ (บทสุดท้าย = phase 3) ──────────────────────
     hr("═")
     print("  🔒 flush history ที่ค้าง (บทสุดท้าย)...")
-    await bot.flush_user_history(TEST_USER_ID)
+    await chat.flush_user_history(TEST_USER_ID)
     # flush_user_history จัดการ queue.join เองแล้ว — drain เป็น safety net
     await drain("cleanup รอบสุดท้าย")
 

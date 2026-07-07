@@ -96,84 +96,6 @@ import ollama_client  # 🤖 Ollama HTTP client — ทั่วไป ไม่
 import llm_tools  # 🛠️ TOOLS schema + tool handlers (tool calling)
 import chat  # 🧠 สมองบทสนทนา — ask_ollama + tool-calling loop (ไม่รู้จัก Discord)
 
-# ดึงค่า/ฟังก์ชันที่ใช้บ่อยมาไว้ในชื่อสั้นๆ (โค้ดด้านล่างจะได้เรียกง่ายเหมือนเดิม)
-# SYSTEM_PROMPT, FEWSHOT_EXAMPLES, build_author_note, load_memory, save_memory — ย้ายไปอยู่ที่
-# chat.py แล้ว (ดึงจาก persona/memory ตรงๆ ไม่ผ่าน bot) เพราะใช้เฉพาะใน ask_ollama ที่ย้ายไปด้วย
-MAX_HISTORY_PAIRS = memory.MAX_HISTORY_PAIRS
-handle_memory_command = memory.handle_memory_command
-SERPAPI_KEY = websearch.SERPAPI_KEY
-_SERPAPI_DAILY_LIMIT = websearch._SERPAPI_DAILY_LIMIT
-_serpapi_quota_ok = websearch._serpapi_quota_ok
-_SEARCH_CACHE = websearch._SEARCH_CACHE
-_CACHE_TTL = websearch._CACHE_TTL
-_cache_get = websearch._cache_get
-_cache_set = websearch._cache_set
-_purge_stale_cache_entries = websearch._purge_stale_cache_entries
-search_web_serpapi = websearch.search_web_serpapi
-search_places_serpapi = websearch.search_places_serpapi
-search_web = websearch.search_web
-TMD_TOKEN = datasources.TMD_TOKEN
-THAI_PROVINCES = datasources.THAI_PROVINCES
-find_province_in_text = datasources.find_province_in_text
-find_saved_location = datasources.find_saved_location
-get_thai_datetime = datasources.get_thai_datetime
-WEATHER_CODES = datasources.WEATHER_CODES
-_get_json = datasources._get_json
-TMD_COND = datasources.TMD_COND
-EN_TO_TH_PROVINCE = datasources.EN_TO_TH_PROVINCE
-get_weather_tmd_hourly_today = datasources.get_weather_tmd_hourly_today
-get_weather_tmd = datasources.get_weather_tmd
-get_weather = datasources.get_weather
-OIL_BRANDS = datasources.OIL_BRANDS
-get_oil_price = datasources.get_oil_price
-parse_oil_html = datasources.parse_oil_html
-HOME_PROVINCE_ID = datasources.HOME_PROVINCE_ID
-HOME_PROVINCE_NAME = datasources.HOME_PROVINCE_NAME
-_parse_pea_date = datasources._parse_pea_date
-get_power_outage = datasources.get_power_outage
-OLLAMA_URL = ollama_client.OLLAMA_URL
-MODEL = ollama_client.MODEL
-_get_json_post = ollama_client._get_json_post
-_strip_think = ollama_client._strip_think
-_chat_once = ollama_client._chat_once
-TOOLS = llm_tools.TOOLS
-TOOL_HANDLERS = llm_tools.TOOL_HANDLERS
-_validate_tool_args = llm_tools._validate_tool_args
-_strip_ungrounded_optional_args = llm_tools._strip_ungrounded_optional_args
-_search_places = llm_tools._search_places
-make_search_query = llm_tools.make_search_query
-_tool_get_current_time = llm_tools._tool_get_current_time
-_tool_get_weather = llm_tools._tool_get_weather
-_tool_get_power_outage = llm_tools._tool_get_power_outage
-_tool_get_oil_price = llm_tools._tool_get_oil_price
-_tool_search_places = llm_tools._tool_search_places
-_tool_search_web = llm_tools._tool_search_web
-_bg_queue = chat._bg_queue
-_bg_worker = chat._bg_worker
-_ensure_bg_worker = chat._ensure_bg_worker
-_enqueue_bg = chat._enqueue_bg
-_user_locks = chat._user_locks
-_USER_LOCKS_MAX = chat._USER_LOCKS_MAX
-_purge_unlocked_locks = chat._purge_unlocked_locks
-get_user_lock = chat.get_user_lock
-_active_users = chat._active_users
-_ACTIVE_USERS_MAX = chat._ACTIVE_USERS_MAX
-_track_active_user = chat._track_active_user
-_THAI_MONTHS = chat._THAI_MONTHS
-auto_remember = chat.auto_remember
-_check_condition_b = chat._check_condition_b
-_SUMMARY_NOTICE_MIN_PAIRS = chat._SUMMARY_NOTICE_MIN_PAIRS
-_SUMMARY_NOTICE_PHRASES = chat._SUMMARY_NOTICE_PHRASES
-_last_had_summary_notice = chat._last_had_summary_notice
-_maybe_append_summary_notice = chat._maybe_append_summary_notice
-detect_topic_change = chat.detect_topic_change
-summarize_and_verify = chat.summarize_and_verify
-flush_user_history = chat.flush_user_history
-ask_ollama = chat.ask_ollama
-
-# _user_locks, _active_users, _ACTIVE_USERS_MAX, _track_active_user, _last_had_summary_notice
-# — ย้ายไป chat.py แล้ว (re-export ไว้ด้านบน)
-
 # state ระบบเสียง
 _voice_worker: voice.RvcWorker | None = None  # RVC warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
 _f5_worker: voice.F5Worker | None = None      # F5 warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
@@ -828,7 +750,7 @@ async def on_message(message):
         return
 
     # เช็กก่อนว่าเป็น "คำสั่งความจำ" ไหม (เช่น จำไว้ว่า...) ถ้าใช่ตอบเลยไม่ต้องเรียกโมเดล
-    mem_reply = handle_memory_command(user_id, user_name, user_message)
+    mem_reply = memory.handle_memory_command(user_id, user_name, user_message)
     if mem_reply is not None:
         logger.info("   ↳ จัดการคำสั่งความจำ")
         await message.reply(mem_reply)

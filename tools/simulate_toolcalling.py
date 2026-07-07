@@ -3,9 +3,9 @@ simulate_toolcalling.py — ทดสอบ LLM tool calling แบบ end-to-en
 
 ขั้นตอน:
   Phase 1: ยิงคำถามที่ไม่มี keyword ตรงตัว (เช่น "พรุ่งนี้ต้องพกร่มไหม" ที่ keyword dispatch
-           เดิมเคยพลาด) ผ่าน bot._chat_once จริง (ใช้ TOOLS ตัวจริงจาก bot.py ไม่ใช่ก็อปมา)
+           เดิมเคยพลาด) ผ่าน ollama_client._chat_once จริง (ใช้ TOOLS ตัวจริงจาก bot.py ไม่ใช่ก็อปมา)
            ตรวจว่าโมเดลเลือกเครื่องมือถูกต้อง
-  Phase 2: ทดสอบ multi-turn place-search ผ่าน bot.ask_ollama จริง — ถามหาร้านไม่บอกจังหวัด
+  Phase 2: ทดสอบ multi-turn place-search ผ่าน chat.ask_ollama จริง — ถามหาร้านไม่บอกจังหวัด
            (ควรถามกลับ) → ตอบจังหวัดในข้อความถัดไป (ควรค้นและได้ผลจริง) ยืนยันว่าการลบ
            _pending_place ทิ้ง (ใช้ conversation history แทน) ยังทำงานถูกต้อง
 
@@ -24,8 +24,11 @@ PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import bot      # noqa: E402
-import memory   # noqa: E402
+import bot            # noqa: E402
+import chat           # noqa: E402
+import llm_tools      # noqa: E402
+import memory         # noqa: E402
+import ollama_client  # noqa: E402
 
 TEST_USER_ID = 555_555_555_555_555_555   # ไม่ชนกับ test user ของสคริปต์อื่น (111/222/333/444)
 TEST_USER_NAME = "ผู้ทดสอบ"
@@ -62,7 +65,7 @@ async def phase1_tool_selection():
 
     passed = failed = 0
     for case in TOOL_SELECTION_CASES:
-        msg = await bot._chat_once([{"role": "user", "content": case["msg"]}], tools=bot.TOOLS)
+        msg = await ollama_client._chat_once([{"role": "user", "content": case["msg"]}], tools=llm_tools.TOOLS)
         tool_calls = msg.get("tool_calls") or []
         got_tool = tool_calls[0]["function"]["name"] if tool_calls else None
         ok = got_tool == case["expect_tool"]
@@ -102,7 +105,7 @@ async def phase2_multiturn_place_search():
     hr()
     turn1 = "หาร้านก๋วยเตี๋ยวอร่อยๆให้หน่อย"
     print(f"  รอบ 1: {turn1!r} (ไม่บอกจังหวัด — ควรถามกลับ ห้ามเดาชื่อร้าน)")
-    reply1 = await bot.ask_ollama(TEST_USER_ID, TEST_USER_NAME, turn1)
+    reply1 = await chat.ask_ollama(TEST_USER_ID, TEST_USER_NAME, turn1)
     print(f"  🤖 {reply1}")
     asked_back = ("จังหวัด" in reply1 or "อำเภอ" in reply1 or "แถวไหน" in reply1 or "?" in reply1 or "ไหม" in reply1)
     print(f"  {'✅ PASS' if asked_back else '❌ FAIL'} — ดูเหมือนถามกลับ: {asked_back}")
@@ -110,7 +113,7 @@ async def phase2_multiturn_place_search():
     hr()
     turn2 = "ชุมพรค่ะ"
     print(f"  รอบ 2: {turn2!r} (ตอบจังหวัด — โมเดลควรเรียก search_places ซ้ำเองจาก history)")
-    reply2 = await bot.ask_ollama(TEST_USER_ID, TEST_USER_NAME, turn2)
+    reply2 = await chat.ask_ollama(TEST_USER_ID, TEST_USER_NAME, turn2)
     print(f"  🤖 {reply2}")
     still_asking = ("จังหวัด" in reply2 and "?" in reply2)
     print(f"  {'✅ PASS' if not still_asking else '❌ FAIL'} — ไม่ได้ถามจังหวัดซ้ำ: {not still_asking}")

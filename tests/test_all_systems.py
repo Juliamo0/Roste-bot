@@ -19,6 +19,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 # ── ให้ import bot.py จาก root ของโปรเจกต์ (parent ของ tests/) ───────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bot
+import datasources
+import websearch
 
 ROWS = []  # [(ระบบ, สถานะ, รายละเอียด)]
 
@@ -40,7 +42,7 @@ print()
 # ── 1. เวลา/วันที่ ────────────────────────────────────────────────────────────
 print("[1] เวลา/วันที่ ...", end=" ", flush=True)
 try:
-    result = bot.get_thai_datetime()
+    result = datasources.get_thai_datetime()
     if "พ.ศ." in result and "น." in result:
         _row("เวลา/วันที่", "✅", result)
     else:
@@ -51,7 +53,7 @@ except Exception as e:
 # ── 2. น้ำมัน (Kapook scraping) ──────────────────────────────────────────────
 print("[2] น้ำมัน (Kapook) ...", end=" ", flush=True)
 try:
-    result = _run(bot.get_oil_price("ptt"))
+    result = _run(datasources.get_oil_price("ptt"))
     if "บาท/ลิตร" in result:
         # แสดงบรรทัดแรกที่มีราคา
         price_line = next((l for l in result.split("\n") if "บาท" in l), result[:60])
@@ -66,7 +68,7 @@ except Exception as e:
 # ── 3. อากาศ (Open-Meteo — ไม่ต้องใช้ key) ──────────────────────────────────
 print("[3] อากาศ Open-Meteo ...", end=" ", flush=True)
 try:
-    result = _run(bot.get_weather("Chumphon"))
+    result = _run(datasources.get_weather("Chumphon"))
     if "พยากรณ์อากาศ" in result and "วันนี้" in result:
         lines = [l for l in result.split("\n") if l.strip().startswith("-")]
         detail = lines[0].strip() if lines else result.split("\n")[0]
@@ -80,11 +82,11 @@ except Exception as e:
 
 # ── 4. อากาศ (TMD — ถ้ามี token) ────────────────────────────────────────────
 print("[4] อากาศ TMD ...", end=" ", flush=True)
-if not bot.TMD_TOKEN or bot.TMD_TOKEN.startswith("วาง_"):
+if not datasources.TMD_TOKEN or datasources.TMD_TOKEN.startswith("วาง_"):
     _row("อากาศ (TMD)", "⚠️", "ไม่มี TMD_TOKEN ใน config.py — ข้าม")
 else:
     try:
-        result = _run(bot.get_weather_tmd("ชุมพร"))
+        result = _run(datasources.get_weather_tmd("ชุมพร"))
         if result and "พยากรณ์อากาศ" in result:
             lines = result.split("\n")
             detail = lines[1].strip() if len(lines) > 1 else result[:60]
@@ -99,7 +101,7 @@ else:
 # ── 5. ตัดไฟ (PEA) ─────────────────────────────────────────────────────────
 print("[5] ตัดไฟ PEA ...", end=" ", flush=True)
 try:
-    result = _run(bot.get_power_outage())
+    result = _run(datasources.get_power_outage())
     if "ชุมพร" in result or "ยังไม่มีประกาศ" in result or "กำลังจะถึง" in result:
         _row("ตัดไฟ (PEA)", "✅", result.split("\n")[0][:80])
     elif "เชื่อมต่อ" in result or "ดึงข้อมูล" in result:
@@ -113,11 +115,11 @@ except Exception as e:
 
 # 6a. DDG (forced — ปิด SerpApi ชั่วคราว)
 print("[6a] ค้นเว็บ DDG ...", end=" ", flush=True)
-_orig_key = bot.SERPAPI_KEY
+_orig_key = websearch.SERPAPI_KEY
 try:
-    bot.SERPAPI_KEY = ""            # force DDG
-    bot._SEARCH_CACHE.clear()
-    result = bot.search_web("ข่าวเทคโนโลยี", max_results=3)
+    websearch.SERPAPI_KEY = ""            # force DDG
+    websearch._SEARCH_CACHE.clear()
+    result = websearch.search_web("ข่าวเทคโนโลยี", max_results=3)
     if result and not result.startswith(("ค้นเว็บไม่", "ยังไม่ได้ติดตั้ง", "ไม่พบ")):
         first = result.split("\n")[0]
         _row("ค้นเว็บ (DDG)", "✅", first[:80])
@@ -128,16 +130,16 @@ try:
 except Exception as e:
     _row("ค้นเว็บ (DDG)", "❌", str(e)[:60])
 finally:
-    bot.SERPAPI_KEY = _orig_key     # คืนค่า
+    websearch.SERPAPI_KEY = _orig_key     # คืนค่า
 
 # 6b. SerpApi (ถ้ามี key)
 print("[6b] ค้นเว็บ SerpApi ...", end=" ", flush=True)
-if not bot.SERPAPI_KEY:
+if not websearch.SERPAPI_KEY:
     _row("ค้นเว็บ (SerpApi)", "⚠️", "ไม่มี SERPAPI_KEY ใน config.py — ข้าม")
 else:
     try:
-        bot._SEARCH_CACHE.clear()
-        result = bot.search_web_serpapi("ข่าวเทคโนโลยี", max_results=3)
+        websearch._SEARCH_CACHE.clear()
+        result = websearch.search_web_serpapi("ข่าวเทคโนโลยี", max_results=3)
         if result and "ที่มา:" in result:
             first = result.split("\n")[0]
             _row("ค้นเว็บ (SerpApi)", "✅", first[:80])
@@ -150,12 +152,12 @@ else:
 
 # ── 7. หาร้าน (SerpApi Google Maps — ถ้ามี key) ──────────────────────────────
 print("[7] หาร้าน Google Maps ...", end=" ", flush=True)
-if not bot.SERPAPI_KEY:
+if not websearch.SERPAPI_KEY:
     _row("หาร้าน (Google Maps)", "⚠️", "ไม่มี SERPAPI_KEY ใน config.py — ข้าม")
 else:
     try:
-        bot._SEARCH_CACHE.clear()
-        result = bot.search_places_serpapi("ร้านก๋วยเตี๋ยว", "ชุมพร")
+        websearch._SEARCH_CACHE.clear()
+        result = websearch.search_places_serpapi("ร้านก๋วยเตี๋ยว", "ชุมพร")
         if result and "- " in result:
             first = result.split("\n")[0]
             _row("หาร้าน (Google Maps)", "✅", first[:80])
@@ -169,7 +171,7 @@ else:
 # ── 8. parse_pea_date ─────────────────────────────────────────────────────────
 print("[8] _parse_pea_date ...", end=" ", flush=True)
 try:
-    dt = bot._parse_pea_date("/Date(1751302800000)/")
+    dt = datasources._parse_pea_date("/Date(1751302800000)/")
     if dt and dt.year == 2025 and dt.month == 7:
         _row("_parse_pea_date", "✅", f"epoch → {dt.strftime('%Y-%m-%d %H:%M %z')}")
     else:
