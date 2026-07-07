@@ -370,7 +370,44 @@ class TestGetWeather:
         assert "ดึงข้อมูลอากาศไม่สำเร็จ" in result
 
 
-# ── 9. search_web_serpapi ─────────────────────────────────────────────────────
+# ── 9a. SerpApi quota-ordering (cache hit ไม่ควรเผาโควตา) ──────────────────────
+
+class TestSerpapiQuotaOrdering:
+    """บั๊กเดิม: _serpapi_quota_ok() ถูกเรียกที่ caller (search_web/_search_places) ก่อนเช็ค
+    cache ทำให้ cache hit ก็ยังเผาโควตาไปด้วย (ถามคำเดิมซ้ำใน 1 ชม. ก็นับเผา 8 ครั้ง/วันอยู่ดี
+    ทั้งที่ไม่ได้ยิง API จริง) — แก้โดยย้ายเช็คโควตาเข้าไปใน _serpapi_get (จุดเดียวที่ยิง HTTP จริง)"""
+
+    def setup_method(self):
+        websearch._SEARCH_CACHE.clear()
+        websearch._serpapi_quota_date = None
+        websearch._serpapi_quota_count = 0
+
+    def test_quota_exceeded_skips_http_call(self, monkeypatch):
+        from datetime import date
+        monkeypatch.setattr(websearch, "_serpapi_quota_date", date.today())
+        monkeypatch.setattr(websearch, "_serpapi_quota_count", websearch._SERPAPI_DAILY_LIMIT)
+        with patch("requests.get") as mock_get:
+            result = websearch._serpapi_get({"q": "test"})
+        assert result is None
+        mock_get.assert_not_called()
+
+    def test_cache_hit_does_not_burn_quota_again(self):
+        """cache hit ต้องไม่เรียก _serpapi_get ซ้ำ (= ไม่เผาโควตาซ้ำ) — ยืนยันด้วย quota counter
+        จริง ไม่ mock _serpapi_get ตรงๆ (ต่างจากเทสอื่นด้านล่างที่ mock _serpapi_get เพื่อเทส
+        พฤติกรรม parse ผลลัพธ์ — เทสนี้ต้องการดูว่า HTTP call จริงถูกยิงกี่ครั้ง)"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"organic_results": [
+            {"title": "X", "snippet": "Y", "link": "https://x.com"}
+        ]}
+        with patch("requests.get", return_value=mock_resp) as mock_get:
+            websearch.search_web_serpapi("same-query")   # cache miss → ยิงจริง 1 ครั้ง
+            websearch.search_web_serpapi("same-query")   # cache hit → ไม่ควรยิงซ้ำ
+        assert mock_get.call_count == 1
+        assert websearch._serpapi_quota_count == 1   # เผาโควตาแค่ครั้งเดียว ไม่ใช่ 2
+
+
+# ── 9. search_web_serpapi ──────────────────────────────────────────────────────
 
 class TestSearchWebSerpapi:
     """หมายเหตุ: search_web_serpapi ย้ายไป websearch.py แล้ว (bot.py แค่ re-export) —

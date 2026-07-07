@@ -22,7 +22,7 @@ from datasources import (
     get_oil_price,
     get_power_outage,
 )
-from websearch import SERPAPI_KEY, _serpapi_quota_ok, search_places_serpapi, search_web
+from websearch import SERPAPI_KEY, search_places_serpapi, search_web
 from ollama_client import MODEL, _get_json_post, _strip_think
 
 logger = logging.getLogger("roste.llm_tools")
@@ -155,9 +155,10 @@ TOOLS = [
 # ============================================================
 async def _search_places(place_query: str, province: str):
     """ค้นร้าน/สถานที่จริงตามจังหวัด แล้วคืนข้อความสั่งรอสเต้ให้เล่าจากข้อมูลจริง
-    ลำดับ: Google Maps (ถ้ามี SerpApi key, ข้อมูลร้านสะอาดสุด) → ค้นเว็บธรรมดา (สำรอง)"""
-    # ทางหลัก: Google Maps ผ่าน SerpApi — ได้ชื่อร้าน/เรตติ้ง/ที่อยู่/เวลาเปิด สะอาด (ถ้ายังไม่เกินโควตาวันนี้)
-    if SERPAPI_KEY and _serpapi_quota_ok():
+    ลำดับ: Google Maps (ถ้ามี SerpApi key, ข้อมูลร้านสะอาดสุด) → ค้นเว็บธรรมดา (สำรอง)
+    (เช็คโควตาอยู่ใน websearch._serpapi_get ที่ถูกเรียกก็ต่อเมื่อ cache miss เท่านั้น)"""
+    # ทางหลัก: Google Maps ผ่าน SerpApi — ได้ชื่อร้าน/เรตติ้ง/ที่อยู่/เวลาเปิด สะอาด
+    if SERPAPI_KEY:
         # ตัดคำบอกตำแหน่งออกจาก query เพราะใส่ใน location แล้ว (เลี่ยงซ้ำซ้อน)
         maps_q = place_query.replace(province, "").strip() or place_query
         logger.info(f"   🗺️ ค้นร้านผ่าน Google Maps: q={maps_q!r} location={province!r}")
