@@ -157,6 +157,7 @@ def preprocess_for_f5(text: str) -> tuple:
     t = re.sub(r'\bNGV\b', 'เอ็นจีวี', t)
     t = years_to_thai(t)   # ปีอ่านทีละหลัก — ต้องมาก่อน numbers_to_thai
     t = numbers_to_thai(t)
+    t = expand_mai_yamok(t)   # ๆ ต้องมาหลังแปลงตัวเลข กัน ๆ ที่ตามหลังเลขถูกอ่านผิดคำ
     t = reduce_naka(t)
     t = re.sub(r' +', ' ', t).strip()
 
@@ -186,7 +187,7 @@ if __name__ == '__main__':
         ("33 องศา",           "สามสิบสาม องศา"),
         ("แก๊สโซฮอล์ 95",    "แก๊สโซฮอล์ เก้าสิบห้า"),
         ("ดีเซล 29.94 บาทต่อลิตร", "ดีเซล ยี่สิบเก้าจุดเก้าสี่ บาทต่อลิตร"),
-        ("1,500 บาท",         "N/A (comma ไม่ถูก match)"),
+        ("1,500 บาท",         "หนึ่งพันห้าร้อย บาท"),
     ]
     for text, expected in num_cases:
         got = numbers_to_thai(text)
