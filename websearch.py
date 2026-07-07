@@ -66,7 +66,14 @@ def _cache_set(kind: str, query: str, value: str):
 
 
 def _serpapi_get(params: dict):
-    """ยิงคำขอไป SerpApi แล้วคืน dict ผลลัพธ์ (หรือ None ถ้าพลาด)"""
+    """ยิงคำขอไป SerpApi แล้วคืน dict ผลลัพธ์ (หรือ None ถ้าพลาด/เกินโควตา)
+
+    เช็คโควตาที่นี่ — จุดเดียวที่ยิง HTTP จริงออกไป SerpApi — ไม่ใช่ที่ caller (search_web/
+    _search_places) เพราะเดิมเช็คก่อนเข้าเช็ค cache ทำให้ cache hit ก็ยังเผาโควตาไปด้วย
+    (ถามคำเดิมซ้ำใน 1 ชม. ก็นับเป็นเผา quota 8 ครั้ง/วันอยู่ดี ทั้งที่ไม่ได้ยิง API จริง)"""
+    if not _serpapi_quota_ok():
+        logger.info("   ⚠️ SerpApi เกินโควตาวันนี้แล้ว (8 ครั้ง/วัน) — ใช้ ddg สำรองแทน")
+        return None
     import requests
     params = dict(params, api_key=SERPAPI_KEY)
     try:
@@ -155,9 +162,10 @@ def search_places_serpapi(query: str, location: str) -> str:
 
 
 def search_web(query: str, max_results: int = 5, region: str = "th-th") -> str:
-    """ค้นเว็บแล้วคืนผลเป็นข้อความ — ใช้ SerpApi ถ้ามี key ไม่งั้นใช้ ddgs (region th-th = เน้นไทย)"""
-    # ทางหลัก: SerpApi (Google จริง) ถ้าตั้ง key ไว้ และยังไม่เกินโควตาวันนี้
-    if SERPAPI_KEY and _serpapi_quota_ok():
+    """ค้นเว็บแล้วคืนผลเป็นข้อความ — ใช้ SerpApi ถ้ามี key ไม่งั้นใช้ ddgs (region th-th = เน้นไทย)
+    (เช็คโควตาอยู่ใน _serpapi_get ที่ถูกเรียกก็ต่อเมื่อ cache miss เท่านั้น — cache hit ไม่เผาโควตา)"""
+    # ทางหลัก: SerpApi (Google จริง) ถ้าตั้ง key ไว้
+    if SERPAPI_KEY:
         result = search_web_serpapi(query, max_results)
         if result:
             return result
