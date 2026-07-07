@@ -32,6 +32,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 
 import soundfile as sf
@@ -196,6 +197,28 @@ def _readline_with_timeout(proc: subprocess.Popen, timeout: float) -> str | None
         return None
 
 
+_STDERR_RING_SIZE = 50   # เก็บบรรทัด stderr ล่าสุดไว้รายงานถ้า worker ตายก่อน ready
+
+
+def _drain_stderr(proc: subprocess.Popen, ring: "deque[str]") -> None:
+    """อ่าน stderr ของ worker subprocess ทีละบรรทัดตลอดอายุ process — เก็บบรรทัดล่าสุดไว้ใน ring
+    buffer (ใช้ตอน error path รายงานสาเหตุที่ worker ตายก่อน ready) และ log เป็น DEBUG (เนื้อหา
+    ML library spam ตามปกติ ไม่ควรท่วม INFO)
+
+    ต้องเริ่ม thread นี้ทันทีหลัง Popen — ไม่ใช่รอหลัง ready — เพราะช่วงโหลดโมเดลคือช่วงที่ stderr
+    พ่นเยอะสุด (torch/cuda warnings ฯลฯ) ถ้าไม่มีใคร drain แล้ว pipe buffer เต็ม (~64KB บน Windows)
+    subprocess จะ block ตอนเขียน stderr เพิ่ม — อาการที่เห็นคือ TTS timeout ที่หาสาเหตุไม่เจอ เพราะ
+    worker ไม่ได้ตายจริง แค่ค้างรอเขียน stderr ที่ไม่มีใครอ่าน
+
+    thread เป็น daemon จบเองเมื่อ pipe ปิด (readline คืน "") ไม่ต้อง join ตอน stop()"""
+    try:
+        for line in iter(proc.stderr.readline, ""):
+            ring.append(line.rstrip("\n"))
+            logger.debug(f"   [worker stderr] {line.rstrip()}")
+    except (ValueError, OSError):
+        pass  # pipe ถูกปิดระหว่างอ่าน (stop() เรียก stdin.close() พอดีช่วงนี้) — ไม่ใช่ error จริง
+
+
 # ── RVC warm worker ────────────────────────────────────────────────────────────
 
 class RvcWorker:
@@ -216,6 +239,7 @@ class RvcWorker:
     def __init__(self):
         self._proc: subprocess.Popen | None = None
         self.load_time: float = 0.0
+        self._stderr_ring: deque[str] = deque(maxlen=_STDERR_RING_SIZE)
 
     @property
     def alive(self) -> bool:
@@ -239,11 +263,13 @@ class RvcWorker:
             encoding="utf-8",
             errors="replace",
         )
+        # เริ่ม drain stderr ทันที (ก่อน ready) — กัน pipe buffer เต็มตอนโหลดโมเดล (ดู docstring _drain_stderr)
+        threading.Thread(target=_drain_stderr, args=(self._proc, self._stderr_ring), daemon=True).start()
         # scan stdout until we see {"status": "ready"} — skip RVC loading prints
         while True:
             line = self._proc.stdout.readline()
             if not line:
-                err = self._proc.stderr.read()
+                err = "\n".join(self._stderr_ring)
                 raise RuntimeError(f"RVC worker died before ready.\nstderr:\n{err}")
             line = line.strip()
             try:
@@ -324,6 +350,7 @@ class F5Worker:
     def __init__(self):
         self._proc: subprocess.Popen | None = None
         self.load_time: float = 0.0
+        self._stderr_ring: deque[str] = deque(maxlen=_STDERR_RING_SIZE)
 
     @property
     def alive(self) -> bool:
@@ -347,10 +374,12 @@ class F5Worker:
             encoding="utf-8",
             errors="replace",
         )
+        # เริ่ม drain stderr ทันที (ก่อน ready) — กัน pipe buffer เต็มตอนโหลดโมเดล (ดู docstring _drain_stderr)
+        threading.Thread(target=_drain_stderr, args=(self._proc, self._stderr_ring), daemon=True).start()
         while True:
             line = self._proc.stdout.readline()
             if not line:
-                err = self._proc.stderr.read()
+                err = "\n".join(self._stderr_ring)
                 raise RuntimeError(f"F5 worker died before ready.\nstderr:\n{err}")
             if line.strip().startswith("F5_WORKER_READY"):
                 break
