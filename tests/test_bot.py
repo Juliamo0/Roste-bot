@@ -1280,3 +1280,32 @@ class TestSingletonLock:
         # ต้องตายเพราะโดน lock ปฏิเสธจริง (มี error message ของ singleton) ไม่ใช่พังเรื่องอื่น
         assert "บอทกำลังรันอยู่แล้ว" in combined
         assert str(os.getpid()) in combined   # error message บอก PID ตัวเก่า (โพรเซส pytest นี้)
+
+
+class TestOnMessageSongRequestDM:
+    """ขอเพลงผ่าน DM (ไม่มี .voice attribute เลย ต่างจาก Member ในเซิร์ฟเวอร์) — บั๊กเดิม
+    message.author.voice ชนตรงๆ โยน AttributeError ทำให้ DM เงียบไม่ตอบอะไรเลย"""
+
+    def _make_dm_message(self, content: str):
+        # spec=discord.User กันไม่ให้ mock เสก .voice ให้เอง (discord.Member เท่านั้นที่มี .voice
+        # จริง — discord.User ที่ใช้ตอน DM ไม่มี attribute นี้เลย) ต้องใช้ spec เทสถึงวัดของจริง
+        author = MagicMock(spec=discord.User)
+        author.id = 918_273_645_912_873   # กันชนกับ cooldown/dedup ของเทสอื่น
+        author.display_name = "ทดสอบขอเพลง"
+
+        message = MagicMock()
+        message.author = author
+        message.guild = None                  # DM
+        message.id = 918_273_645_912_874
+        message.content = content
+        message.mentions = []
+        message.attachments = []
+        message.reply = AsyncMock()
+        return message
+
+    def test_song_request_in_dm_replies_instead_of_crashing(self):
+        message = self._make_dm_message("ร้องเพลงหน่อย")
+        asyncio.run(bot.on_message(message))
+        message.reply.assert_awaited_once()
+        reply_text = message.reply.await_args.args[0]
+        assert "เข้าห้อง voice" in reply_text

@@ -733,7 +733,11 @@ async def on_message(message):
             # ใช้ voice_lock ร่วมกับ TTS พูดตอบปกติด้วย ("กำลังร้องเพลง" อาจไม่ตรงถ้า lock ถูกจองจากพูดตอบ)
             await message.reply("ตอนนี้รอสเต้กำลังใช้เสียงอยู่ (พูดหรือร้องเพลง) รอแป๊บนึงแล้วลองใหม่นะคะ")
             return
-        if not message.author.voice or not message.author.voice.channel:
+        # ใช้ getattr แทน message.author.voice ตรงๆ — DM ใช้ discord.User ซึ่งไม่มี .voice
+        # attribute เลย (มีแค่ discord.Member ในเซิร์ฟเวอร์เท่านั้นที่มี) เข้าถึงตรงๆ ตอน DM จะ
+        # โยน AttributeError ทำให้ขอเพลงผ่าน DM เงียบไม่ตอบอะไรเลย (pattern เดียวกับบรรทัด 402/457/515)
+        user_voice = getattr(message.author, "voice", None)
+        if not user_voice or not user_voice.channel:
             await message.reply("เข้าห้อง voice ก่อนนะคะ เดี๋ยวรอสเต้ร้องให้ฟัง~")
             return
         query = music.extract_song_query(user_message)
