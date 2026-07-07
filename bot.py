@@ -152,7 +152,7 @@ def _dm_allowed(user_id: int, is_dm: bool) -> bool:
 MAX_PDF_SIZE_BYTES = 10 * 1024 * 1024   # 10MB
 
 # _bg_queue, _bg_worker, _ensure_bg_worker, _enqueue_bg, _user_locks, _USER_LOCKS_MAX,
-# _purge_unlocked_locks, get_user_lock, _THAI_MONTHS — ย้ายไป chat.py แล้ว (re-export ไว้ด้านบน)
+# _purge_unlocked_locks, get_user_lock, _THAI_MONTHS — อยู่ใน chat.py (เรียกผ่าน chat.xxx)
 
 # ============================================================
 #  ⚙️  ตั้งค่าหลัก — แก้ตรงนี้
@@ -166,9 +166,9 @@ except ImportError:
     # SystemExit เปล่าๆ (ไม่ใส่ 1) = exit code 0 — start.bat/CI จะมองว่า "สำเร็จ" ทั้งที่บอทไม่ขึ้น
     raise SystemExit(1)
 
-# TMD_TOKEN — ย้ายไป datasources.py แล้ว (re-export ไว้ด้านบน)
+# TMD_TOKEN — อยู่ใน datasources.py (เรียกผ่าน datasources.TMD_TOKEN)
 
-# SERPAPI_KEY, _serpapi_quota_ok — ย้ายไป websearch.py แล้ว (re-export ไว้ด้านบนให้ชื่อเดิมยังใช้ได้)
+# SERPAPI_KEY, _serpapi_quota_ok — อยู่ใน websearch.py (เรียกผ่าน websearch.xxx)
 
 # PRINT_ALLOWED_USER_IDS — รายชื่อคนที่สั่งพิมพ์ PDF จริงได้ ไม่ตั้งไว้ = ไม่มีใครสั่งพิมพ์ได้ (ปลอดภัยไว้ก่อน)
 try:
@@ -196,23 +196,22 @@ if not DISCORD_TOKEN or DISCORD_TOKEN == "วาง_TOKEN_ของคุณ_ท
     # ที่ไม่มี .env โพรเซสมาตายที่ด่านนี้ด้วยโค้ด 0 ก่อนถึง lock — เทสเลย fail เฉพาะบน CI)
     raise SystemExit(1)
 
-# OLLAMA_URL, MODEL — ย้ายไป ollama_client.py แล้ว (re-export ไว้ด้านบน)
+# OLLAMA_URL, MODEL — อยู่ใน ollama_client.py (เรียกผ่าน ollama_client.xxx)
 
 # 🖨️ ระบบพิมพ์อยู่ในไฟล์ printing.py | 🎵 ระบบเพลงอยู่ในไฟล์ music.py
 # (แก้ตั้งค่าเครื่องพิมพ์ในไฟล์ printing.py, ตั้งค่าโฟลเดอร์เพลงในไฟล์ music.py)
 
 
 # ============================================================
-#  🔎  เครื่องมือค้นเว็บ — ย้ายไป websearch.py แล้ว (cache, SerpApi, ddgs fallback)
-#      re-export ชื่อเดิมไว้ด้านบน (SERPAPI_KEY, search_web, search_places_serpapi ฯลฯ)
-#      ให้ยังใช้ผ่าน bot.xxx ได้เหมือนเดิมระหว่างช่วงเปลี่ยนผ่าน
+#  🔎  เครื่องมือค้นเว็บ — อยู่ใน websearch.py (cache, SerpApi, ddgs fallback)
+#      เรียกผ่าน websearch.xxx (SERPAPI_KEY, search_web, search_places_serpapi ฯลฯ)
 # ============================================================
 
 
 # TOOLS, TOOL_HANDLERS, _validate_tool_args, _strip_ungrounded_optional_args, _search_places,
 # make_search_query, _tool_get_current_time, _tool_get_weather, _tool_get_power_outage,
-# _tool_get_oil_price, _tool_search_places, _tool_search_web — ย้ายไป llm_tools.py แล้ว
-# (re-export ไว้ด้านบน) — ต่อ tool ใหม่ (IoT, reminder, ...) แก้ที่ llm_tools.py แทน
+# _tool_get_oil_price, _tool_search_places, _tool_search_web — อยู่ใน llm_tools.py
+# (เรียกผ่าน llm_tools.xxx) — ต่อ tool ใหม่ (IoT, reminder, ...) แก้ที่ llm_tools.py แทน
 
 
 # ============================================================
@@ -260,8 +259,7 @@ client = RosteClient(intents=intents)
 
 # auto_remember, _check_condition_b, _SUMMARY_NOTICE_*, _maybe_append_summary_notice,
 # detect_topic_change, summarize_and_verify, flush_user_history, flush_all_users, ask_ollama
-# — ย้ายไป chat.py แล้ว (re-export ไว้ด้านบน) — เรียกจาก on_message/on_close ผ่าน chat.xxx
-# แบบเต็มชื่อ (ไม่ผ่าน bot re-export) ตามมาตรฐานเดียวกันทั้งไฟล์
+# — อยู่ใน chat.py — เรียกจาก on_message/on_close ผ่าน chat.xxx แบบเต็มชื่อเสมอ
 
 
 async def _start_voice_worker() -> None:

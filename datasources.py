@@ -161,7 +161,7 @@ async def get_weather_tmd_hourly_today(province_th: str):
     return " และ ".join(parts)
 
 
-async def get_weather_tmd(province_th: str) -> str:
+async def get_weather_tmd(province_th: str) -> str | None:
     """ดึงพยากรณ์อากาศ 3 วันจากกรมอุตุนิยมวิทยา (TMD) — แม่นสำหรับไทย
     คืนข้อความสรุป หรือ None ถ้าดึงไม่ได้ (ให้ตัวเรียกไปใช้ Open-Meteo สำรอง)"""
     if not TMD_TOKEN or TMD_TOKEN.startswith("วาง_"):

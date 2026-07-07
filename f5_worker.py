@@ -73,4 +73,8 @@ for line in sys.stdin:
 
         print(f"OK:{out_path}|time={elapsed:.1f}s|dur={duration:.1f}s", flush=True)
     except Exception as e:
-        print(f"ERR:{traceback.format_exc()[-200:]}", flush=True)
+        # traceback มี \n หลายบรรทัด — ต้องรีดให้เหลือบรรทัดเดียวตาม protocol (ผู้เรียกอ่านทีละ
+        # readline() คาดว่า 1 ข้อความ = 1 บรรทัด ถ้าปล่อย \n ดิบๆ จะเห็นแค่บรรทัดแรกแล้วบรรทัด
+        # ที่เหลือหลุดไปเป็น "บรรทัดขยะ" ที่ readline() รอบถัดไปงงว่าเป็นอะไร)
+        err_line = traceback.format_exc()[-200:].replace("\n", " | ")
+        print(f"ERR:{err_line}", flush=True)
