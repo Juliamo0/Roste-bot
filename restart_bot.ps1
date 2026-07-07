@@ -4,21 +4,30 @@
 $botDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $botDir
 
-# kill process เก่าทั้งหมดที่รัน bot.py หรือ voice_rvc_worker.py
-Get-Process python -ErrorAction SilentlyContinue | ForEach-Object {
-    $id  = $_.Id
-    $cmd = (Get-WmiObject Win32_Process -Filter "ProcessId=$id").CommandLine
-    if ($cmd -match "bot\.py|voice_rvc_worker") {
-        Write-Host "killing PID $id ($cmd)"
-        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-    }
+$venvPython = Join-Path $botDir "venv\Scripts\python.exe"
+if (-not (Test-Path $venvPython)) {
+    Write-Host "[X] venv\ not found. Run setup.bat first to create it and install libraries."
+    exit 1
+}
+
+# kill process เก่าทั้งหมดที่รัน bot.py หรือ worker ที่มันสปอว์น (RVC/F5) — เจาะจาก CommandLine
+# ไม่ใช่ชื่อ process เพราะ python ตัวเดียวกันโผล่มาได้หลายชื่อ (python.exe ปกติ, python3.13.exe
+# ตอน WindowsApps launcher re-exec ตัวเอง) เจอมาแล้วหลายรอบว่า filter จากชื่อ process อย่างเดียว
+# พลาด orphan ไปได้ — ใช้ CommandLine เป็นเกณฑ์เดียวจับได้ทุกกรณี
+Get-CimInstance Win32_Process | Where-Object {
+    $_.CommandLine -match "bot\.py|voice_rvc_worker|f5_worker"
+} | ForEach-Object {
+    Write-Host "killing PID $($_.ProcessId) ($($_.CommandLine))"
+    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
 }
 
 Start-Sleep -Seconds 2
 
-# start bot ใหม่
+# start bot ใหม่ — ต้องผ่าน venv\Scripts\python.exe เท่านั้น (ไม่ใช่ python เฉยๆ จาก PATH)
+# กัน "python resolves differently than start.bat" — เดิม restart_bot.ps1 เรียก python ตรงๆ
+# ซึ่งอาจไม่ใช่ตัวเดียวกับที่ใช้รันเทส/dev ทำให้ dependency ไม่ตรงกันแบบเงียบๆ
 Write-Host "Starting bot..."
-Start-Process -FilePath "python" -ArgumentList "bot.py" `
+Start-Process -FilePath $venvPython -ArgumentList "bot.py" `
     -RedirectStandardOutput "bot_out.log" `
     -RedirectStandardError  "bot_err.log" `
     -WindowStyle Hidden
