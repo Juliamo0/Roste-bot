@@ -562,6 +562,11 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
         try:
             if intro_wav and bot_vc.is_connected():
                 await _play_wav(bot_vc, intro_wav)
+            if intro_wav:
+                try:
+                    os.remove(intro_wav)
+                except OSError:
+                    pass
             if not bot_vc.is_connected():
                 try:
                     bot_vc = await channel.connect()
@@ -584,6 +589,11 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
                 f"ร้องเพลง {pretty_name} จบแล้วค่ะ เป็นไงบ้างคะ เพราะไหม~", message.author.id)
             if outro_wav and bot_vc.is_connected():
                 await _play_wav(bot_vc, outro_wav)
+            if outro_wav:
+                try:
+                    os.remove(outro_wav)
+                except OSError:
+                    pass
         except Exception as e:
             logger.warning(f"   🎵 karaoke play error ({type(e).__name__}: {e})")
 
