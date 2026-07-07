@@ -269,6 +269,9 @@ class RvcWorker:
         while True:
             line = self._proc.stdout.readline()
             if not line:
+                # ให้ drain thread เก็บบรรทัดสุดท้ายๆ เข้า ring buffer ให้ครบก่อน — stdout ปิด
+                # (worker ตาย) ไม่ได้แปลว่า drain thread อ่าน stderr ทันบรรทัดสุดท้ายเสมอไป
+                time.sleep(0.2)
                 err = "\n".join(self._stderr_ring)
                 raise RuntimeError(f"RVC worker died before ready.\nstderr:\n{err}")
             line = line.strip()
@@ -379,6 +382,9 @@ class F5Worker:
         while True:
             line = self._proc.stdout.readline()
             if not line:
+                # ให้ drain thread เก็บบรรทัดสุดท้ายๆ เข้า ring buffer ให้ครบก่อน (เหตุผลเดียวกับ
+                # RvcWorker.start() ด้านบน)
+                time.sleep(0.2)
                 err = "\n".join(self._stderr_ring)
                 raise RuntimeError(f"F5 worker died before ready.\nstderr:\n{err}")
             if line.strip().startswith("F5_WORKER_READY"):
