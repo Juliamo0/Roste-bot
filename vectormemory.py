@@ -27,14 +27,17 @@ import aiohttp
 import chromadb
 from pypdf import PdfReader
 
+from ollama_client import MODEL as RERANK_MODEL, OLLAMA_URL as OLLAMA_CHAT_URL
+
 # ไม่ต้อง config handler เอง — bot.py ตั้ง root logger ไว้แล้ว (rotating file + console)
 logger = logging.getLogger("roste.vectormemory")
 
 OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
 EMBED_MODEL = "bge-m3"   # ต้อง `ollama pull bge-m3` ก่อนใช้ (~1.2GB, รองรับไทยดี)
 
-OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
-RERANK_MODEL = "qwen3:8b"   # ต้องตรงกับ MODEL ใน bot.py — ใช้โมเดลเดิมที่โหลดอยู่แล้ว ไม่กิน VRAM เพิ่ม
+# RERANK_MODEL/OLLAMA_CHAT_URL เดิม hardcode ซ้ำจาก ollama_client.MODEL/OLLAMA_URL แยกต่างหาก
+# (ค่าต้องตรงกันเป๊ะเพราะ rerank ใช้โมเดลเดียวกับที่โหลดอยู่แล้วสำหรับตอบแชต ไม่กิน VRAM เพิ่ม) —
+# import มาตรงๆ แทนแล้วตั้งชื่อเดิมไว้ (as ...) กันหลุด sync กันเองสองที่ในอนาคต
 
 RETRIEVE_K = 5          # ด่าน 1 (embedding): ดึงผู้เข้ารอบมาก่อนแบบ relative ไม่สนระยะสัมบูรณ์
 RERANK_SCORE_MIN = 5    # ด่าน 2 (LLM): คะแนน 0-10 ขั้นต่ำที่ถือว่า "เกี่ยวข้องพอจะ inject" (เกณฑ์หลวมๆ)
