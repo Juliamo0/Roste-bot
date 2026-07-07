@@ -274,6 +274,18 @@ class TestUnitAbbreviations:
         assert "%" not in out
 
 
+# ── ๆ (ไม้ยมก) — ต้องขยายเป็นคำซ้ำก่อนส่ง F5 (F5 อ่าน ๆ ไม่ได้เลยถ้าส่งดิบๆ) ────────
+# regression: expand_mai_yamok() ถูกเขียนใหม่ตอน integrate F5 v2 (9f5bc24) แต่หลุดจาก
+# preprocess_for_f5 pipeline ไปเงียบๆ ทั้งที่เคย wire ไว้แล้วใน d67431e
+
+class TestMaiYamokInPipeline:
+    def test_mai_yamok_expanded_through_full_pipeline(self):
+        from f5_preprocess import preprocess_for_f5
+        out, _ = preprocess_for_f5("จริงๆ นะคะ")
+        assert "ๆ" not in out
+        assert "จริงจริง" in out
+
+
 # ── worker hang timeout — บั๊กจริงที่เจอ: worker subprocess ค้าง (GPU stall) ทำ
 #    music.voice_lock/_tts_lock ค้างตลอดไปเพราะ readline() เดิมไม่มี timeout ──────
 
