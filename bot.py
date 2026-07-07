@@ -5,6 +5,7 @@ import random
 import time
 import asyncio
 import logging
+import msvcrt
 from logging.handlers import RotatingFileHandler
 import discord
 import aiohttp
@@ -30,6 +31,59 @@ _console_handler.setFormatter(_log_formatter)
 
 logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
 logger = logging.getLogger("roste")
+
+# ============================================================
+#  🔒  Singleton lock — กันรัน bot.py ซ้อนกันสองตัวพร้อมกัน
+#      (ปัญหาที่เจอจริงหลายรอบตอน dev: ลืมปิด instance เก่าแล้ว restart ใหม่ทับ — บอทสองตัว
+#      ต่อ token เดียวกันพร้อมกัน ทำให้ตอบข้อความซ้ำสองครั้งเงียบๆ โดยไม่มี error ใดๆ ให้เห็น)
+# ============================================================
+_LOCK_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.lock")
+_PID_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.pid")
+_lock_file_handle = None   # ต้องเก็บ reference ไว้ตลอดอายุโปรแกรม ไม่งั้น GC ปิดไฟล์แล้ว lock หลุด
+
+
+def _acquire_singleton_lock() -> None:
+    """ล็อกไฟล์ bot.lock ผ่าน msvcrt.locking กันรัน instance ซ้อน — ถ้ามีตัวเก่ารันอยู่แล้ว
+    log PID ตัวเก่า (จากไฟล์ bot.pid แยกต่างหาก) แล้ว SystemExit ทันที ก่อนถึง client.run()
+
+    ใช้ file lock ของ OS (msvcrt.locking) แทนการเช็คว่าไฟล์มีอยู่ไหมเฉยๆ เพราะ Windows ปล่อย
+    lock อัตโนมัติเมื่อ process ตาย (รวม crash/kill -9) — ไม่มีปัญหา stale lockfile ค้างหลัง
+    crash แบบวิธีเช็คไฟล์ที่ต้องมาลบมือทุกครั้ง
+
+    ตั้งใจแยก PID ออกเป็นไฟล์ต่างหาก (bot.pid) ไม่ได้เก็บรวมใน bot.lock — ทดสอบแล้วว่า Windows
+    (msvcrt.locking/LockFileEx) ปฏิเสธการเปิดไฟล์ที่มี byte ใดถูกล็อกอยู่จากโพรเซสอื่นทั้งไฟล์
+    แม้จะพยายามอ่านคนละ byte range จากที่ถูกล็อกจริงก็ตาม (ต่างจาก POSIX advisory lock ที่ปกติ
+    จำกัดผลแค่ byte range ที่ล็อก) เลยอ่าน PID เดิมจากไฟล์เดียวกับที่ถือ lock ไม่ได้เลย ต้องแยกไฟล์"""
+    global _lock_file_handle
+    old_pid = "ไม่ทราบ"
+    try:
+        with open(_PID_FILE_PATH, "r") as f:
+            text = f.read().strip()
+        if text:
+            old_pid = text
+    except OSError:
+        pass   # ไฟล์ยังไม่เคยมี (รันครั้งแรก) — ไม่ใช่ error
+
+    if not os.path.exists(_LOCK_FILE_PATH):
+        with open(_LOCK_FILE_PATH, "wb"):
+            pass
+    _lock_file_handle = open(_LOCK_FILE_PATH, "r+b")
+    # msvcrt.locking ล็อกช่วง byte เริ่มจากตำแหน่งปัจจุบัน — ไฟล์ว่าง (รันครั้งแรก) ต้องมีอย่าง
+    # น้อย 1 byte ก่อนล็อก ไม่งั้นแยกไม่ออกระหว่าง "ไฟล์ว่าง" กับ "ถูกล็อกอยู่แล้ว"
+    _lock_file_handle.seek(0, os.SEEK_END)
+    if _lock_file_handle.tell() == 0:
+        _lock_file_handle.write(b" ")
+        _lock_file_handle.flush()
+    _lock_file_handle.seek(0)
+    try:
+        msvcrt.locking(_lock_file_handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        _lock_file_handle.close()
+        logger.error(f"❌ บอทกำลังรันอยู่แล้ว (PID เดิม: {old_pid}) — ปิดตัวเก่าก่อนค่อยรันใหม่")
+        raise SystemExit(1)
+
+    with open(_PID_FILE_PATH, "w") as f:
+        f.write(str(os.getpid()))
 
 import printing   # 🖨️ ระบบพิมพ์ PDF (อยู่ในไฟล์ printing.py)
 import music      # 🎵 ระบบเพลง (อยู่ในไฟล์ music.py)
@@ -808,6 +862,7 @@ async def on_message(message):
 
 
 if __name__ == "__main__":
+    _acquire_singleton_lock()   # กันรัน instance ซ้อน — ต้องทำก่อน client.run() เสมอ
     # log_handler=None — เราตั้ง logging เองแล้วด้านบน (rotating file + console) ไม่ให้ discord.py
     # ผูก handler ของตัวเองซ้อนเข้า root logger อีกชุด (เดิมทำให้ log ของ discord.py ซ้ำสองบรรทัดทุกครั้ง)
     client.run(DISCORD_TOKEN, log_handler=None)

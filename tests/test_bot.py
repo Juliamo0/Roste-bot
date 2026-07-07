@@ -4,6 +4,9 @@ Run: pytest test_bot.py -v
 """
 import asyncio
 import json
+import os
+import subprocess
+import sys
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1200,3 +1203,66 @@ class TestRosteClientClose:
         mock_voice.stop.assert_called_once()
         mock_f5.stop.assert_called_once()
         mock_super_close.assert_called_once()
+
+
+# ── singleton lock — กันรัน bot.py ซ้อนสองตัวพร้อมกัน (ปัญหาที่เจอจริงหลายรอบตอน dev:
+#    ลืมปิด instance เก่าแล้ว restart ใหม่ทับ ทำให้ตอบข้อความซ้ำสองครั้งเงียบๆ) ────────────────
+
+class TestSingletonLock:
+    def setup_method(self):
+        self._release_lock()
+
+    def teardown_method(self):
+        self._release_lock()
+
+    def _release_lock(self):
+        if bot._lock_file_handle is not None:
+            try:
+                bot._lock_file_handle.close()
+            except Exception:
+                pass
+            bot._lock_file_handle = None
+        if os.path.exists(bot._LOCK_FILE_PATH):
+            try:
+                os.remove(bot._LOCK_FILE_PATH)
+            except OSError:
+                pass
+        if os.path.exists(bot._PID_FILE_PATH):
+            try:
+                os.remove(bot._PID_FILE_PATH)
+            except OSError:
+                pass
+
+    def test_first_acquire_succeeds_and_writes_own_pid(self):
+        bot._acquire_singleton_lock()
+        assert bot._lock_file_handle is not None
+        with open(bot._PID_FILE_PATH) as f:
+            assert f.read().strip() == str(os.getpid())
+
+    def test_second_process_exits_with_error_and_does_not_reach_past_lock(self):
+        """จำลองรัน bot.py สองตัวพร้อมกันจริง — subprocess ที่สองต้อง exit ด้วย error ก่อนถึง
+        client.run() (สคริปต์เล็กเรียก _acquire_singleton_lock() ตรงๆ ไม่ต้อง start บอทจริง)
+
+        หมายเหตุ: ไม่มีเทส "acquire ซ้ำในโพรเซสเดียวกัน" เพราะ Windows file locking ผ่อนปรน
+        ระหว่าง handle ที่มาจากโพรเซสเดียวกัน (semantics ต่างจากข้าม process จริง) การ acquire
+        ซ้ำในโพรเซสเดียวก็ไม่ใช่ pattern การใช้งานจริงด้วย (เรียกครั้งเดียวก่อน client.run() เท่านั้น)
+        เทสที่มีความหมายจริงคือ subprocess แยกด้านล่างนี้ ซึ่งจำลองสถานการณ์ที่เกิดขึ้นจริง"""
+        bot._acquire_singleton_lock()   # โพรเซสปัจจุบัน (pytest) ถือ lock ไว้ก่อน
+
+        project_root = os.path.dirname(os.path.abspath(bot.__file__))
+        script = (
+            "import sys\n"
+            f"sys.path.insert(0, {project_root!r})\n"
+            "import bot\n"
+            "bot._acquire_singleton_lock()\n"
+            "print('SHOULD_NOT_REACH_HERE')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=project_root, capture_output=True, text=True, timeout=60,
+            encoding="utf-8", errors="replace",
+        )
+        assert result.returncode != 0
+        assert "SHOULD_NOT_REACH_HERE" not in result.stdout
+        combined = result.stdout + result.stderr
+        assert str(os.getpid()) in combined   # error message บอก PID ตัวเก่า (โพรเซส pytest นี้)
