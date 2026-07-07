@@ -673,6 +673,55 @@ class TestToolLoopFailSafe:
         assert any("฀" <= c <= "๿" for c in reply)  # มีอักษรไทย = กลับเข้า persona แล้ว
 
 
+class TestAskOllamaLockScope:
+    """ask_ollama ต้องถือ get_user_lock(user_id) ครอบทั้งฟังก์ชัน (ไม่ใช่แค่ตอน save ท้ายสุด)
+
+    บั๊กเดิม: load_memory() ตอนต้นไม่ได้ล็อก แล้ว save เฉพาะตอนจบด้วย snapshot เก่า — ถ้า user
+    เดิมส่งข้อความสองครั้งซ้อนกันเร็วกว่า Ollama จะตอบ (cooldown 3s แต่ LLM ใช้เวลาเป็นสิบวิ)
+    ทั้งสองคำขอจะ load history เดิมพร้อมกัน แล้วคำขอที่เสร็จก่อนจะโดนคำขอที่เสร็จทีหลังเขียนทับ
+    หายไปจาก history เพราะคำนวณ new_history จาก snapshot คนละชุด"""
+
+    def setup_method(self):
+        bot._user_locks.clear()
+
+    def _patch_no_op_recall(self, monkeypatch):
+        monkeypatch.setattr(vectormemory, "query_pdf", AsyncMock(return_value=[]))
+        monkeypatch.setattr(vectormemory, "query_conversation_memory", AsyncMock(return_value=[]))
+
+    def test_interleaved_messages_from_same_user_both_saved(self, tmp_path, monkeypatch):
+        """จำลอง race จริง: ข้อความ A เข้าก่อนแต่ Ollama ตอบช้ากว่า ข้อความ B เข้าทีหลังแต่ Ollama
+        ตอบเร็วกว่า — ถ้าไม่ล็อกครอบทั้งฟังก์ชัน (บั๊กเดิม) B จะ save ก่อนแล้วโดน A เขียนทับตอน
+        save ทีหลัง สุดท้ายเหลือแค่ประวัติของ A ในไฟล์ (B หาย) — กับโค้ดที่แก้แล้ว B ต้องรอ A
+        ให้เสร็จ (ถือ lock) ก่อน ถึงจะเริ่มทำงานได้ ผลลัพธ์สุดท้ายต้องมีครบทั้งสองคู่"""
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        self._patch_no_op_recall(monkeypatch)
+        monkeypatch.setattr(chat, "detect_topic_change", AsyncMock(return_value=False))
+        user_id = 701
+        _init_mem(tmp_path, user_id)
+
+        async def slow_for_a(messages, temperature=0.8, tools=None):
+            user_msg = messages[-1]["content"]
+            if user_msg == "ข้อความA":
+                await asyncio.sleep(0.05)   # จำลอง Ollama ตอบ A ช้ากว่า B
+                return {"content": "ตอบ A", "tool_calls": None}
+            return {"content": "ตอบ B", "tool_calls": None}
+
+        async def run_both():
+            task_a = asyncio.create_task(chat.ask_ollama(user_id, "ผู้ทดสอบ", "ข้อความA"))
+            await asyncio.sleep(0.01)   # กัน A ยังไม่ทันเริ่มขอ lock ก่อน B
+            task_b = asyncio.create_task(chat.ask_ollama(user_id, "ผู้ทดสอบ", "ข้อความB"))
+            return await asyncio.gather(task_a, task_b)
+
+        with patch.object(chat, "_chat_once", side_effect=slow_for_a):
+            reply_a, reply_b = asyncio.run(run_both())
+
+        assert reply_a == "ตอบ A"
+        assert reply_b == "ตอบ B"
+        saved = _load_saved(tmp_path, user_id)
+        contents = [m["content"] for m in saved["history"]]
+        assert contents == ["ข้อความA", "ตอบ A", "ข้อความB", "ตอบ B"]   # ครบทั้งสองคู่ ไม่มีคู่ไหนถูกทับหาย
+
+
 class TestReplyBrokeCharacter:
     """guard ดักคำตอบหลุดเป็นภาษาต่างประเทศล้วน (persona.reply_broke_character)"""
 
