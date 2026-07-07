@@ -8,11 +8,15 @@
 """
 import aiohttp
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-
-# โมเดลที่จะใช้ — เปลี่ยนได้ตามเครื่อง
-#   qwen3:1.7b = เร็วสุด แต่โง่   |   qwen3:8b = สมดุล   |   qwen3:14b = ฉลาดขึ้นแต่ช้า (บนการ์ด 4GB ~1-2 นาที)
-MODEL = "qwen3:8b"
+# OLLAMA_URL/MODEL อ่านจาก config.py (ตั้งใน .env ได้ผ่าน OLLAMA_URL/OLLAMA_MODEL) — ไม่บังคับ
+# เปลี่ยนเครื่อง/เปลี่ยนโมเดลได้โดยไม่ต้องแก้โค้ด fallback เป็นค่าเดิมถ้า import config ไม่ได้
+# (เช่น ตอนรันไฟล์นี้แยกหรือในบางเทส) เหมือน pattern SERPAPI_KEY ใน websearch.py
+try:
+    from config import OLLAMA_URL, OLLAMA_MODEL as MODEL
+except ImportError:
+    OLLAMA_URL = "http://localhost:11434/api/chat"
+    # qwen3:1.7b = เร็วสุด แต่โง่   |   qwen3:8b = สมดุล   |   qwen3:14b = ฉลาดขึ้นแต่ช้า (การ์ด 4GB ~1-2 นาที)
+    MODEL = "qwen3:8b"
 
 
 async def _get_json_post(payload, timeout=120):

@@ -14,6 +14,10 @@ TMD_TOKEN = os.getenv("TMD_TOKEN", "")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
+# Ollama — ไม่บังคับตั้งใน .env เปลี่ยนเครื่อง/เปลี่ยนโมเดลได้โดยไม่ต้องแก้โค้ด
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+
 
 def _parse_id_list(env_var_name: str) -> list:
     """แปลงค่า env แบบ 'id1, id2, id3' เป็น list[int] — พิมพ์ id ผิด (มีตัวอักษรปน) เดิมจะ
