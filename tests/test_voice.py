@@ -353,3 +353,102 @@ class TestF5WorkerTimeout:
                        out_path="out.wav", timeout=0.2)
         assert w._proc is None
         assert w.alive is False
+
+
+# ── stderr drain — บั๊กจริงที่อาจเกิด: worker เขียน stderr เยอะตอนโหลดโมเดล (torch/cuda
+#    warnings) ถ้าไม่มีใคร drain แล้ว pipe buffer เต็ม (~64KB บน Windows) subprocess จะ block
+#    ตอนเขียน stderr เพิ่ม ทำให้ start() ค้างตลอดไป (ไม่มี timeout ในตัว) ──────────────────────
+
+import sys as _sys
+from pathlib import Path as _Path
+
+_STDERR_SPAM_RVC_SCRIPT = (
+    "import sys\n"
+    "sys.stderr.write('x' * 100_000)\n"
+    "sys.stderr.flush()\n"
+    "print('{\"status\": \"ready\"}')\n"
+    "sys.stdout.flush()\n"
+    "sys.stdin.readline()\n"
+)
+
+_STDERR_SPAM_F5_SCRIPT = (
+    "import sys\n"
+    "sys.stderr.write('x' * 100_000)\n"
+    "sys.stderr.flush()\n"
+    "print('F5_WORKER_READY')\n"
+    "sys.stdout.flush()\n"
+    "sys.stdin.readline()\n"
+)
+
+
+def _run_start_with_timeout(worker, timeout=5.0):
+    """รัน worker.start() ใน thread แยกพร้อม wall-clock timeout — start() เดิมไม่มี timeout
+    ในตัวเลย (ต่างจาก convert()/generate()) ถ้า drain ไม่ทำงาน test นี้จะค้างจริง ต้องกันด้วย
+    thread + timeout ไม่ให้ pytest ทั้ง session แขวนตามไปด้วย"""
+    done = threading.Event()
+    result = {}
+
+    def _run():
+        try:
+            worker.start()
+            result["ok"] = True
+        except Exception as e:
+            result["error"] = e
+        finally:
+            done.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    finished = done.wait(timeout=timeout)
+    return finished, result
+
+
+class TestStderrDrain:
+    def test_rvc_worker_start_does_not_hang_on_stderr_spam(self, tmp_path, monkeypatch):
+        script = tmp_path / "fake_rvc_worker.py"
+        script.write_text(_STDERR_SPAM_RVC_SCRIPT, encoding="utf-8")
+        monkeypatch.setattr(voice, "_RVC_VENV_PY", _Path(_sys.executable))
+        monkeypatch.setattr(voice, "_WORKER_PY", script)
+
+        w = voice.RvcWorker()
+        try:
+            finished, result = _run_start_with_timeout(w, timeout=5.0)
+            assert finished, "start() ค้าง — stderr ไม่ถูก drain ทำให้ pipe เต็มแล้ว subprocess block"
+            assert result.get("ok") is True, result.get("error")
+            assert w.alive is True
+        finally:
+            w.stop()
+
+    def test_f5_worker_start_does_not_hang_on_stderr_spam(self, tmp_path, monkeypatch):
+        script = tmp_path / "fake_f5_worker.py"
+        script.write_text(_STDERR_SPAM_F5_SCRIPT, encoding="utf-8")
+        monkeypatch.setattr(voice, "_F5_VENV_PY", _Path(_sys.executable))
+        monkeypatch.setattr(voice, "_F5_WORKER_PY", script)
+
+        w = voice.F5Worker()
+        try:
+            finished, result = _run_start_with_timeout(w, timeout=5.0)
+            assert finished, "start() ค้าง — stderr ไม่ถูก drain ทำให้ pipe เต็มแล้ว subprocess block"
+            assert result.get("ok") is True, result.get("error")
+            assert w.alive is True
+        finally:
+            w.stop()
+
+    def test_stderr_lines_available_in_ring_buffer_on_death_before_ready(self, tmp_path, monkeypatch):
+        """worker ตายก่อน ready ต้องยังรายงาน stderr ได้ (จาก ring buffer แทน .stderr.read()
+        ตรงๆ เพราะ drain thread อ่าน stderr ไปแล้ว — .read() ตรงจะได้ผลลัพธ์ว่างเปล่า)"""
+        script = tmp_path / "fake_dying_worker.py"
+        script.write_text(
+            "import sys\n"
+            "sys.stderr.write('boom: something went wrong\n')\n"
+            "sys.stderr.flush()\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(voice, "_RVC_VENV_PY", _Path(_sys.executable))
+        monkeypatch.setattr(voice, "_WORKER_PY", script)
+
+        w = voice.RvcWorker()
+        finished, result = _run_start_with_timeout(w, timeout=5.0)
+        assert finished
+        assert "error" in result
+        assert "boom: something went wrong" in str(result["error"])
