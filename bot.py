@@ -241,7 +241,42 @@ if not DISCORD_TOKEN or DISCORD_TOKEN == "วาง_TOKEN_ของคุณ_ท
 
 intents = discord.Intents.default()
 intents.message_content = True  # ต้องเปิด MESSAGE CONTENT INTENT ในเว็บ Discord ด้วย
-client = discord.Client(intents=intents)
+
+_CLOSE_FLUSH_TIMEOUT_SEC = 120   # กันแขวนตอนปิดบอท ถ้า _bg_queue ค้าง (ดู docstring RosteClient.close)
+
+
+class RosteClient(discord.Client):
+    async def close(self):
+        """เรียกจริงตอนบอทปิด (Ctrl+C หรือ crash) ผ่าน __aexit__ ใน discord.py client.run()
+        (ของเดิมใช้ @client.event async def on_close() ซึ่งไม่มี event ชื่อนี้อยู่จริงในไลบรารี
+        เลยไม่เคยถูกเรียกเลย — flush/worker.stop() เป็น dead code มาตลอด แก้โดย override method นี้แทน)"""
+        if self.is_closed():
+            return  # กันเรียกซ้ำ (idempotent) — super().close() เรียกมาแล้วรอบหนึ่งก็จบ ไม่ flush/stop ซ้ำ
+        try:
+            if chat._active_users:
+                logger.info(f"🔒 บอทปิด — flush history ของ {len(chat._active_users)} user(s)...")
+                try:
+                    # timeout กันแขวน — ตอน Ctrl+C ตัว _bg_worker_task อาจถูก cancel ไปพร้อมกัน
+                    # ทำให้ flush_user_history ที่รอ _bg_queue.join() ค้างตลอดกาล (worker ที่จะมา
+                    # task_done() ตายไปแล้ว) หมดเวลาแล้วยอมทิ้งได้ เพราะ save_memory เซฟทุกเทิร์น
+                    # ไว้อยู่แล้ว ไม่มีข้อมูลดิบหาย แค่ไม่ได้สรุปบทสุดท้ายเป็น summary เฉยๆ
+                    await asyncio.wait_for(chat.flush_all_users(), timeout=_CLOSE_FLUSH_TIMEOUT_SEC)
+                    logger.info("   ✅ flush เสร็จ")
+                except asyncio.TimeoutError:
+                    logger.warning(f"   ⚠️ flush history หมดเวลา ({_CLOSE_FLUSH_TIMEOUT_SEC}s) — ข้ามไป (history ดิบยังอยู่ครบ)")
+        finally:
+            # worker.stop() + super().close() ต้องเกิดเสมอแม้ flush ข้างบนพัง/หมดเวลา/โดน cancel
+            # ไม่งั้น subprocess ใน rvc_venv/f5_venv จะกลายเป็น orphan ค้างกิน VRAM ต่อ (บั๊กเดิมที่แก้อยู่)
+            if _voice_worker is not None:
+                _voice_worker.stop()
+                logger.info("   🎙️ RVC worker ปิดแล้ว")
+            if _f5_worker is not None:
+                _f5_worker.stop()
+                logger.info("   🎙️ F5 worker ปิดแล้ว")
+            await super().close()
+
+
+client = RosteClient(intents=intents)
 
 # auto_remember, _check_condition_b, _SUMMARY_NOTICE_*, _maybe_append_summary_notice,
 # detect_topic_change, summarize_and_verify, flush_user_history, flush_all_users, ask_ollama
@@ -573,21 +608,6 @@ async def on_ready():
     logger.info(f"🖨️ ระบบพิมพ์: {'โหมดจริง' if printing.PRINT_REAL_MODE else 'โหมดจำลอง (ยังไม่สั่งเครื่องจริง)'}")
     logger.info("🎙️ RVC+F5 workers กำลังโหลดในเบื้องหลัง (RVC ~8s, F5 ~14s)...")
     logger.info("บอทพร้อมทำงานแล้ว! ลอง @ ชื่อบอทในเซิร์ฟเวอร์ หรือทักผ่าน DM ได้เลย")
-
-
-@client.event
-async def on_close():
-    """flush history ที่ยังค้างของทุก user ก่อนบอทปิด — กันบทสุดท้ายหาย"""
-    if chat._active_users:
-        logger.info(f"🔒 บอทปิด — flush history ของ {len(chat._active_users)} user(s)...")
-        await chat.flush_all_users()   # sequential ข้างใน — กัน Ollama timeout จากหลาย user พร้อมกัน
-        logger.info("   ✅ flush เสร็จ")
-    if _voice_worker is not None:
-        _voice_worker.stop()
-        logger.info("   🎙️ RVC worker ปิดแล้ว")
-    if _f5_worker is not None:
-        _f5_worker.stop()
-        logger.info("   🎙️ F5 worker ปิดแล้ว")
 
 
 @client.event

@@ -7,6 +7,8 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import discord
+
 import bot
 import chat
 import llm_tools
@@ -1038,3 +1040,114 @@ class TestPlayKaraokeOutro:
 
         assert play_wav_calls == []   # ไม่มี wav ให้เล่นก็ไม่เรียก _play_wav
         bot_vc.disconnect.assert_awaited_once()
+
+
+# ── RosteClient.close() — override เพราะ on_close ไม่ใช่ event จริงใน discord.py ──────
+#    (ยืนยันแล้วว่า discord.py 2.7.1 ไม่มี event ชื่อ on_close ถูก dispatch เลย เดิมโค้ดนี้เป็น
+#    dead code มาตลอด — client.run() เรียก close() ผ่าน __aexit__ เสมอ จึง override method แทน)
+
+class TestRosteClientClose:
+    def _make_client(self):
+        return bot.RosteClient(intents=discord.Intents.default())
+
+    def test_already_closed_skips_everything(self, monkeypatch):
+        client = self._make_client()
+        monkeypatch.setattr(client, "is_closed", lambda: True)
+        mock_flush = AsyncMock()
+        monkeypatch.setattr(chat, "flush_all_users", mock_flush)
+        mock_super_close = AsyncMock()
+        with patch.object(discord.Client, "close", mock_super_close):
+            asyncio.run(client.close())
+        mock_flush.assert_not_called()
+        mock_super_close.assert_not_called()
+
+    def test_flushes_active_users_and_stops_workers(self, monkeypatch):
+        client = self._make_client()
+        monkeypatch.setattr(client, "is_closed", lambda: False)
+        monkeypatch.setattr(chat, "_active_users", {1, 2})
+        mock_flush = AsyncMock()
+        monkeypatch.setattr(chat, "flush_all_users", mock_flush)
+        mock_voice = MagicMock()
+        mock_f5 = MagicMock()
+        monkeypatch.setattr(bot, "_voice_worker", mock_voice)
+        monkeypatch.setattr(bot, "_f5_worker", mock_f5)
+        mock_super_close = AsyncMock()
+        with patch.object(discord.Client, "close", mock_super_close):
+            asyncio.run(client.close())
+        mock_flush.assert_called_once()
+        mock_voice.stop.assert_called_once()
+        mock_f5.stop.assert_called_once()
+        mock_super_close.assert_called_once()
+
+    def test_no_active_users_skips_flush_but_still_stops_workers(self, monkeypatch):
+        client = self._make_client()
+        monkeypatch.setattr(client, "is_closed", lambda: False)
+        monkeypatch.setattr(chat, "_active_users", set())
+        mock_flush = AsyncMock()
+        monkeypatch.setattr(chat, "flush_all_users", mock_flush)
+        mock_voice = MagicMock()
+        monkeypatch.setattr(bot, "_voice_worker", mock_voice)
+        monkeypatch.setattr(bot, "_f5_worker", None)
+        mock_super_close = AsyncMock()
+        with patch.object(discord.Client, "close", mock_super_close):
+            asyncio.run(client.close())
+        mock_flush.assert_not_called()
+        mock_voice.stop.assert_called_once()
+        mock_super_close.assert_called_once()
+
+    def test_workers_none_does_not_crash(self, monkeypatch):
+        client = self._make_client()
+        monkeypatch.setattr(client, "is_closed", lambda: False)
+        monkeypatch.setattr(chat, "_active_users", set())
+        monkeypatch.setattr(bot, "_voice_worker", None)
+        monkeypatch.setattr(bot, "_f5_worker", None)
+        mock_super_close = AsyncMock()
+        with patch.object(discord.Client, "close", mock_super_close):
+            asyncio.run(client.close())   # ไม่ crash แม้ worker เป็น None ทั้งคู่
+        mock_super_close.assert_called_once()
+
+    def test_flush_timeout_still_stops_workers_and_calls_super_close(self, monkeypatch):
+        """จำลอง Ctrl+C: _bg_queue มีงานค้างแต่ worker ตายไปแล้ว → flush_all_users แขวนตลอดกาล
+        ต้องไม่บล็อกการปิดถาวร (worker.stop() + super().close() ต้องเกิดแม้ flush timeout)"""
+        client = self._make_client()
+        monkeypatch.setattr(client, "is_closed", lambda: False)
+        monkeypatch.setattr(chat, "_active_users", {1})
+        monkeypatch.setattr(bot, "_CLOSE_FLUSH_TIMEOUT_SEC", 0.05)   # ย่อ 120s เหลือ 0.05s ในเทส
+
+        async def hang_forever():
+            await asyncio.sleep(999)
+
+        monkeypatch.setattr(chat, "flush_all_users", hang_forever)
+        mock_voice = MagicMock()
+        mock_f5 = MagicMock()
+        monkeypatch.setattr(bot, "_voice_worker", mock_voice)
+        monkeypatch.setattr(bot, "_f5_worker", mock_f5)
+        mock_super_close = AsyncMock()
+        with patch.object(discord.Client, "close", mock_super_close):
+            asyncio.run(client.close())   # ต้องจบได้ภายในเวลาสั้นๆ ไม่แขวนตลอดไป
+        mock_voice.stop.assert_called_once()
+        mock_f5.stop.assert_called_once()
+        mock_super_close.assert_called_once()
+
+    def test_flush_exception_still_stops_workers_and_calls_super_close(self, monkeypatch):
+        """flush_all_users โยน exception (เช่น Ollama ล่มระหว่าง summarize) — worker ต้องยัง stop
+        และ super().close() ต้องยังถูกเรียก ไม่งั้น subprocess จะกลายเป็น orphan"""
+        client = self._make_client()
+        monkeypatch.setattr(client, "is_closed", lambda: False)
+        monkeypatch.setattr(chat, "_active_users", {1})
+
+        async def boom():
+            raise RuntimeError("ollama down")
+
+        monkeypatch.setattr(chat, "flush_all_users", boom)
+        mock_voice = MagicMock()
+        mock_f5 = MagicMock()
+        monkeypatch.setattr(bot, "_voice_worker", mock_voice)
+        monkeypatch.setattr(bot, "_f5_worker", mock_f5)
+        mock_super_close = AsyncMock()
+        with patch.object(discord.Client, "close", mock_super_close):
+            with pytest.raises(RuntimeError):
+                asyncio.run(client.close())
+        mock_voice.stop.assert_called_once()
+        mock_f5.stop.assert_called_once()
+        mock_super_close.assert_called_once()
