@@ -163,7 +163,8 @@ try:
     from config import DISCORD_TOKEN
 except ImportError:
     logger.error("❌ ไม่พบไฟล์ config.py — วางไฟล์ config.py ไว้โฟลเดอร์เดียวกับ bot.py")
-    raise SystemExit
+    # SystemExit เปล่าๆ (ไม่ใส่ 1) = exit code 0 — start.bat/CI จะมองว่า "สำเร็จ" ทั้งที่บอทไม่ขึ้น
+    raise SystemExit(1)
 
 # TMD_TOKEN — ย้ายไป datasources.py แล้ว (re-export ไว้ด้านบน)
 
@@ -190,7 +191,10 @@ except ImportError:
 # เช็กว่าใส่ Token จริงแล้วหรือยัง ถ้ายังให้เตือนชัดๆ
 if not DISCORD_TOKEN or DISCORD_TOKEN == "วาง_TOKEN_ของคุณ_ที่นี่":
     logger.warning("⚠️ ยังไม่ได้ใส่ Token! เปิดไฟล์ config.py แล้ววาง Token จาก Discord ก่อนนะครับ")
-    raise SystemExit
+    # SystemExit เปล่าๆ (ไม่ใส่ 1) = exit code 0 — start.bat/CI จะมองว่า "สำเร็จ" ทั้งที่บอทไม่ขึ้น
+    # (เจอจริงจาก CI: เทส singleton คาดว่า subprocess ที่ถูกปฏิเสธต้อง exit != 0 แต่บน runner
+    # ที่ไม่มี .env โพรเซสมาตายที่ด่านนี้ด้วยโค้ด 0 ก่อนถึง lock — เทสเลย fail เฉพาะบน CI)
+    raise SystemExit(1)
 
 # OLLAMA_URL, MODEL — ย้ายไป ollama_client.py แล้ว (re-export ไว้ด้านบน)
 
