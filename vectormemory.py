@@ -16,6 +16,7 @@
 #      ความเกี่ยวข้อง — threshold ที่แท้จริงย้ายไปอยู่บนคะแนนของ LLM แทน ซึ่งไม่แกว่งตามความยาว/หัวข้อ
 #      เหมือน distance เดิม
 # ============================================================
+import asyncio
 import io
 import json
 import logging
@@ -148,21 +149,29 @@ def _chunk_text(text: str, size: int = PDF_CHUNK_SIZE, overlap: int = PDF_CHUNK_
     return [c for c in chunks if c.strip()]
 
 
+def _extract_pdf_chunks(pdf_bytes: bytes, filename: str) -> list:
+    """ส่วน sync (CPU-bound) ทั้งหมดของการอ่าน+ตัด PDF — เรียกผ่าน asyncio.to_thread ใน
+    ingest_pdf เท่านั้น อย่าเรียกตรงๆ จาก coroutine เพราะ PdfReader/extract_text ของ PDF
+    หน้าเยอะ (สูงสุด MAX_PDF_PAGES) ใช้เวลาหลายวินาทีได้ ถ้ารันตรงๆ ใน event loop บอททั้งตัว
+    จะค้าง (รวม Discord heartbeat) จนกว่าจะ extract เสร็จ"""
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    pages = reader.pages
+    if len(pages) > MAX_PDF_PAGES:
+        logger.warning(f"   ⚠️ vectormemory: PDF {filename!r} มี {len(pages)} หน้า — อ่านแค่ {MAX_PDF_PAGES} หน้าแรก")
+        pages = pages[:MAX_PDF_PAGES]
+    full_text = "\n".join(page.extract_text() or "" for page in pages)
+    return _chunk_text(full_text)
+
+
 async def ingest_pdf(user_id: int, filename: str, pdf_bytes: bytes) -> int:
     """แตกไฟล์ PDF เป็น chunk + ทำ embedding แล้วเก็บลง ChromaDB ต่อ user (persist ถาวร)
     คืนจำนวน chunk ที่เก็บสำเร็จ (0 = อ่านไม่ได้/ไม่มีข้อความ/embedding พัง)"""
     try:
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-        pages = reader.pages
-        if len(pages) > MAX_PDF_PAGES:
-            logger.warning(f"   ⚠️ vectormemory: PDF {filename!r} มี {len(pages)} หน้า — อ่านแค่ {MAX_PDF_PAGES} หน้าแรก")
-            pages = pages[:MAX_PDF_PAGES]
-        full_text = "\n".join(page.extract_text() or "" for page in pages)
+        chunks = await asyncio.to_thread(_extract_pdf_chunks, pdf_bytes, filename)
     except Exception as e:
         logger.warning(f"   ⚠️ vectormemory: อ่าน PDF ไม่สำเร็จ ({e})")
         return 0
 
-    chunks = _chunk_text(full_text)
     if not chunks:
         return 0
     if len(chunks) > MAX_CHUNKS_PER_PDF:
