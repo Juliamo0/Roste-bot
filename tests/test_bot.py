@@ -1258,12 +1258,18 @@ class TestSingletonLock:
             "bot._acquire_singleton_lock()\n"
             "print('SHOULD_NOT_REACH_HERE')\n"
         )
+        # inject token ปลอมให้ subprocess — บนเครื่องที่ไม่มี .env (เช่น CI runner) import bot
+        # จะตายที่ด่านเช็ค DISCORD_TOKEN ก่อนถึง lock ทำให้เทสนี้วัดผิดเรื่อง (เจอจริง: CI แดง
+        # ทั้งที่เครื่อง dev เขียว เพราะเครื่อง dev มี .env เสมอเลยไม่เคยเดินเส้นทางนั้น)
+        env = dict(os.environ, DISCORD_TOKEN="fake-token-for-singleton-test")
         result = subprocess.run(
             [sys.executable, "-c", script],
             cwd=project_root, capture_output=True, text=True, timeout=60,
-            encoding="utf-8", errors="replace",
+            encoding="utf-8", errors="replace", env=env,
         )
         assert result.returncode != 0
         assert "SHOULD_NOT_REACH_HERE" not in result.stdout
         combined = result.stdout + result.stderr
+        # ต้องตายเพราะโดน lock ปฏิเสธจริง (มี error message ของ singleton) ไม่ใช่พังเรื่องอื่น
+        assert "บอทกำลังรันอยู่แล้ว" in combined
         assert str(os.getpid()) in combined   # error message บอก PID ตัวเก่า (โพรเซส pytest นี้)
