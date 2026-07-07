@@ -18,6 +18,9 @@ song_requests.json
 karaoke/
 # ล็อกไฟล์ของบอท (rotating file handler) — มี metadata ผู้ใช้ (ใครทัก/DM หรือไม่) ไม่ควร commit
 logs/
+# singleton lock ไฟล์ (กันรัน bot.py ซ้อนกันสองตัว) — สร้างใหม่ทุกครั้งที่รัน ไม่ต้อง commit
+bot.lock
+bot.pid
 
 # ===== ไฟล์ขยะของ Python =====
 __pycache__/
