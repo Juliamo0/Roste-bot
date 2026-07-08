@@ -95,6 +95,7 @@ import datasources  # 🌦️⛽🔌🕐 weather/oil/outage/เวลาไท�
 import ollama_client  # 🤖 Ollama HTTP client — ทั่วไป ไม่รู้จัก TOOLS
 import llm_tools  # 🛠️ TOOLS schema + tool handlers (tool calling)
 import chat  # 🧠 สมองบทสนทนา — ask_ollama + tool-calling loop (ไม่รู้จัก Discord)
+import stats  # 📊 เก็บสถิติ latency ต่อข้อความ/TTS (ตัวเลขล้วน ไม่มีเนื้อหา/user id)
 
 # state ระบบเสียง
 _voice_worker: voice.RvcWorker | None = None  # RVC warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
@@ -396,7 +397,19 @@ async def _get_greeting_wav() -> str | None:
 
 async def _speak_in_voice(message, reply_text: str) -> None:
     """Join voice → just_joined: เล่นทักทายทันที + TTS คำตอบ concurrent → เล่นคำตอบ
-    not_just_joined: TTS คำตอบ → เล่นคำตอบ  ค้างห้อง — leave timer ทำ step ต่อไป"""
+    not_just_joined: TTS คำตอบ → เล่นคำตอบ  ค้างห้อง — leave timer ทำ step ต่อไป
+
+    แยกจับเวลาเป็นหน่วยงานของตัวเอง (kind="tts") ไม่รวมกับ "llm" ของ ask_ollama — ฟังก์ชันนี้
+    ถูกยิงแบบ fire-and-forget (asyncio.create_task ไม่ await) เลยจบช้ากว่าข้อความตอบเป็นข้อความ
+    มาก บางทีก็ข้ามไปเลยถ้าไม่มีใครอยู่ใน voice ถือเป็น "งาน" คนละหน่วยไปเลยแม่นกว่าฝืนรวม"""
+    _stats_token = stats.start_message("tts")
+    try:
+        await _speak_in_voice_impl(message, reply_text)
+    finally:
+        stats.finish_message(_stats_token)
+
+
+async def _speak_in_voice_impl(message, reply_text: str) -> None:
     user_vc = getattr(message.author, "voice", None)
     if not user_vc or not user_vc.channel:
         return
@@ -410,17 +423,18 @@ async def _speak_in_voice(message, reply_text: str) -> None:
     # Join / move ห้อง — ติดตามว่าเพิ่งเข้าหรือไม่
     just_joined = False
     try:
-        if bot_vc is None or not bot_vc.is_connected():
-            if bot_vc is not None:
-                try:
-                    await bot_vc.disconnect(force=True)
-                except Exception:
-                    pass
-            bot_vc = await channel.connect()
-            just_joined = True
-        elif bot_vc.channel.id != channel.id:
-            await bot_vc.move_to(channel)
-            just_joined = True
+        with stats.stage("voice_connect"):
+            if bot_vc is None or not bot_vc.is_connected():
+                if bot_vc is not None:
+                    try:
+                        await bot_vc.disconnect(force=True)
+                    except Exception:
+                        pass
+                bot_vc = await channel.connect()
+                just_joined = True
+            elif bot_vc.channel.id != channel.id:
+                await bot_vc.move_to(channel)
+                just_joined = True
     except Exception as e:
         logger.warning(f"   ⚠️ voice connect error ({type(e).__name__}: {e})")
         return
@@ -435,50 +449,51 @@ async def _speak_in_voice(message, reply_text: str) -> None:
         return
 
     async with music.voice_lock:
-        stream = _generate_tts_stream(reply_text, message.author.id)
-        try:
-            if greeting_wav:
-                # เริ่มดึง segment แรก concurrent กับ เล่นทักทาย
-                # (การเรียก anext ครั้งแรกคือจุดที่ producer เริ่ม generate)
-                first_task = asyncio.create_task(anext(stream, None))
-                logger.info("   🎙️ เล่นทักทาย")
-                await _play_wav(bot_vc, greeting_wav)
-                seg_wav = await first_task
-            else:
-                seg_wav = await anext(stream, None)
-
-            n_played = 0
-            while seg_wav is not None:
-                # Re-check connection ก่อนเล่นทุก segment (bot_vc อาจหลุดระหว่าง TTS)
-                if not bot_vc.is_connected():
-                    logger.info("   🎙️ reconnect — bot_vc หลุดระหว่าง TTS")
-                    fresh_vc = getattr(message.author, "voice", None)
-                    if not fresh_vc or not fresh_vc.channel:
-                        logger.info("   🎙️ skip — user ออก voice แล้ว")
-                        break
-                    try:
-                        bot_vc = await fresh_vc.channel.connect()
-                    except Exception as e:
-                        logger.warning(f"   ⚠️ reconnect error ({type(e).__name__}: {e})")
-                        break
-
-                n_played += 1
-                logger.info(f"   🎙️ เล่น segment {n_played}")
-                await _play_wav(bot_vc, seg_wav)
-                try:
-                    os.remove(seg_wav)
-                except OSError:
-                    pass
-                seg_wav = await anext(stream, None)
-
-        except Exception as e:
-            logger.warning(f"   ⚠️ voice play error ({type(e).__name__}: {e})")
-        finally:
-            # ปิด generator เสมอ — รอ producer จบ + เก็บกวาด segment ค้างคิว
+        with stats.stage("tts_gen_play"):
+            stream = _generate_tts_stream(reply_text, message.author.id)
             try:
-                await stream.aclose()
+                if greeting_wav:
+                    # เริ่มดึง segment แรก concurrent กับ เล่นทักทาย
+                    # (การเรียก anext ครั้งแรกคือจุดที่ producer เริ่ม generate)
+                    first_task = asyncio.create_task(anext(stream, None))
+                    logger.info("   🎙️ เล่นทักทาย")
+                    await _play_wav(bot_vc, greeting_wav)
+                    seg_wav = await first_task
+                else:
+                    seg_wav = await anext(stream, None)
+
+                n_played = 0
+                while seg_wav is not None:
+                    # Re-check connection ก่อนเล่นทุก segment (bot_vc อาจหลุดระหว่าง TTS)
+                    if not bot_vc.is_connected():
+                        logger.info("   🎙️ reconnect — bot_vc หลุดระหว่าง TTS")
+                        fresh_vc = getattr(message.author, "voice", None)
+                        if not fresh_vc or not fresh_vc.channel:
+                            logger.info("   🎙️ skip — user ออก voice แล้ว")
+                            break
+                        try:
+                            bot_vc = await fresh_vc.channel.connect()
+                        except Exception as e:
+                            logger.warning(f"   ⚠️ reconnect error ({type(e).__name__}: {e})")
+                            break
+
+                    n_played += 1
+                    logger.info(f"   🎙️ เล่น segment {n_played}")
+                    await _play_wav(bot_vc, seg_wav)
+                    try:
+                        os.remove(seg_wav)
+                    except OSError:
+                        pass
+                    seg_wav = await anext(stream, None)
+
             except Exception as e:
-                logger.warning(f"   ⚠️ TTS stream close error ({type(e).__name__}: {e})")
+                logger.warning(f"   ⚠️ voice play error ({type(e).__name__}: {e})")
+            finally:
+                # ปิด generator เสมอ — รอ producer จบ + เก็บกวาด segment ค้างคิว
+                try:
+                    await stream.aclose()
+                except Exception as e:
+                    logger.warning(f"   ⚠️ TTS stream close error ({type(e).__name__}: {e})")
     # ไม่ disconnect — ค้างห้อง (leave timer ทำ step ต่อไป)
 
 

@@ -11,6 +11,7 @@ import random
 
 import memory
 import persona
+import stats
 import vectormemory
 from llm_tools import TOOLS, TOOL_HANDLERS, _validate_tool_args, _strip_ungrounded_optional_args
 from ollama_client import _chat_once, _get_json_post, _strip_think, MODEL
@@ -317,6 +318,14 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
     สิบวิ): ถ้าไม่ล็อกครอบทั้งก้อน ทั้งสองคำขอจะ load_memory() history เดิมพร้อมกัน แล้วคำขอที่
     เสร็จทีหลังจะ save ทับคำตอบของอีกฝั่งหาย เพราะคำนวณ new_history จาก snapshot เก่าคนละชุด
     การ serialize ต่อ user ไม่กระทบอะไรสำหรับบอทที่คุยกันไม่กี่คนพร้อมกัน"""
+    _stats_token = stats.start_message("llm")
+    try:
+        return await _ask_ollama_impl(user_id, user_name, user_message)
+    finally:
+        stats.finish_message(_stats_token)
+
+
+async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> str:
     async with get_user_lock(user_id):
         mem = load_memory(user_id)
         if user_name:
@@ -345,7 +354,8 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
 
         # 🔎 semantic recall — เสริม recall_summaries (keyword) ด้วยการค้นความหมายผ่าน vector memory
         #    ค้นทุกครั้ง (ไม่ต้องมีคำใบ้ PAST_HINTS) แต่กรองด้วยระยะห่างความหมาย กันดึงเรื่องไม่เกี่ยวข้อง
-        vec_recalled = await vectormemory.query_conversation_memory(user_id, user_message)
+        with stats.stage("semantic_recall"):
+            vec_recalled = await vectormemory.query_conversation_memory(user_id, user_message)
         vec_recalled = [s for s in vec_recalled if s not in recalled]  # กันซ้ำกับที่ดึงมาแล้ว
         if vec_recalled:
             system_text += (
@@ -358,7 +368,9 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
 
         # Condition A: เปลี่ยนหัวข้อ → สรุปบทเดิมเบื้องหลัง เริ่มสะสมใหม่
         cond_a_fired = False
-        if history and await detect_topic_change(user_message, history):
+        with stats.stage("topic_detect"):
+            topic_changed = bool(history) and await detect_topic_change(user_message, history)
+        if topic_changed:
             logger.info(f"   🔀 เปลี่ยนหัวข้อ — สรุปบทเดิม ({original_pairs} คู่) เบื้องหลัง")
             _enqueue_bg(summarize_and_verify(user_id, history))
             history = []
@@ -373,7 +385,8 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
         # 📄 RAG PDF — ถ้า user เคยส่ง PDF มาก่อน (ตอนนี้หรือเซสชันก่อนๆ ก็ได้ ข้อมูล persist)
         #    ค้นเนื้อหาที่เกี่ยวข้องกับคำถามนี้มาแปะให้โมเดลตอบ (กรองด้วยระยะห่างความหมายแล้ว)
         augmented_message = user_message
-        pdf_chunks = await vectormemory.query_pdf(user_id, user_message)
+        with stats.stage("pdf_query"):
+            pdf_chunks = await vectormemory.query_pdf(user_id, user_message)
         if pdf_chunks:
             pdf_context = "\n---\n".join(pdf_chunks)
             augmented_message = (
@@ -405,7 +418,8 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
             turn_tools = TOOLS
             if weather_ok:
                 turn_tools = [t for t in TOOLS if t["function"]["name"] != "search_web"]
-            msg = await _chat_once(messages, temperature=reply_temp, tools=turn_tools)
+            with stats.stage("main_llm"):
+                msg = await _chat_once(messages, temperature=reply_temp, tools=turn_tools)
             tool_calls = msg.get("tool_calls")
             if not tool_calls:
                 break  # ไม่ขอเครื่องมือแล้ว = ได้คำตอบสุดท้าย
@@ -439,7 +453,8 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
                     # ตัดค่าที่ไม่มีที่มาจริงในบทสนทนาทิ้ง ให้ fallback เดิมของ handler ทำงานแทน
                     args = _strip_ungrounded_optional_args(fn, args, user_message, history, mem)
                     try:
-                        result = await TOOL_HANDLERS[fn](args, mem)
+                        with stats.stage("tool_calls"):
+                            result = await TOOL_HANDLERS[fn](args, mem)
                         if fn == "get_weather" and not result.startswith("[ระบบ: ดึงพยากรณ์อากาศไม่ได้"):
                             weather_ok = True
                     except Exception as e:
