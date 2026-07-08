@@ -300,35 +300,54 @@ async def get_oil_price(brand: str = "ptt") -> str:
     return parse_oil_html(html, brand)
 
 
+_OIL_SECTION_RE = re.compile(
+    r'id="brand-(ptt|bcp|shell|caltex|irpc|pt|susco|pure|suscodealers)"\s+class="scroll-mt-28"')
+
+
 def parse_oil_html(html: str, only_brand: str = "ptt") -> str:
     """แยกข้อมูลราคาน้ำมันจาก HTML ของ Kapook (คืนเฉพาะยี่ห้อ only_brand)
-    เทคนิค: แทนทุก tag ด้วยขึ้นบรรทัดใหม่ แล้วไล่อ่านทีละบรรทัด
-    ถ้าเจอราคา (เช่น 42.30) บรรทัดก่อนหน้าคือชื่อชนิดน้ำมัน"""
-    parts = [p.strip() for p in re.sub(r"<[^>]+>", "\n", html).split("\n")]
-    parts = [p for p in parts if p]
 
-    date = ""
-    brands, order, cur = {}, [], None
-    for i, tok in enumerate(parts):
-        if "อัปเดตล่าสุด" in tok and not date:
-            date = tok
-        mb = re.search(r"\((ptt|bcp|shell|caltex|irpc|pt|susco|pure|suscodealers)\)", tok)
-        if mb:
-            cur = mb.group(1)
-            brands[cur] = []
-            order.append(cur)
-            continue
-        if cur and re.fullmatch(r"\d{1,3}\.\d{2}", tok):
-            fuel = parts[i - 1] if i > 0 else ""
-            if fuel and not re.fullmatch(r"[\d.]+", fuel):
-                brands[cur].append((fuel, tok))
+    เว็บเปลี่ยนมาเรนเดอร์เป็น Next.js (ก.ค. 2569) — ไม่มี "(ptt)" ห้อยท้ายชื่อแบบเดิมแล้ว
+    แต่ละยี่ห้อกลายเป็น <section id="brand-XXX" class="scroll-mt-28"> ต้องอิงจาก id แทน
+    (หาตำแหน่งจาก HTML ดิบก่อนแทน tag ด้วยขึ้นบรรทัดใหม่ เพราะ attribute จะหายไปพร้อม tag)
 
-    if not order:
+    ในแต่ละ section: แทนทุก tag ด้วยขึ้นบรรทัดใหม่ แล้วไล่อ่านทีละบรรทัด แถวนึงคือ
+    [ชื่อชนิดน้ำมัน, ป้ายหมวด (badge), ราคา, หน่วย] วนซ้ำ — ราคาอยู่ 2 บรรทัดหลังชื่อจริง
+    (ไม่ใช่บรรทัดก่อนหน้าตรงๆ เพราะมี badge คั่นกลางเสมอ)"""
+    matches = list(_OIL_SECTION_RE.finditer(html))
+    if not matches:
         return "ดึงราคาน้ำมันไม่สำเร็จ: โครงสร้างหน้าเว็บอาจเปลี่ยนไป"
 
-    # เลือกเฉพาะยี่ห้อที่ต้องการ ถ้าไม่เจอก็ใช้ยี่ห้อแรกที่มี
-    code = only_brand if brands.get(only_brand) else order[0]
-    rows = brands.get(code) or []
+    order = [m.group(1) for m in matches]
+    code = only_brand if only_brand in order else order[0]
+    idx = order.index(code)
+    start = matches[idx].start()
+    end = matches[idx + 1].start() if idx + 1 < len(matches) else len(html)
+    section_html = html[start:end]
+
+    # วันที่ "อัปเดตล่าสุด" อยู่นอก section (ก่อนตาราง) — คั่นจากตัววันที่จริงด้วย HTML
+    # comment (React hydration marker) กลายเป็นคนละบรรทัดกันหลังแทน tag ด้วยขึ้นบรรทัดใหม่
+    date = ""
+    page_parts = [p.strip() for p in re.sub(r"<[^>]+>", "\n", html).split("\n")]
+    page_parts = [p for p in page_parts if p]
+    for i, tok in enumerate(page_parts):
+        if "อัปเดตล่าสุด" in tok:
+            nxt = page_parts[i + 1] if i + 1 < len(page_parts) else ""
+            date = tok if re.search(r"\d", tok) else f"{tok} {nxt}".strip()
+            break
+
+    parts = [p.strip() for p in re.sub(r"<[^>]+>", "\n", section_html).split("\n")]
+    parts = [p for p in parts if p]
+
+    rows = []
+    for i, tok in enumerate(parts):
+        if re.fullmatch(r"\d{1,3}\.\d{2}", tok):
+            fuel = parts[i - 2] if i >= 2 else ""
+            if fuel and not re.fullmatch(r"[\d.]+", fuel):
+                rows.append((fuel, tok))
+
+    if not rows:
+        return "ดึงราคาน้ำมันไม่สำเร็จ: โครงสร้างหน้าเว็บอาจเปลี่ยนไป"
 
     lines = [date or "ราคาน้ำมันวันนี้", f"\n[{OIL_BRANDS.get(code, code)}]"]
     for fuel, price in rows:
