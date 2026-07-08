@@ -184,3 +184,26 @@ class TestMonitorServerLifecycle:
             await server.stop()  # ไม่เคย start() มาก่อน — ต้องไม่ error
 
         asyncio.run(scenario())
+
+
+class TestDashboardRoute:
+    """M3 — หน้า dashboard เดียว เสิร์ฟที่ "/" ตรวจแค่ว่าเสิร์ฟ HTML ได้จริง (status + content-type)
+    ไม่เทส logic แสดงผลฝั่ง browser (เป็น JS ล้วน ไม่มีอะไรให้เทสฝั่ง Python)"""
+
+    def test_root_serves_html_with_200(self):
+        from aiohttp import ClientSession as RealClientSession
+
+        async def scenario():
+            server = monitor.MonitorServer(lambda: {"ok": True}, host="127.0.0.1", port=18767)
+            await server.start()
+            try:
+                async with RealClientSession() as s:
+                    async with s.get("http://127.0.0.1:18767/") as r:
+                        assert r.status == 200
+                        assert "text/html" in r.content_type
+                        body = await r.text()
+                        assert "<html" in body.lower()
+            finally:
+                await server.stop()
+
+        asyncio.run(scenario())
