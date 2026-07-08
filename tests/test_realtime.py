@@ -43,15 +43,25 @@ def _make_session_mock(status=200, json_data=None, text_data=None, exception=Non
 
 
 # ── Fake HTML สำหรับ parse_oil_html ──────────────────────────────────────────
+# โครงสร้างจริงของ Kapook เปลี่ยนมาเป็น Next.js (ราวต้นเดือน ก.ค. 2569) — ไม่มี "(ptt)"
+# ห้อยท้ายชื่อแบบเดิมแล้ว แต่ละยี่ห้อกลายเป็น <section id="brand-XXX" class="scroll-mt-28">
+# และวันที่ "อัปเดตล่าสุด" กับตัววันที่จริงถูกคั่นด้วย HTML comment (React hydration marker)
+# คนละ text node กัน — fixture นี้จำลองโครงสร้างจริงที่ยืนยันแล้วจากการดึงหน้าเว็บสด
 
 _FAKE_OIL_HTML = (
-    "<a>อัปเดตล่าสุด 22/06/2569</a>"
-    "<span>(ptt)</span>"
-    "<span>แก๊สโซฮอล 91</span><span>42.38</span>"
-    "<span>แก๊สโซฮอล 95</span><span>43.98</span>"
-    "<span>ดีเซล</span><span>33.34</span>"
-    "<span>(bcp)</span>"
-    "<span>แก๊สโซฮอล 91</span><span>40.00</span>"
+    '<p>อัปเดตล่าสุด <!-- -->22 มิถุนายน 2569</p>'
+    '<section id="brand-ptt" class="scroll-mt-28">'
+    '<h2>ราคาน้ำมัน ปตท.</h2><p>3 รายการ</p>'
+    '<ul>'
+    '<li><p>แก๊สโซฮอล 91</p><span>แก๊สโซฮอล์</span><p>42.38</p><p>บาท/ลิตร</p></li>'
+    '<li><p>แก๊สโซฮอล 95</p><span>แก๊สโซฮอล์</span><p>43.98</p><p>บาท/ลิตร</p></li>'
+    '<li><p>ดีเซล</p><span>ดีเซล</span><p>33.34</p><p>บาท/ลิตร</p></li>'
+    '</ul></section>'
+    '<section id="brand-bcp" class="scroll-mt-28">'
+    '<h2>ราคาน้ำมันบางจาก</h2><p>1 รายการ</p>'
+    '<ul>'
+    '<li><p>แก๊สโซฮอล 91</p><span>แก๊สโซฮอล์</span><p>40.00</p><p>บาท/ลิตร</p></li>'
+    '</ul></section>'
 )
 
 
@@ -103,7 +113,7 @@ class TestParseOilHtml:
         assert "ปตท." in result
 
     def test_date_in_output(self):
-        assert "22/06/2569" in datasources.parse_oil_html(_FAKE_OIL_HTML)
+        assert "22 มิถุนายน 2569" in datasources.parse_oil_html(_FAKE_OIL_HTML)
 
     def test_source_tag_in_output(self):
         assert "Kapook" in datasources.parse_oil_html(_FAKE_OIL_HTML)
