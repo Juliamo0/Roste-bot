@@ -24,6 +24,8 @@ import stats
 
 logger = logging.getLogger("roste.monitor")
 
+_DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
+
 _NVIDIA_SMI_TIMEOUT_SEC = 2
 _OLLAMA_PS_TIMEOUT_SEC = 2
 
@@ -118,22 +120,32 @@ class MonitorServer:
         self._port = port
         self._runner: web.AppRunner | None = None
         self._start_time = time.monotonic()
+        self._dashboard_html: str | None = None
 
     async def _handle_stats_json(self, request: web.Request) -> web.Response:
         payload = await build_stats_payload(self._get_bot_status, self._start_time)
         return web.json_response(payload)
 
+    async def _handle_dashboard(self, request: web.Request) -> web.Response:
+        return web.Response(text=self._dashboard_html, content_type="text/html")
+
     async def start(self) -> None:
         if self._port == 0:
             logger.info("📈 monitor ปิดอยู่ (MONITOR_PORT=0)")
             return
+        # อ่านครั้งเดียวตอน start ไม่ใช่ทุก request — dashboard.html ไม่เปลี่ยนระหว่างบอทรันอยู่
+        with open(_DASHBOARD_PATH, encoding="utf-8") as f:
+            self._dashboard_html = f.read()
+
         app = web.Application()
+        app.router.add_get("/", self._handle_dashboard)
         app.router.add_get("/stats.json", self._handle_stats_json)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._host, self._port)
         await site.start()
-        logger.info(f"📈 monitor เปิดที่ http://{self._host}:{self._port}/stats.json")
+        logger.info(f"📈 monitor เปิดที่ http://{self._host}:{self._port}/ (dashboard) "
+                    f"+ /stats.json")
 
     async def stop(self) -> None:
         if self._runner is not None:

@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>รอสเต้ — เฝ้าดูสถานะ</title>
+<style>
+  :root {
+    --bg: #14161c;
+    --panel: #1c1f28;
+    --panel-2: #232733;
+    --border: #2c3040;
+    --text: #e6e8ef;
+    --text-dim: #9aa0b4;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --accent: #8b7cf6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif;
+    font-size: 14px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: var(--text-dim); margin: 0 0 20px; font-size: 13px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .card h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    margin: 0 0 12px;
+  }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--bad); }
+  .dot.dim { background: var(--text-dim); }
+  .bar-row { margin-bottom: 12px; }
+  .bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+  .bar-track {
+    height: 8px;
+    background: var(--panel-2);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .bar-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+  .empty { color: var(--text-dim); font-style: italic; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-weight: 500; white-space: nowrap; }
+  .stack-bar {
+    display: flex;
+    height: 14px;
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 120px;
+    background: var(--panel-2);
+  }
+  .stack-seg { height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; font-size: 12px; color: var(--text-dim); }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
+  #latency-table-wrap { overflow-x: auto; }
+  .kind-tag {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--panel-2);
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+  <h1>🌙 รอสเต้ — เฝ้าดูสถานะ</h1>
+  <p class="subtitle" id="uptime">กำลังโหลด...</p>
+
+  <div class="grid">
+    <div class="card">
+      <h2>สถานะบอท</h2>
+      <div class="pills" id="bot-pills"></div>
+    </div>
+
+    <div class="card">
+      <h2>เครื่อง</h2>
+      <div id="system-bars"></div>
+    </div>
+
+    <div class="card">
+      <h2>GPU</h2>
+      <div id="gpu-section"></div>
+    </div>
+
+    <div class="card">
+      <h2>Ollama — โมเดลที่โหลดอยู่</h2>
+      <div id="ollama-section"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Latency ต่อข้อความล่าสุด</h2>
+    <div id="latency-table-wrap">
+      <table>
+        <thead>
+          <tr id="latency-head"></tr>
+        </thead>
+        <tbody id="latency-body"></tbody>
+      </table>
+    </div>
+    <div id="latency-empty" class="empty" style="display:none">ยังไม่มีข้อมูล — คุยกับบอทสักหน่อยแล้วรีเฟรช</div>
+    <div class="legend" id="latency-legend"></div>
+  </div>
+
+<script>
+const STAGE_COLORS = {
+  semantic_recall: "#60a5fa",
+  topic_detect:    "#f472b6",
+  pdf_query:       "#fbbf24",
+  main_llm:        "#8b7cf6",
+  tool_calls:      "#34d399",
+  voice_connect:   "#fb923c",
+  tts_gen_play:    "#22d3ee",
+};
+const DEFAULT_STAGE_COLOR = "#9aa0b4";
+
+function stageColor(name) {
+  return STAGE_COLORS[name] || DEFAULT_STAGE_COLOR;
+}
+
+function fmtSec(s) {
+  if (s == null) return "-";
+  return s < 1 ? Math.round(s * 1000) + " ms" : s.toFixed(2) + " s";
+}
+
+function fmtUptime(s) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return `เปิดมาแล้ว ${h} ชม. ${m} นาที ${sec} วิ`;
+}
+
+function pill(label, ok) {
+  const dotClass = ok === true ? "ok" : ok === false ? "bad" : "dim";
+  return `<span class="pill"><span class="dot ${dotClass}"></span>${label}</span>`;
+}
+
+function workerPill(name, status) {
+  const map = { ready: "ok", loading: "warn", dead: "bad", not_started: "dim" };
+  const labelMap = { ready: "พร้อม", loading: "กำลังโหลด", dead: "ตาย", not_started: "ยังไม่เริ่ม" };
+  const cls = map[status] || "dim";
+  const label = labelMap[status] || status;
+  return `<span class="pill"><span class="dot ${cls}"></span>${name}: ${label}</span>`;
+}
+
+function renderBotStatus(bot) {
+  const el = document.getElementById("bot-pills");
+  if (!bot) { el.innerHTML = '<span class="empty">ไม่มีข้อมูล</span>'; return; }
+  el.innerHTML = [
+    pill(bot.discord_connected ? "Discord: เชื่อมต่ออยู่" : "Discord: หลุด", bot.discord_connected),
+    workerPill("RVC", bot.rvc_worker),
+    workerPill("F5", bot.f5_worker),
+    pill(bot.is_speaking_or_singing ? "กำลังพูด/ร้องเพลง" : "ว่าง (เสียง)", bot.is_speaking_or_singing ? null : true),
+    pill(bot.is_printing ? "กำลังพิมพ์งาน" : "ว่าง (พิมพ์)", bot.is_printing ? null : true),
+    pill(`bg queue: ${bot.bg_queue_size}`, bot.bg_queue_size === 0),
+    pill(`คุยวันนี้: ${bot.active_users_today} คน`, null),
+  ].join("");
+}
+
+function bar(label, used, total, unit) {
+  const pct = total ? Math.min(100, (used / total) * 100) : 0;
+  return `
+    <div class="bar-row">
+      <div class="bar-label"><span>${label}</span><span>${used.toFixed(0)}/${total.toFixed(0)} ${unit} (${pct.toFixed(0)}%)</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+    </div>`;
+}
+
+function renderSystem(sys) {
+  const el = document.getElementById("system-bars");
+  if (!sys) { el.innerHTML = '<span class="empty">ไม่มีข้อมูล</span>'; return; }
+  el.innerHTML =
+    bar("CPU", sys.cpu_pct, 100, "%") +
+    bar("RAM", sys.ram_used_mb, sys.ram_total_mb, "MB") +
+    bar("Disk", sys.disk_used_gb, sys.disk_total_gb, "GB");
+}
+
+function renderGpu(gpu) {
+  const el = document.getElementById("gpu-section");
+  if (!gpu) { el.innerHTML = '<span class="empty">ไม่มีข้อมูล (ไม่มี GPU หรือ nvidia-smi)</span>'; return; }
+  el.innerHTML =
+    bar("Utilization", gpu.utilization_pct, 100, "%") +
+    bar("VRAM", gpu.vram_used_mb, gpu.vram_total_mb, "MB") +
+    `<div class="bar-label"><span>อุณหภูมิ</span><span>${gpu.temperature_c.toFixed(0)}°C</span></div>`;
+}
+
+function renderOllama(models) {
+  const el = document.getElementById("ollama-section");
+  if (models == null) { el.innerHTML = '<span class="empty">ไม่มีข้อมูล (Ollama ไม่ตอบ)</span>'; return; }
+  if (models.length === 0) { el.innerHTML = '<span class="empty">ไม่มีโมเดลโหลดอยู่ตอนนี้</span>'; return; }
+  el.innerHTML = models.map(m =>
+    `<div class="bar-label"><span>${m.name}</span><span>${m.size_vram_mb.toFixed(0)} MB VRAM</span></div>`
+  ).join("");
+}
+
+function renderLatency(recent) {
+  const wrap = document.getElementById("latency-table-wrap");
+  const empty = document.getElementById("latency-empty");
+  const head = document.getElementById("latency-head");
+  const body = document.getElementById("latency-body");
+  const legendEl = document.getElementById("latency-legend");
+
+  if (!recent || recent.length === 0) {
+    wrap.style.display = "none";
+    empty.style.display = "block";
+    legendEl.innerHTML = "";
+    return;
+  }
+  wrap.style.display = "block";
+  empty.style.display = "none";
+
+  const shown = recent.slice(-30).reverse();
+
+  const stageSet = new Set();
+  shown.forEach(r => Object.keys(r).forEach(k => {
+    if (k !== "ts" && k !== "kind" && k !== "total") stageSet.add(k);
+  }));
+  const stages = [...stageSet];
+
+  head.innerHTML = "<th>เวลา</th><th>ชนิด</th><th>สัดส่วน stage</th><th>รวม</th>";
+
+  body.innerHTML = shown.map(r => {
+    const time = new Date(r.ts * 1000).toLocaleTimeString("th-TH");
+    const segs = stages
+      .filter(s => r[s] != null && r[s] > 0)
+      .map(s => `<div class="stack-seg" style="width:${(r[s] / r.total) * 100}%;background:${stageColor(s)}" title="${s}: ${fmtSec(r[s])}"></div>`)
+      .join("");
+    return `<tr>
+      <td>${time}</td>
+      <td><span class="kind-tag">${r.kind}</span></td>
+      <td><div class="stack-bar">${segs}</div></td>
+      <td>${fmtSec(r.total)}</td>
+    </tr>`;
+  }).join("");
+
+  legendEl.innerHTML = stages.map(s =>
+    `<span class="legend-item"><span class="legend-swatch" style="background:${stageColor(s)}"></span>${s}</span>`
+  ).join("");
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/stats.json");
+    const data = await res.json();
+    document.getElementById("uptime").textContent = fmtUptime(data.uptime_sec);
+    renderBotStatus(data.bot);
+    renderSystem(data.system);
+    renderGpu(data.gpu);
+    renderOllama(data.ollama_models);
+    renderLatency(data.latency_recent);
+  } catch (e) {
+    document.getElementById("uptime").textContent = "เชื่อมต่อ /stats.json ไม่ได้ — บอทอาจปิดอยู่";
+  }
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
