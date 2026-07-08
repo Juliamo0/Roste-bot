@@ -56,3 +56,51 @@ class TestParseIdList:
             config._parse_id_list("TEST_IDS")
         assert "TEST_IDS" in str(exc_info.value)
         assert "abc" in str(exc_info.value)
+
+
+class TestMonitorPortParsing:
+    """MONITOR_PORT/MONITOR_HOST คำนวณตอน import config.py (module-level) — ต้องโหลดไฟล์จริง
+    ใหม่ทุกเคสผ่าน _load_real_config() เพื่อเห็นผลของ env var ที่ตั้งต่างกันในแต่ละเทส"""
+
+    def test_default_port_is_8765_when_unset(self, monkeypatch):
+        monkeypatch.delenv("MONITOR_PORT", raising=False)
+        mod = _load_real_config()
+        assert mod.MONITOR_PORT == 8765
+
+    def test_empty_string_treated_as_unset_not_error(self, monkeypatch):
+        """.env.example ใส่ MONITOR_PORT= (ค่าว่าง) ไว้ — ต้องไม่ crash ถ้า user ปล่อยว่างไว้ตามนั้น"""
+        monkeypatch.setenv("MONITOR_PORT", "")
+        mod = _load_real_config()
+        assert mod.MONITOR_PORT == 8765
+
+    def test_custom_port_parses(self, monkeypatch):
+        monkeypatch.setenv("MONITOR_PORT", "9000")
+        mod = _load_real_config()
+        assert mod.MONITOR_PORT == 9000
+
+    def test_zero_means_disabled(self, monkeypatch):
+        monkeypatch.setenv("MONITOR_PORT", "0")
+        mod = _load_real_config()
+        assert mod.MONITOR_PORT == 0
+
+    def test_invalid_port_raises_value_error_naming_var_and_bad_value(self, monkeypatch):
+        monkeypatch.setenv("MONITOR_PORT", "abc")
+        with pytest.raises(ValueError) as exc_info:
+            _load_real_config()
+        assert "MONITOR_PORT" in str(exc_info.value)
+        assert "abc" in str(exc_info.value)
+
+    def test_default_host_is_localhost(self, monkeypatch):
+        monkeypatch.delenv("MONITOR_HOST", raising=False)
+        mod = _load_real_config()
+        assert mod.MONITOR_HOST == "127.0.0.1"
+
+    def test_empty_host_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("MONITOR_HOST", "")
+        mod = _load_real_config()
+        assert mod.MONITOR_HOST == "127.0.0.1"
+
+    def test_custom_host_parses(self, monkeypatch):
+        monkeypatch.setenv("MONITOR_HOST", "0.0.0.0")
+        mod = _load_real_config()
+        assert mod.MONITOR_HOST == "0.0.0.0"

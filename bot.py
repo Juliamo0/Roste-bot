@@ -96,10 +96,13 @@ import ollama_client  # 🤖 Ollama HTTP client — ทั่วไป ไม่
 import llm_tools  # 🛠️ TOOLS schema + tool handlers (tool calling)
 import chat  # 🧠 สมองบทสนทนา — ask_ollama + tool-calling loop (ไม่รู้จัก Discord)
 import stats  # 📊 เก็บสถิติ latency ต่อข้อความ/TTS (ตัวเลขล้วน ไม่มีเนื้อหา/user id)
+import monitor  # 📈 เว็บเฝ้าดูสถานะบอท (/stats.json) — localhost-only by default
 
 # state ระบบเสียง
 _voice_worker: voice.RvcWorker | None = None  # RVC warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
 _f5_worker: voice.F5Worker | None = None      # F5 warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
+_ready_once = False  # on_ready ไม่การันตีว่าเรียกครั้งเดียว (fire ใหม่ได้ตอน gateway
+                      # re-IDENTIFY หลัง session ขาด) — guard กันสร้าง worker/monitor server ซ้อน
 _tts_lock = asyncio.Lock()                    # serialize TTS — กัน 2 user ยิง convert() พร้อมกัน
 _leave_timer: asyncio.Task | None = None       # leave timer task (cancel ได้ถ้าคนกลับมา)
 LEAVE_IDLE_SEC = 15                            # วินาทีที่รอก่อน disconnect เมื่อห้องว่าง
@@ -189,6 +192,12 @@ try:
 except ImportError:
     DM_ALLOWED_USER_IDS = []
 
+# MONITOR_HOST/MONITOR_PORT — หน้าเฝ้าดูสถานะบอท (monitor.py) ไม่ตั้งไว้ = 127.0.0.1:8765
+try:
+    from config import MONITOR_HOST, MONITOR_PORT
+except ImportError:
+    MONITOR_HOST, MONITOR_PORT = "127.0.0.1", 8765
+
 # เช็กว่าใส่ Token จริงแล้วหรือยัง ถ้ายังให้เตือนชัดๆ
 if not DISCORD_TOKEN or DISCORD_TOKEN == "วาง_TOKEN_ของคุณ_ที่นี่":
     logger.warning("⚠️ ยังไม่ได้ใส่ Token! เปิดไฟล์ config.py แล้ววาง Token จาก Discord ก่อนนะครับ")
@@ -253,6 +262,7 @@ class RosteClient(discord.Client):
             if _f5_worker is not None:
                 _f5_worker.stop()
                 logger.info("   🎙️ F5 worker ปิดแล้ว")
+            await _monitor_server.stop()
             await super().close()
 
 
@@ -261,6 +271,33 @@ client = RosteClient(intents=intents)
 # auto_remember, _check_condition_b, _SUMMARY_NOTICE_*, _maybe_append_summary_notice,
 # detect_topic_change, summarize_and_verify, flush_user_history, flush_all_users, ask_ollama
 # — อยู่ใน chat.py — เรียกจาก on_message/on_close ผ่าน chat.xxx แบบเต็มชื่อเสมอ
+
+
+def _worker_status(worker) -> str:
+    if worker is None:
+        return "not_started"
+    if worker.load_time == 0.0:
+        return "loading"
+    if not worker.alive:
+        return "dead"
+    return "ready"
+
+
+def _get_bot_status() -> dict:
+    """สถานะภายในบอทสำหรับ /stats.json — ตัวเลข/สถานะล้วนๆ ห้ามมีเนื้อหาข้อความ/user id เด็ดขาด
+    (นับจำนวน user ที่คุยวันนี้เฉยๆ ไม่โชว์ ID ตามวินัย PII ของโปรเจค)"""
+    return {
+        "discord_connected": not client.is_closed(),
+        "rvc_worker": _worker_status(_voice_worker),
+        "f5_worker": _worker_status(_f5_worker),
+        "bg_queue_size": chat._bg_queue.qsize(),
+        "is_speaking_or_singing": music.voice_lock.locked(),
+        "is_printing": printing.print_lock.locked(),
+        "active_users_today": len(chat._active_users),
+    }
+
+
+_monitor_server = monitor.MonitorServer(_get_bot_status, host=MONITOR_HOST, port=MONITOR_PORT)
 
 
 async def _start_voice_worker() -> None:
@@ -601,13 +638,23 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
 
 @client.event
 async def on_ready():
-    global _voice_worker, _f5_worker
-    chat._ensure_bg_worker()   # เริ่ม background queue worker
+    global _voice_worker, _f5_worker, _ready_once
+    logger.info(f"✅ ล็อกอินสำเร็จในชื่อ: {client.user}")
+    chat._ensure_bg_worker()   # เริ่ม background queue worker (idempotent อยู่แล้ว — เรียกซ้ำได้)
+
+    if _ready_once:
+        # discord.py ไม่การันตีว่า on_ready เรียกครั้งเดียว — gateway re-IDENTIFY หลัง session
+        # ขาด (เน็ตสะดุดนาน) fire ซ้ำได้ ถ้าสร้าง worker/monitor server ใหม่ทับตัวเดิมโดยไม่ guard
+        # จะได้ subprocess ผีค้าง VRAM (RVC/F5) + monitor server ตัวที่สองชนพอร์ตตัวแรก crash
+        logger.info("   ↳ on_ready ยิงซ้ำ (gateway reconnect) — ข้าม re-init worker/monitor")
+        return
+    _ready_once = True
+
     _voice_worker = voice.RvcWorker()
     _f5_worker = voice.F5Worker()
     asyncio.create_task(_start_voice_worker())   # โหลด RVC เบื้องหลัง ไม่บล็อก startup
     asyncio.create_task(_start_f5_worker())      # โหลด F5 เบื้องหลัง ไม่บล็อก startup
-    logger.info(f"✅ ล็อกอินสำเร็จในชื่อ: {client.user}")
+    await _monitor_server.start()
     logger.info(f"🖨️ ระบบพิมพ์: {'โหมดจริง' if printing.PRINT_REAL_MODE else 'โหมดจำลอง (ยังไม่สั่งเครื่องจริง)'}")
     logger.info("🎙️ RVC+F5 workers กำลังโหลดในเบื้องหลัง (RVC ~8s, F5 ~14s)...")
     logger.info("บอทพร้อมทำงานแล้ว! ลอง @ ชื่อบอทในเซิร์ฟเวอร์ หรือทักผ่าน DM ได้เลย")
