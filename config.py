@@ -18,6 +18,24 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 
+# หน้าเฝ้าดูสถานะบอท (monitor.py) — localhost-only by default, ตั้ง MONITOR_PORT=0 เพื่อปิด
+# ทั้งหมด, MONITOR_HOST เปลี่ยนได้ถ้าอยากดูจากมือถือใน LAN (ระวัง: ไม่ auth เลย เปิดวงกว้างเอง)
+MONITOR_HOST = os.getenv("MONITOR_HOST") or "127.0.0.1"
+# ค่าว่าง (MONITOR_PORT= เปล่าๆ ใน .env ตามที่ .env.example ใส่ไว้ให้) ต้องถือว่า "ไม่ตั้ง" =
+# ใช้ default เหมือน os.getenv คืน None ไม่งั้น int("") จะ raise ValueError ทั้งที่ user ไม่ได้
+# พิมพ์อะไรผิดเลย แค่ปล่อยว่างไว้ตามตัวอย่าง
+_monitor_port_raw = os.getenv("MONITOR_PORT", "").strip()
+if not _monitor_port_raw:
+    MONITOR_PORT = 8765
+else:
+    try:
+        MONITOR_PORT = int(_monitor_port_raw)
+    except ValueError:
+        raise ValueError(
+            f"ตั้งค่า MONITOR_PORT ใน .env ผิดรูปแบบ — {_monitor_port_raw!r} ไม่ใช่ตัวเลข "
+            f"(ต้องเป็นเลขพอร์ต เช่น 8765 หรือ 0 เพื่อปิด monitor ทั้งหมด)"
+        ) from None
+
 
 def _parse_id_list(env_var_name: str) -> list:
     """แปลงค่า env แบบ 'id1, id2, id3' เป็น list[int] — พิมพ์ id ผิด (มีตัวอักษรปน) เดิมจะ

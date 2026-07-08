@@ -1309,3 +1309,44 @@ class TestOnMessageSongRequestDM:
         message.reply.assert_awaited_once()
         reply_text = message.reply.await_args.args[0]
         assert "เข้าห้อง voice" in reply_text
+
+
+class TestOnReadyIdempotent:
+    """discord.py ไม่การันตีว่า on_ready เรียกครั้งเดียว — gateway re-IDENTIFY หลัง session
+    ขาดยิงซ้ำได้ ถ้าไม่ guard จะสร้าง RVC/F5 worker + monitor server ใหม่ทับของเดิมโดยไม่ stop
+    ตัวเก่า (subprocess ผีค้าง VRAM + monitor server ตัวที่สองชนพอร์ตตัวแรก crash)"""
+
+    def setup_method(self):
+        bot._ready_once = False
+        bot._voice_worker = None
+        bot._f5_worker = None
+
+    def teardown_method(self):
+        bot._ready_once = False
+        bot._voice_worker = None
+        bot._f5_worker = None
+
+    def test_second_call_does_not_recreate_workers_or_monitor(self, monkeypatch):
+        monkeypatch.setattr(bot.voice, "RvcWorker", MagicMock(side_effect=lambda: MagicMock()))
+        monkeypatch.setattr(bot.voice, "F5Worker", MagicMock(side_effect=lambda: MagicMock()))
+        monkeypatch.setattr(bot, "_start_voice_worker", AsyncMock())
+        monkeypatch.setattr(bot, "_start_f5_worker", AsyncMock())
+        monkeypatch.setattr(bot._monitor_server, "start", AsyncMock())
+
+        # เรียกทั้งสองรอบใน event loop เดียวกัน (asyncio.run เดียว) — ตรงกับของจริงที่ gateway
+        # re-IDENTIFY ยิง on_ready ซ้ำภายใน loop เดิมที่ client.run() เปิดค้างไว้ตลอดอายุบอท
+        # ไม่ใช่คนละ loop แบบเรียก asyncio.run() สองครั้งซ้อน (ทำให้ _bg_queue ชนกันข้าม loop)
+        async def call_twice():
+            await bot.on_ready()
+            first_voice_worker = bot._voice_worker
+            first_f5_worker = bot._f5_worker
+            await bot.on_ready()
+            return first_voice_worker, first_f5_worker
+
+        first_voice_worker, first_f5_worker = asyncio.run(call_twice())
+
+        assert bot.voice.RvcWorker.call_count == 1   # ไม่เพิ่ม — ไม่สร้างซ้อน
+        assert bot.voice.F5Worker.call_count == 1
+        assert bot._monitor_server.start.call_count == 1
+        assert bot._voice_worker is first_voice_worker   # ยังเป็น instance เดิม
+        assert bot._f5_worker is first_f5_worker
