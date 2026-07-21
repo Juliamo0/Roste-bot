@@ -417,7 +417,10 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
         for _ in range(3):
             turn_tools = TOOLS
             if weather_ok:
-                turn_tools = [t for t in TOOLS if t["function"]["name"] != "search_web"]
+                # ตัด get_weather ออกด้วย (ไม่ใช่แค่ search_web) — ดึงอากาศสำเร็จแล้วไม่ต้องเรียกซ้ำ
+                # กันโมเดลวนเรียก get_weather จังหวัดเดิมจนครบ 3 รอบแล้วไม่ยอมสรุป (บั๊กตอบ fallback เปล่า)
+                turn_tools = [t for t in TOOLS
+                              if t["function"]["name"] not in ("search_web", "get_weather")]
             with stats.stage("main_llm"):
                 msg = await _chat_once(messages, temperature=reply_temp, tools=turn_tools)
             tool_calls = msg.get("tool_calls")
@@ -461,6 +464,12 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
                         logger.warning(f"   ⚠️ tool {fn} error: {type(e).__name__}: {e}")
                         result = f"เครื่องมือ {fn} ทำงานผิดพลาด ({type(e).__name__}) บอกผู้ใช้ตรงๆ ว่าตอนนี้ดึงข้อมูลนี้ไม่ได้"
                 messages.append({"role": "tool", "tool_name": fn, "content": result})
+
+        # loop หมด 3 รอบแต่โมเดลยังขอ tool อยู่และไม่เคยแนบคำตอบมา — ยิงอีกครั้งแบบไม่ยื่น tool
+        # บังคับให้สรุปจากผลเครื่องมือที่ดึงมาแล้วใน messages กันตอบ fallback เปล่าทั้งที่มีข้อมูลจริง
+        if msg.get("tool_calls") and not (msg.get("content") or "").strip():
+            with stats.stage("main_llm"):
+                msg = await _chat_once(messages, temperature=0.5, tools=[])
 
         reply = msg.get("content", "") or ""
 

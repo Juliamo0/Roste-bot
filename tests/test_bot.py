@@ -602,6 +602,31 @@ class TestToolLoopFailSafe:
             reply = asyncio.run(chat.ask_ollama(user_id, "ผู้ทดสอบ", "พรุ่งนี้ฝนตกไหม"))
         assert reply  # exception ข้างใน handler ต้องไม่หลุดขึ้นไป crash ask_ollama
 
+    def test_tool_loop_exhausted_forces_final_answer(self, tmp_path, monkeypatch):
+        """บั๊กจริง (รอสเต้เช็คอากาศไม่ได้): โมเดลเรียก get_weather จังหวัดเดิมซ้ำจนครบ 3 รอบ
+        โดยไม่เคยแนบคำตอบ — เดิม loop จบแล้ว msg เป็น tool-call ที่ content ว่าง → ตอบ fallback
+        เปล่าทั้งที่ข้อมูลอากาศดึงมาแล้ว ตอนนี้ต้องยิงอีกครั้งแบบไม่ยื่น tool บังคับให้สรุปจากผลที่ได้"""
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        self._patch_no_op_recall(monkeypatch)
+        # get_weather ดึงได้ปกติ (ไม่ยิงเน็ตจริง) — บั๊กอยู่ที่โมเดลไม่ยอมสรุป ไม่ใช่ tool พัง
+        monkeypatch.setitem(llm_tools.TOOL_HANDLERS, "get_weather",
+                            AsyncMock(return_value="พยากรณ์อากาศชุมพร: วันนี้มีฝนช่วงบ่าย"))
+        user_id = 605
+        _init_mem(tmp_path, user_id)
+
+        weather_call = {"function": {"name": "get_weather", "arguments": {"province": "ชุมพร"}}}
+        # ขอ get_weather ครบ 3 รอบ (content ว่างทุกรอบ) แล้วรอบบังคับ (ไม่มี tool) ค่อยตอบ
+        responses = [
+            {"content": "", "tool_calls": [weather_call]},
+            {"content": "", "tool_calls": [weather_call]},
+            {"content": "", "tool_calls": [weather_call]},
+            {"content": "วันนี้ชุมพรน่าจะมีฝนช่วงบ่ายนะคะ พกร่มไปด้วยนะคะ", "tool_calls": None},
+        ]
+        with patch.object(chat, "_chat_once", AsyncMock(side_effect=responses)):
+            reply = asyncio.run(chat.ask_ollama(user_id, "ผู้ทดสอบ", "วันนี้ฝนจะตกไหม"))
+        assert "ยังหาคำตอบที่แน่ใจไม่ได้" not in reply  # ต้องไม่ตกลงมาที่ fallback เปล่า
+        assert "ฝน" in reply  # ได้คำตอบจริงที่สรุปจากข้อมูลอากาศที่ดึงมาแล้ว
+
     def test_malformed_tool_call_missing_function_key_does_not_crash(self, tmp_path, monkeypatch):
         """บั๊กจริงที่เจอจากชุดทดสอบ adversarial: บางโมเดล/บางเวอร์ชันส่ง tool_call ที่ไม่มี key
         'function' — เดิม chat.py ใช้ call['function'] ตรงๆ → KeyError ทำทั้งคำตอบพัง
