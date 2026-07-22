@@ -28,12 +28,18 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import uuid
 from collections import deque
 from pathlib import Path
+
+# กัน console window เด้งบน Windows ตอน spawn ffmpeg/worker subprocess — จำเป็นตอนรันบอทเบื้องหลัง
+# แบบไม่มีหน้าต่าง (pythonw): child ที่เป็น console app ของ parent ที่ไม่มี console จะสร้างหน้าต่างใหม่
+# ถ้าไม่ตั้ง flag นี้ → ffmpeg (เด้งทุกครั้งที่พูด) + RVC/F5 worker จะเด้งหน้าต่างกวนจอ
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 import soundfile as sf
 
@@ -115,6 +121,7 @@ async def _edge_tts_async(text: str, out_wav: str, retries: int = 3) -> None:
             r = subprocess.run(
                 ["ffmpeg", "-y", "-loglevel", "error", "-i", tmp_mp3, out_wav],
                 capture_output=True,
+                creationflags=_NO_WINDOW,
             )
             os.remove(tmp_mp3)
             if r.returncode != 0:
@@ -162,6 +169,7 @@ def _ffmpeg_adjust(in_wav: str, out_wav: str, src_sr: int) -> None:
             out_wav,
         ],
         capture_output=True,
+        creationflags=_NO_WINDOW,
     )
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg adjust failed: {r.stderr.decode(errors='replace')}")
@@ -262,6 +270,7 @@ class RvcWorker:
             text=True,
             encoding="utf-8",
             errors="replace",
+            creationflags=_NO_WINDOW,
         )
         # เริ่ม drain stderr ทันที (ก่อน ready) — กัน pipe buffer เต็มตอนโหลดโมเดล (ดู docstring _drain_stderr)
         threading.Thread(target=_drain_stderr, args=(self._proc, self._stderr_ring), daemon=True).start()
@@ -376,6 +385,7 @@ class F5Worker:
             text=True,
             encoding="utf-8",
             errors="replace",
+            creationflags=_NO_WINDOW,
         )
         # เริ่ม drain stderr ทันที (ก่อน ready) — กัน pipe buffer เต็มตอนโหลดโมเดล (ดู docstring _drain_stderr)
         threading.Thread(target=_drain_stderr, args=(self._proc, self._stderr_ring), daemon=True).start()
@@ -517,6 +527,7 @@ print('done', flush=True)
     r = subprocess.run(
         [str(_RVC_VENV_PY), "-c", inline],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=_NO_WINDOW,
     )
     if r.returncode != 0:
         raise RuntimeError(f"RVC oneshot failed:\n{r.stderr}")
