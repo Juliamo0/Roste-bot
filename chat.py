@@ -18,6 +18,12 @@ from ollama_client import _chat_once, _get_json_post, _strip_think, MODEL
 
 logger = logging.getLogger("roste.chat")
 
+# เครื่องมือ "ข้อมูลหลักช็อตเดียวจบ" — พอเรียกตัวใดตัวหนึ่งแล้ว ถือว่าได้ข้อมูลที่ผู้ใช้ต้องการแล้ว
+# ไม่ต้องยื่น tool ให้อีกในรอบถัดไป (บังคับให้สรุปจากข้อมูลนั้น) กันโมเดล "หลงไปเรียก tool อื่นต่อ"
+# เช่น ถามอากาศแล้วเผลอเรียก search_places ต่อจน context ความจำเก่าปน แล้วตอบร้านอาหารแทนอากาศ
+# (search_places/search_web ไม่รวม เพราะมี flow ถามย้อน/ค้นซ้ำของตัวเอง)
+_PRIMARY_DATA_TOOLS = {"get_weather", "get_oil_price", "get_power_outage", "get_current_time"}
+
 SYSTEM_PROMPT = persona.SYSTEM_PROMPT
 FEWSHOT_EXAMPLES = persona.FEWSHOT_EXAMPLES
 build_author_note = persona.build_author_note
@@ -412,15 +418,13 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
         # 🔁 ลูปเรียกเครื่องมือ: โมเดลตัดสินใจเองว่าต้องใช้เครื่องมือไหน (ถ้าต้อง) วนได้สูงสุด 3 รอบ
         #    ถ้า get_weather สำเร็จแล้วในรอบก่อนหน้า ตัด search_web ออกจากตัวเลือกรอบถัดไปเลย
         #    กันโมเดลเรียกค้นเว็บซ้ำแล้วได้หน้า climate-average มาปนกับพยากรณ์จริงที่มีอยู่แล้ว
-        weather_ok = False
+        got_primary = False
         msg = {}
         for _ in range(3):
-            turn_tools = TOOLS
-            if weather_ok:
-                # ตัด get_weather ออกด้วย (ไม่ใช่แค่ search_web) — ดึงอากาศสำเร็จแล้วไม่ต้องเรียกซ้ำ
-                # กันโมเดลวนเรียก get_weather จังหวัดเดิมจนครบ 3 รอบแล้วไม่ยอมสรุป (บั๊กตอบ fallback เปล่า)
-                turn_tools = [t for t in TOOLS
-                              if t["function"]["name"] not in ("search_web", "get_weather")]
+            # ดึงข้อมูลหลักได้แล้ว (อากาศ/น้ำมัน/ไฟดับ/เวลา) → รอบถัดไปไม่ยื่น tool ให้เลย = บังคับสรุป
+            # จากข้อมูลนั้น กันทั้ง (1) วนเรียก tool เดิมซ้ำจนตอบ fallback เปล่า และ
+            # (2) หลงไปเรียก tool อื่นต่อ (เช่น ถามอากาศ→ดึงอากาศได้แล้ว→ดันเรียก search_places ต่อ→ตอบร้าน)
+            turn_tools = [] if got_primary else TOOLS
             with stats.stage("main_llm"):
                 msg = await _chat_once(messages, temperature=reply_temp, tools=turn_tools)
             tool_calls = msg.get("tool_calls")
@@ -458,8 +462,8 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
                     try:
                         with stats.stage("tool_calls"):
                             result = await TOOL_HANDLERS[fn](args, mem)
-                        if fn == "get_weather" and not result.startswith("[ระบบ: ดึงพยากรณ์อากาศไม่ได้"):
-                            weather_ok = True
+                        if fn in _PRIMARY_DATA_TOOLS:
+                            got_primary = True   # ดึงข้อมูลหลักแล้ว (สำเร็จ/error ก็ตาม) → บังคับสรุปรอบหน้า
                     except Exception as e:
                         logger.warning(f"   ⚠️ tool {fn} error: {type(e).__name__}: {e}")
                         result = f"เครื่องมือ {fn} ทำงานผิดพลาด ({type(e).__name__}) บอกผู้ใช้ตรงๆ ว่าตอนนี้ดึงข้อมูลนี้ไม่ได้"
