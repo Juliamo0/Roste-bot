@@ -477,10 +477,17 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
         )
 
         # 🚫 deterministic guard: ข้อความเป็น "แค่ชื่อจังหวัดล้วนๆ" ต่อจากที่รอสเต้เพิ่งชวนคุยเรื่อง
-        # กิน/ร้าน (แต่ไม่ได้ถามจังหวัดตรงๆ) → บังคับเรียก search_places เลย ไม่รอให้โมเดิลตัดสินใจ
+        # กิน/ร้าน → บังคับเรียก search_places เลย ไม่รอให้โมเดิลตัดสินใจ
         # เจอจริง: qwen3:8b และ qwen3:14b เดาเหมือนกัน (ไม่ใช่ปัญหาขนาดโมเดล) พอเจอ "จังหวัดชุมพร"
         # ลอยๆ ต่อจาก "อยากกินอะไรดี" มักเลือกอธิบายข้อมูลทั่วไปของจังหวัดแทนที่จะเชื่อมกลับเรื่องกิน
         # — prompt-only fix (persona.py) ช่วยได้แค่บางส่วน ไม่พอสำหรับโมเดลขนาดนี้ ต้องบังคับ action แทน
+        #
+        # เดิมมีเงื่อนไข "and not _CLARIFY_QUESTION_RE.search(...)" กันไม่ให้ทับซ้อนกับ topic-change
+        # guard แต่นั่นคนละ concern กัน (_CLARIFY_QUESTION_RE ใช้กันไม่ให้ history ถูกล้าง ไม่ใช่กัน
+        # การ force tool call) — เจอจริง (regression): "หาร้านก๋วยเตี๋ยวให้หน่อย" → รอสเต้ถามกลับ
+        # "อยู่แถวไหนค่ะ เพื่อแนะนำร้านก๋วยเตี๋ยว" (มีทั้งคำว่า "ร้าน/ก๋วยเตี๋ยว" และ "แถวไหน" ปนกัน)
+        # → _CLARIFY_QUESTION_RE match ด้วย → เงื่อนไขเดิมเป็น False → guard นี้ไม่ทำงานทั้งที่ควรทำงาน
+        # ตัดเงื่อนไขนี้ออก ให้ _FOOD_TALK_RE อย่างเดียวตัดสินพอ (แม่นพอแล้วสำหรับ scope ที่ต้องการ)
         forced_tool_calls = None
         bare_province = _is_bare_province_message(user_message)
         if bare_province:
@@ -488,7 +495,7 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
                 (m.get("content", "") for m in reversed(history) if m.get("role") == "assistant"),
                 "",
             )
-            if _FOOD_TALK_RE.search(last_assistant) and not _CLARIFY_QUESTION_RE.search(last_assistant):
+            if _FOOD_TALK_RE.search(last_assistant):
                 logger.info(f"   🍜 บังคับเรียก search_places (ชื่อจังหวัดลอยๆ ต่อจากคุยเรื่องกิน): {bare_province!r}")
                 forced_tool_calls = [{
                     "function": {"name": "search_places", "arguments": {"query": "ร้านอาหาร", "province": bare_province}}
@@ -580,6 +587,19 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
         if persona.reply_is_persona_leak(reply):
             logger.warning(f"   🕳️ คำตอบลอกคำสั่ง persona (prompt รั่ว) — ใช้ fallback: {reply[:60]!r}")
             reply = "อืม? เมื่อกี้รอสเต้เบลอไปแป๊บนึงค่ะ ลองพูดใหม่อีกทีได้ไหมคะ"
+
+        # 🕳️ ดัก "reasoning รั่ว" — โมเดลลอกวลี meta-instruction จาก tool description (เช่น
+        #    "ไม่ต้องเรียกเครื่องมือนี้") ปนกับคำตอบจริง ต่างจาก persona-leak ตรงที่เนื้อหาส่วนอื่น
+        #    มักถูกต้องสมบูรณ์ (เช่น "ไม่ต้องเรียกเครื่องมือใดๆ ค่ะ ลองเลือกกินอาหารที่ชอบ...") จึง
+        #    ตัดแค่ประโยคที่รั่วออก ไม่ทิ้งทั้งคำตอบเหมือน persona-leak
+        elif persona.reply_leaks_tool_reasoning(reply):
+            logger.warning(f"   🕳️ คำตอบลอกวลี tool reasoning — ตัดประโยคที่รั่วออก: {reply[:60]!r}")
+            sentences = re.split(r"(?<=[.!?ๆ])\s+|(?<=ค่ะ)\s+|(?<=คะ)\s+|(?<=นะ)\s+", reply)
+            reply = " ".join(
+                s for s in sentences if not persona.reply_leaks_tool_reasoning(s)
+            ).strip()
+            if not reply:
+                reply = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
 
         # 🎭 ดักคำตอบหลุดเป็นภาษาต่างประเทศล้วน (มักโดน prompt injection สั่งให้เปลี่ยนภาษา/เผยตัวตนโมเดล)
         #    — persona รอสเต้ = ไทยล้วนเสมอ ถ้าหลุดเป็นอังกฤษล้วนให้ทิ้งแล้วตอบ fallback แทน
