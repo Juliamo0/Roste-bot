@@ -482,6 +482,12 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
         if not reply:
             reply = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
 
+        # 🕳️ ดัก "prompt รั่ว" — โมเดลลอกคำสั่งรูปแบบลงท้าย "ค่ะ/นะคะ" ออกมาแทนคำตอบจริง
+        #    (เจอจริง 18:47: ข้อความสั้นไม่มีเนื้อหา → 8b ลอก token รูปแบบทั้งดุ้น) ใช้ fallback แทน
+        if persona.reply_is_persona_leak(reply):
+            logger.warning(f"   🕳️ คำตอบลอกคำสั่ง persona (prompt รั่ว) — ใช้ fallback: {reply[:60]!r}")
+            reply = "อืม? เมื่อกี้รอสเต้เบลอไปแป๊บนึงค่ะ ลองพูดใหม่อีกทีได้ไหมคะ"
+
         # 🎭 ดักคำตอบหลุดเป็นภาษาต่างประเทศล้วน (มักโดน prompt injection สั่งให้เปลี่ยนภาษา/เผยตัวตนโมเดล)
         #    — persona รอสเต้ = ไทยล้วนเสมอ ถ้าหลุดเป็นอังกฤษล้วนให้ทิ้งแล้วตอบ fallback แทน
         if persona.reply_broke_character(reply):

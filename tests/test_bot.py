@@ -827,6 +827,25 @@ class TestReplyClaimsToBeAi:
         assert not persona.reply_claims_to_be_ai("ฉันเป็นเด็กสาวที่ดูแลห้องสมุดค่ะ")
 
 
+class TestReplyIsPersonaLeak:
+    """guard ดัก "prompt รั่ว" (persona.reply_is_persona_leak)
+    เจอจริง 18:47: ข้อความสั้นไม่มีเนื้อหา → qwen 8b ลอกคำสั่งรูปแบบลงท้าย "ค่ะ/นะคะ" ออกมาทั้งดุ้น"""
+
+    def test_bare_leak_flagged(self):
+        assert persona.reply_is_persona_leak("ค่ะ/นะคะ")
+
+    def test_leak_with_spaces_flagged(self):
+        assert persona.reply_is_persona_leak("ค่ะ / นะคะ")
+
+    def test_normal_reply_not_flagged(self):
+        # คำตอบปกติที่มีทั้ง "ค่ะ" และ "นะคะ" แต่ไม่มี slash คั่น ต้องไม่โดนดัก
+        assert not persona.reply_is_persona_leak("สวัสดีค่ะ วันนี้อากาศดีนะคะ")
+
+    def test_legit_slash_not_flagged(self):
+        # slash ปกติ (ตัวเลือก/URL) ต้องไม่ false positive
+        assert not persona.reply_is_persona_leak("เลือก A/B ก็ได้ค่ะ ลองดูนะคะ")
+
+
 # ── FEWSHOT_EXAMPLES ต้องไม่มีข้อเท็จจริงเปลี่ยนแปลงได้ฝังตายตัว ──────────────────
 #    บั๊กจริงที่เจอ: ตัวอย่างเก่ามีวันที่ "2 มิถุนายน" ฝังไว้ในคำตอบ assistant ทำให้โมเดล 8B
 #    ข้ามการเรียก get_current_time ไปเลย แล้วคัดลอกวันที่จากตัวอย่างมาตอบตรงๆ ทุกครั้ง
