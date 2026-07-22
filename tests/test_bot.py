@@ -169,6 +169,32 @@ class TestDetectTopicChange:
             result = asyncio.run(chat.detect_topic_change("ข้อความ", history))
         assert result is False
 
+    def test_clarify_reply_not_topic_change_no_llm(self):
+        """บอทเพิ่งย้อนถามขอจังหวัด → ผู้ใช้ตอบชื่อจังหวัด = คุยเรื่องเดิมต่อ ไม่ใช่หัวข้อใหม่
+        ต้องคืน False โดยไม่เรียก LLM (เจอจริง: ถามเมนู→บอทถามจังหวัด→'ชุมพร'→เผลอเรียก tool ไฟดับ)"""
+        history = [
+            {"role": "user", "content": "มีเมนูอะไรแนะนำไหมรอสเต้"},
+            {"role": "assistant", "content": "ไม่แน่ใจค่ะ อยากหาร้านแนวไหนคะ"},
+            {"role": "user", "content": "อยากรู้ว่ามื้อเย็นกินอะไรดี"},
+            {"role": "assistant", "content": "ช่วยบอกจังหวัดที่คุณอยู่ได้ไหมคะ จะได้แนะนำร้านให้ตรงพื้นที่"},
+        ]
+        with patch("aiohttp.ClientSession") as mock_cls:
+            result = asyncio.run(chat.detect_topic_change("จังหวัดชุมพร", history))
+            mock_cls.assert_not_called()
+        assert result is False
+
+    def test_normal_last_reply_still_calls_llm(self):
+        """ข้อความล่าสุดของบอทเป็น reply ปกติ (ไม่ได้ย้อนถามขอข้อมูล) → ยังเช็ค topic ตามปกติ"""
+        history = [
+            {"role": "user", "content": "แนะนำหนังสือ sci-fi หน่อย"},
+            {"role": "assistant", "content": "ลองอ่าน Dune ดูนะคะ สนุกมากเลยค่ะ"},
+            {"role": "user", "content": "มีเล่มอื่นอีกไหม"},
+            {"role": "assistant", "content": "Foundation ก็ดีนะคะ คลาสสิกเลย"},
+        ]
+        with patch("aiohttp.ClientSession", make_aiohttp_mock("YES")) as mock_cls:
+            result = asyncio.run(chat.detect_topic_change("อยากกินก๋วยเตี๋ยว", history))
+        assert result is True
+
 
 # ── summarize_and_verify ──────────────────────────────────────────────────────
 
