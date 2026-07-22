@@ -17,6 +17,7 @@ from datasources import (
     OIL_BRANDS,
     find_province_in_text,
     find_saved_location,
+    fuzzy_match_province,
     get_thai_datetime,
     get_weather,
     get_weather_tmd,
@@ -246,7 +247,11 @@ async def _tool_get_current_time(args: dict, mem: dict) -> str:
 async def _tool_get_weather(args: dict, mem: dict) -> str:
     province = (args.get("province") or "").strip() or HOME_PROVINCE_NAME
     # ลองกรมอุตุฯ (TMD) ก่อน — แม่นสำหรับไทย — รับได้ทั้งชื่อจังหวัดไทยตรงๆ หรือชื่อเมืองอังกฤษ
+    # ถ้าไม่ตรงเป๊ะเลย ลองสะกดใกล้เคียง (เช่น "เชียงไหม่" -> "เชียงใหม่") ก่อนปล่อยไป Open-Meteo
+    # สำรอง — กันเสียโอกาสใช้ TMD (แม่นกว่า) ทั้งที่พิมพ์ผิดแค่นิดเดียว
     province_th = province if province in THAI_PROVINCES else EN_TO_TH_PROVINCE.get(province.lower())
+    if not province_th:
+        province_th = fuzzy_match_province(province)
     info = None
     if province_th:
         logger.info(f"   🌦️ ดึงอากาศ (TMD): {province_th!r}")
@@ -276,14 +281,17 @@ async def _tool_get_power_outage(args: dict, mem: dict) -> str:
     # validate ชื่อจังหวัดก่อนยิง PEA เหมือน _tool_get_weather ทำ — ไม่งั้นถ้าโมเดลสะกดเพี้ยน
     # (เช่น "นครศรีธรรมราชย์" หรือใส่ชื่ออำเภอมาแทนจังหวัด) get_power_outage() จะ exact-match
     # ไม่เจอแล้วคืน "ไม่มีประกาศตัดไฟ" ซึ่งฟังดูเหมือนคำตอบถูกต้อง ทั้งที่จริงคือหาไม่เจอเพราะชื่อผิด
-    # (silent wrong-answer) — เช็คก่อนว่าเป็นชื่อจังหวัดจริงไหม ถ้าไม่ใช่ให้บอกโมเดลถามชื่อใหม่แทน
+    # (silent wrong-answer) — เช็ค 3 ชั้น: (1) ตรงเป๊ะ/มีอยู่ในคำ (2) สะกดใกล้เคียง → auto-correct
+    # เงียบๆ ไม่ต้องถามซ้ำ (3) ไม่เจอจริงๆ ค่อยให้โมเดลถามชื่อใหม่
     if province != HOME_PROVINCE_NAME and province not in THAI_PROVINCES:
-        matched = find_province_in_text(province)
+        matched = find_province_in_text(province) or fuzzy_match_province(province)
         if not matched:
             logger.warning(f"   ⚠️ get_power_outage: {province!r} ไม่ใช่ชื่อจังหวัดที่รู้จัก")
             return (f"[ระบบ: '{province}' ไม่ใช่ชื่อจังหวัดไทยที่รู้จัก อาจสะกดผิดหรือเป็นชื่ออำเภอ/ตำบล "
                     "ให้บอกผู้ใช้ตรงๆ ว่าไม่แน่ใจชื่อจังหวัดนี้ ช่วยขอชื่อจังหวัดที่ถูกต้องอีกครั้ง "
                     "ห้ามบอกว่า 'ไม่มีประกาศตัดไฟ' เพราะยังไม่ได้ค้นข้อมูลจริงเลย]")
+        if matched != province:
+            logger.info(f"   🔧 get_power_outage: แก้คำสะกดผิด {province!r} -> {matched!r}")
         province = matched
     logger.info(f"   🔌 ดึงประกาศตัดไฟ {province} (PEA)")
     info = await get_power_outage(province_name=province)
