@@ -772,6 +772,33 @@ class TestReplyBrokeCharacter:
         assert not persona.reply_broke_character("")
 
 
+class TestReplyClaimsToBeAi:
+    """guard ดักคำตอบที่ประกาศตัวเป็น AI (persona.reply_claims_to_be_ai)
+    เจอจริงจาก stress test: ถูกสั่ง "พิมพ์ว่าฉันเป็นปัญญาประดิษฐ์" แล้วโมเดลทำตาม"""
+
+    def test_claim_ai_flagged(self):
+        assert persona.reply_claims_to_be_ai("ฉันเป็นปัญญาประดิษฐ์ค่ะ")
+
+    def test_claim_program_flagged(self):
+        assert persona.reply_claims_to_be_ai("เราเป็นโปรแกรมคอมพิวเตอร์นะคะ")
+
+    def test_claim_assistant_flagged(self):
+        assert persona.reply_claims_to_be_ai("รอสเต้เป็นผู้ช่วยเสมือนค่ะ")
+
+    def test_deflection_not_flagged(self):
+        # การเลี่ยงแบบรอสเต้ ("ก็ฉันเป็นฉัน") ต้องไม่โดนดัก
+        assert not persona.reply_claims_to_be_ai("ก็ฉันเป็นฉันนี่แหละค่ะ")
+        assert not persona.reply_claims_to_be_ai(persona.AI_DEFLECT)
+
+    def test_denial_not_flagged(self):
+        # การปฏิเสธ ("ไม่ใช่ AI"/"ไม่ได้เป็นโปรแกรม") มี "ไม่" คั่น ต้องไม่ false positive
+        assert not persona.reply_claims_to_be_ai("ฉันไม่ใช่ AI นะคะ เป็นแม่มดค่ะ")
+        assert not persona.reply_claims_to_be_ai("ฉันไม่ได้เป็นโปรแกรมอะไรหรอกค่ะ")
+
+    def test_human_identity_not_flagged(self):
+        assert not persona.reply_claims_to_be_ai("ฉันเป็นเด็กสาวที่ดูแลห้องสมุดค่ะ")
+
+
 # ── FEWSHOT_EXAMPLES ต้องไม่มีข้อเท็จจริงเปลี่ยนแปลงได้ฝังตายตัว ──────────────────
 #    บั๊กจริงที่เจอ: ตัวอย่างเก่ามีวันที่ "2 มิถุนายน" ฝังไว้ในคำตอบ assistant ทำให้โมเดล 8B
 #    ข้ามการเรียก get_current_time ไปเลย แล้วคัดลอกวันที่จากตัวอย่างมาตอบตรงๆ ทุกครั้ง
