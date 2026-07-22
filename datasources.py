@@ -381,8 +381,9 @@ def _parse_pea_date(s):
 
 
 async def get_power_outage(province_id=HOME_PROVINCE_ID, province_name=HOME_PROVINCE_NAME) -> str:
-    """ดึงประกาศตัดไฟของจังหวัด (เฉพาะที่ยังไม่ผ่าน) จาก PEA
-    คืนข้อความสรุป หรือข้อความว่าไม่มี"""
+    """ดึงประกาศตัดไฟของจังหวัด (เฉพาะที่ยังไม่ผ่าน) จาก PEA — รองรับทุกจังหวัด
+    (PEA คืนทั้งประเทศ กรองด้วยชื่อจังหวัด) คืนข้อความสรุป หรือข้อความว่าไม่มี"""
+    province_name = (province_name or HOME_PROVINCE_NAME).replace("จังหวัด", "").replace("จ.", "").strip()
     url = "https://eservice.pea.co.th/PowerOutage/Home/GetOutages"
     post_data = b"draw=1&start=0&length=500"
     headers = {
@@ -401,9 +402,12 @@ async def get_power_outage(province_id=HOME_PROVINCE_ID, province_name=HOME_PROV
         return "ตอนนี้เชื่อมต่อระบบแจ้งตัดไฟของการไฟฟ้าไม่ได้ค่ะ ลองใหม่อีกทีนะคะ"
 
     items = data.get("data", []) if isinstance(data, dict) else []
-    # กรองเฉพาะจังหวัดที่ต้องการ
-    mine = [x for x in items
-            if x.get("PROVINCE_ID") == province_id or x.get("PROVINCE") == province_name]
+    # กรองเฉพาะจังหวัดที่ต้องการ — PEA คืนทั้งประเทศ (field PROVINCE มีครบทุกจังหวัด) ใช้ชื่อเป็นหลัก
+    # normalize กัน "จังหวัดนครศรีธรรมราช"/"จ.นครศรี " ไม่ตรงกับ "นครศรีธรรมราช" ดิบๆ ในข้อมูล
+    def _norm(s):
+        return (s or "").replace("จังหวัด", "").replace("จ.", "").replace(" ", "").strip()
+    target = _norm(province_name)
+    mine = [x for x in items if _norm(x.get("PROVINCE")) == target]
 
     # เก็บเฉพาะที่ยังไม่จบ (เวลาจบ >= ตอนนี้) แล้วเรียงตามเวลาเริ่ม
     from datetime import datetime, timezone, timedelta
