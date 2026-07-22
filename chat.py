@@ -14,6 +14,7 @@ import memory
 import persona
 import stats
 import vectormemory
+from datasources import find_province_in_text
 from llm_tools import TOOLS, TOOL_HANDLERS, _validate_tool_args, _strip_ungrounded_optional_args
 from ollama_client import _chat_once, _get_json_post, _strip_think, MODEL
 
@@ -189,6 +190,25 @@ _CLARIFY_QUESTION_RE = re.compile(
     r"อำเภอไหน|แถวไหน|พื้นที่ไหน|ระบุ(จังหวัด|ให้เจาะจง|มากขึ้น|เพิ่ม)|เจาะจง(ขึ้น|กว่านี้|มากขึ้น)|"
     r"อยากได้แบบไหน|ประเภทไหน|ชนิดไหน|อยากหาอะไร"
 )
+
+# คำที่บ่งชี้ว่ารอสเต้เพิ่งชวนคุยเรื่องกิน/ร้าน (แต่ไม่ได้ถามจังหวัดตรงๆ แบบ _CLARIFY_QUESTION_RE)
+# — เจอจริง: fix "กินอะไรดี ไม่ต้องเรียก tool" ทำให้รอสเต้ตอบแนะนำเมนูเล่นๆ แทนถามจังหวัด
+# พอผู้ใช้พิมพ์แค่ชื่อจังหวัดมาต่อ (ตอบคำถามเดิมที่เคยถามไว้ก่อนหน้านานแล้ว หรือแค่บอกที่อยู่)
+# โมเดล (ทั้ง 8b และ 14b เดาไม่ต่างกัน) จะเดางงแล้วอธิบายข้อมูลทั่วไปของจังหวัดนั้นแทนที่จะเชื่อม
+# กลับไปเรื่องกิน — บังคับ (deterministic) เรียก search_places ไปเลยแทนรอให้โมเดลตัดสินใจ
+_FOOD_TALK_RE = re.compile(r"กิน|เมนู|ร้าน|อาหาร|ของกิน|หิว")
+
+
+def _is_bare_province_message(text: str) -> str:
+    """คืนชื่อจังหวัดถ้าข้อความ "เป็นแค่ชื่อจังหวัด" ล้วนๆ (ไม่ใช่ประโยคยาวที่บังเอิญมีชื่อจังหวัดปน)
+    เช่น 'จังหวัดชุมพร' หรือ 'ชุมพรค่ะ' นับ แต่ 'ชุมพรมีที่เที่ยวเยอะไหม' ไม่นับ (มีคำถามอื่นปนมาด้วย
+    ต้องปล่อยให้ native tool-calling ตัดสินใจตามปกติ ไม่ใช่ force เพราะมีเจตนาอื่นที่ชัดเจนกว่า)"""
+    prov = find_province_in_text(text)
+    if not prov:
+        return ""
+    remainder = text.replace(prov, "").replace("จังหวัด", "")
+    remainder = re.sub(r"[ค่ะคะครับนะจ๊ะจ้ะ\s.]+", "", remainder)
+    return prov if not remainder else ""
 
 
 async def detect_topic_change(new_message: str, history_pairs: list) -> bool:
@@ -436,12 +456,44 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
             + [{"role": "user", "content": augmented_message}]
         )
 
+        # 🚫 deterministic guard: ข้อความเป็น "แค่ชื่อจังหวัดล้วนๆ" ต่อจากที่รอสเต้เพิ่งชวนคุยเรื่อง
+        # กิน/ร้าน (แต่ไม่ได้ถามจังหวัดตรงๆ) → บังคับเรียก search_places เลย ไม่รอให้โมเดิลตัดสินใจ
+        # เจอจริง: qwen3:8b และ qwen3:14b เดาเหมือนกัน (ไม่ใช่ปัญหาขนาดโมเดล) พอเจอ "จังหวัดชุมพร"
+        # ลอยๆ ต่อจาก "อยากกินอะไรดี" มักเลือกอธิบายข้อมูลทั่วไปของจังหวัดแทนที่จะเชื่อมกลับเรื่องกิน
+        # — prompt-only fix (persona.py) ช่วยได้แค่บางส่วน ไม่พอสำหรับโมเดลขนาดนี้ ต้องบังคับ action แทน
+        forced_tool_calls = None
+        bare_province = _is_bare_province_message(user_message)
+        if bare_province:
+            last_assistant = next(
+                (m.get("content", "") for m in reversed(history) if m.get("role") == "assistant"),
+                "",
+            )
+            if _FOOD_TALK_RE.search(last_assistant) and not _CLARIFY_QUESTION_RE.search(last_assistant):
+                logger.info(f"   🍜 บังคับเรียก search_places (ชื่อจังหวัดลอยๆ ต่อจากคุยเรื่องกิน): {bare_province!r}")
+                forced_tool_calls = [{
+                    "function": {"name": "search_places", "arguments": {"query": "ร้านอาหาร", "province": bare_province}}
+                }]
+
         # 🔁 ลูปเรียกเครื่องมือ: โมเดลตัดสินใจเองว่าต้องใช้เครื่องมือไหน (ถ้าต้อง) วนได้สูงสุด 3 รอบ
         #    ถ้า get_weather สำเร็จแล้วในรอบก่อนหน้า ตัด search_web ออกจากตัวเลือกรอบถัดไปเลย
         #    กันโมเดลเรียกค้นเว็บซ้ำแล้วได้หน้า climate-average มาปนกับพยากรณ์จริงที่มีอยู่แล้ว
         got_primary = False
         msg = {}
+        first_iteration = True
         for _ in range(3):
+            if first_iteration and forced_tool_calls:
+                first_iteration = False
+                tool_calls = forced_tool_calls
+                messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
+                for call in tool_calls:
+                    fn = call["function"]["name"]
+                    args = call["function"]["arguments"]
+                    result = await TOOL_HANDLERS[fn](args, mem)
+                    if fn in _PRIMARY_DATA_TOOLS:
+                        got_primary = True
+                    messages.append({"role": "tool", "tool_name": fn, "content": result})
+                continue
+            first_iteration = False
             # ดึงข้อมูลหลักได้แล้ว (อากาศ/น้ำมัน/ไฟดับ/เวลา) → รอบถัดไปไม่ยื่น tool ให้เลย = บังคับสรุป
             # จากข้อมูลนั้น กันทั้ง (1) วนเรียก tool เดิมซ้ำจนตอบ fallback เปล่า และ
             # (2) หลงไปเรียก tool อื่นต่อ (เช่น ถามอากาศ→ดึงอากาศได้แล้ว→ดันเรียก search_places ต่อ→ตอบร้าน)
