@@ -627,6 +627,34 @@ class TestToolLoopFailSafe:
         assert "ยังหาคำตอบที่แน่ใจไม่ได้" not in reply  # ต้องไม่ตกลงมาที่ fallback เปล่า
         assert "ฝน" in reply  # ได้คำตอบจริงที่สรุปจากข้อมูลอากาศที่ดึงมาแล้ว
 
+    def test_no_tools_offered_after_primary_data_tool(self, tmp_path, monkeypatch):
+        """เจอจริงตอนเทสสด: ถามอากาศ → ดึงอากาศได้แล้ว แต่ loop ยังปล่อยให้เรียก search_places ต่อ
+        (context ความจำเก่าเรื่องร้านปน) → ตอบร้านอาหารแทนอากาศ. fix: พอเรียก tool ข้อมูลหลัก
+        (get_weather/oil/power/time) แล้ว รอบถัดไปต้องไม่ยื่น tool ให้เลย = บังคับสรุปจากข้อมูลนั้น"""
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        self._patch_no_op_recall(monkeypatch)
+        monkeypatch.setitem(llm_tools.TOOL_HANDLERS, "get_weather",
+                            AsyncMock(return_value="พยากรณ์อากาศชุมพร: ฝนช่วงบ่าย"))
+        user_id = 611
+        _init_mem(tmp_path, user_id)
+
+        seen_tools = []
+        weather_call = {"function": {"name": "get_weather", "arguments": {"province": "ชุมพร"}}}
+
+        async def fake_chat_once(messages, temperature=0.8, tools=None):
+            seen_tools.append([t["function"]["name"] for t in (tools or [])])
+            if len(seen_tools) == 1:
+                return {"content": "", "tool_calls": [weather_call]}
+            return {"content": "วันนี้ชุมพรมีฝนช่วงบ่ายนะคะ", "tool_calls": None}
+
+        with patch.object(chat, "_chat_once", fake_chat_once):
+            reply = asyncio.run(chat.ask_ollama(user_id, "ผู้ทดสอบ", "วันนี้ฝนจะตกไหม"))
+
+        assert len(seen_tools) >= 2
+        assert seen_tools[0] != []      # รอบแรกยื่น tool ครบ
+        assert seen_tools[1] == []      # รอบสองไม่ยื่น tool เลย = บังคับสรุป (กันหลงเรียก search_places)
+        assert "ฝน" in reply
+
     def test_malformed_tool_call_missing_function_key_does_not_crash(self, tmp_path, monkeypatch):
         """บั๊กจริงที่เจอจากชุดทดสอบ adversarial: บางโมเดล/บางเวอร์ชันส่ง tool_call ที่ไม่มี key
         'function' — เดิม chat.py ใช้ call['function'] ตรงๆ → KeyError ทำทั้งคำตอบพัง
