@@ -35,21 +35,51 @@ THAI_PROVINCES = {
 }
 
 
+# ภาษาไทยไม่เว้นวรรคระหว่างคำ — regex word-boundary ทั่วไป (กันพยัญชนะข้างเคียงทุกตัว) ใช้ไม่ได้
+# เพราะจะกันคำที่ต่อกันแบบปกติด้วย เช่น "จังหวัดชุมพร" (ด+ช ติดกัน แต่คนละคำ) จึงไม่ตรวจ boundary
+# ทั่วไป แต่ระบุเฉพาะ "จังหวัดสั้นที่เป็นคำไทยทั่วไปด้วย" + "คำต่อท้ายที่รู้ว่าไม่ใช่ส่วนของจังหวัด"
+# เจาะจงเป็นคู่ๆ ไป (เช่น "น่าน"+"นอน" จาก "น่านนอนอยู่บ้าน", "อ่างทอง"+"น้ำแข็ง" จาก "อ่างทองน้ำแข็ง")
+# จังหวัดอื่นที่เหลือ (ชื่อยาว ไม่ชนกับคำไทยทั่วไป) ใช้ substring match ตรงๆ ได้ปลอดภัย
+_AMBIGUOUS_PROVINCE_SUFFIXES = {
+    "น่าน": ("นอน", "นะ", "น้ำ"),
+    "อ่างทอง": ("น้ำแข็ง", "คำ"),
+    "ตาก": ("อากาศ", "ผ้า", "หน้า"),
+    "แพร่": ("หลาย", "กระจาย"),
+}
+
+
 def find_province_in_text(text: str) -> str:
-    """หาว่าในข้อความมีชื่อจังหวัดไทยไหม คืนชื่อจังหวัด หรือ '' ถ้าไม่เจอ"""
+    """หาว่าในข้อความมีชื่อจังหวัดไทยไหม คืนชื่อจังหวัด หรือ '' ถ้าไม่เจอ
+    จังหวัดสั้นที่เป็นคำไทยทั่วไปด้วย (ดู _AMBIGUOUS_PROVINCE_SUFFIXES) กันเฉพาะคำต่อท้ายที่รู้ว่า
+    ไม่ใช่ส่วนของชื่อจังหวัด (เช่น 'น่านนอน' ไม่ใช่ 'น่าน') ไม่ใช้ word-boundary ทั่วไปเพราะภาษาไทย
+    ไม่เว้นวรรคระหว่างคำ จะกันคำที่ต่อกันแบบปกติ (เช่น 'จังหวัดชุมพร') ผิดไปด้วย"""
     for prov in THAI_PROVINCES:
-        if prov in text:
-            return prov
+        idx = text.find(prov)
+        if idx == -1:
+            continue
+        suffixes = _AMBIGUOUS_PROVINCE_SUFFIXES.get(prov)
+        if suffixes and text[idx + len(prov):].startswith(suffixes):
+            continue
+        return prov
     return ""
 
 
 def find_saved_location(mem: dict) -> str:
     """หา 'จังหวัดประจำตัว' ของผู้ใช้จากความจำ (facts) — เผื่อไม่ได้พิมพ์มาในข้อความ
-    มองหา fact ที่มีชื่อจังหวัด เช่น 'อยู่ชุมพร' / 'อาศัยที่นครศรีธรรมราช'"""
-    for fact in mem.get("facts", []):
-        prov = find_province_in_text(fact)
-        if prov:
-            return prov
+    มองหาเฉพาะ fact หมวด 'ที่อยู่' (เช่น 'อยู่ชุมพร' / 'อาศัยที่นครศรีธรรมราช') ก่อน
+    ถ้าไม่มีเลยค่อย fallback ไปหาใน fact แบบเก่า (เก็บเป็น string ล้วน ก่อนมีระบบ category)
+    — กันดึงจังหวัดผิดจาก fact หมวดอื่น เช่น 'เรื่องที่สนใจ' = 'ชอบเที่ยวภูเก็ต' มาใช้เป็นบ้านผิดๆ"""
+    facts = mem.get("facts", [])
+    for fact in facts:
+        if isinstance(fact, dict) and fact.get("category") == "ที่อยู่":
+            prov = find_province_in_text(fact.get("text", ""))
+            if prov:
+                return prov
+    for fact in facts:
+        if isinstance(fact, str):
+            prov = find_province_in_text(fact)
+            if prov:
+                return prov
     return ""
 
 
