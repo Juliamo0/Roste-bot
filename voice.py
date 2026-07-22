@@ -42,6 +42,7 @@ from pathlib import Path
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 import soundfile as sf
+from dotenv import load_dotenv
 
 # ไม่ต้อง config handler เอง — bot.py ตั้ง root logger ไว้แล้ว (rotating file + console)
 logger = logging.getLogger("roste.voice")
@@ -52,7 +53,11 @@ SPEED       = 0.90
 PITCH_SEMI  = 5.292
 OUT_SR      = 40000
 
-MODEL_DIR   = r"D:\rvc_voice_model"
+# path โมเดลเสียง RVC — ตั้งผ่าน .env (RVC_MODEL_DIR) ได้ เพราะแต่ละเครื่องวางคนละที่
+# (แล็ปท็อป D:\rvc_voice_model, server ที่ไม่มีไดรฟ์ D: → เช่น C:\Users\User\rvc_voice_model)
+# load_dotenv ที่นี่กัน voice ถูก import ก่อน config → getenv อ่านค่าใน .env ไม่เจอ (idempotent เรียกซ้ำได้)
+load_dotenv()
+MODEL_DIR   = os.getenv("RVC_MODEL_DIR", r"D:\rvc_voice_model")
 DEVICE      = "cuda:0"
 INDEX_RATE  = 0.5
 PROTECT     = 0.33

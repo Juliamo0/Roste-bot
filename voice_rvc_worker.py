@@ -20,7 +20,7 @@ import time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-MODEL_DIR  = r"D:\rvc_voice_model"
+MODEL_DIR  = os.getenv("RVC_MODEL_DIR", r"D:\rvc_voice_model")  # inherit env จาก bot (parent) — server ตั้งใน .env
 DEVICE     = "cuda:0"
 F0_UP_KEY  = 0
 F0_METHOD  = "rmvpe"
