@@ -211,6 +211,36 @@ class TestGetPowerOutage:
             result = asyncio.run(datasources.get_power_outage(69, "ชุมพร"))
         assert "ยังไม่มีประกาศ" in result
 
+    def test_filters_by_requested_province_not_home(self):
+        # multi-province: ขอจังหวัดอื่น (ไม่ใช่จังหวัดบ้าน) ต้องได้ของจังหวัดนั้น ไม่ปนจังหวัดบ้าน
+        # เจอจริงตอนเทสสด: ถามนครศรีฯ แต่โค้ดเดิมกรองเหลือแค่ชุมพร (จังหวัดบ้าน) เสมอ
+        data = {"data": [
+            {"PROVINCE_ID": 69, "PROVINCE": "ชุมพร", "AREA": "อ.เมืองชุมพร",
+             "END_DATE": _FUTURE, "START_DATE": _FUTURE,
+             "START_DATE_DISPLAY": "01/07/2568 09:00", "END_DATE_DISPLAY": "01/07/2568 17:00"},
+            {"PROVINCE_ID": 80, "PROVINCE": "นครศรีธรรมราช", "AREA": "อ.ทุ่งสง",
+             "END_DATE": _FUTURE, "START_DATE": _FUTURE,
+             "START_DATE_DISPLAY": "01/07/2568 09:00", "END_DATE_DISPLAY": "01/07/2568 17:00"},
+        ]}
+        mock = _make_session_mock(json_data=data)
+        with patch("aiohttp.ClientSession", mock):
+            result = asyncio.run(datasources.get_power_outage(province_name="นครศรีธรรมราช"))
+        assert "อ.ทุ่งสง" in result           # ได้ของนครศรีฯ
+        assert "อ.เมืองชุมพร" not in result    # ไม่ปนของชุมพร (จังหวัดบ้าน)
+
+    def test_province_name_prefix_normalized(self):
+        # "จังหวัดนครศรีธรรมราช" ต้อง match "นครศรีธรรมราช" ในข้อมูล + ไม่โชว์ prefix ซ้ำ (จังหวัดจังหวัด)
+        data = {"data": [
+            {"PROVINCE_ID": 80, "PROVINCE": "นครศรีธรรมราช", "AREA": "อ.ทุ่งสง",
+             "END_DATE": _FUTURE, "START_DATE": _FUTURE,
+             "START_DATE_DISPLAY": "01/07/2568 09:00", "END_DATE_DISPLAY": "01/07/2568 17:00"},
+        ]}
+        mock = _make_session_mock(json_data=data)
+        with patch("aiohttp.ClientSession", mock):
+            result = asyncio.run(datasources.get_power_outage(province_name="จังหวัดนครศรีธรรมราช"))
+        assert "อ.ทุ่งสง" in result
+        assert "จังหวัดจังหวัด" not in result
+
     def test_http_non_200_returns_status_message(self):
         mock = _make_session_mock(status=500)
         with patch("aiohttp.ClientSession", mock):
