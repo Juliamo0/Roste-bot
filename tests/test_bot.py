@@ -846,6 +846,32 @@ class TestFixPersonaSlips:
         # "นะครับ" ต้องกลายเป็น "นะคะ" ไม่ใช่ "นะค่ะ" (สะกดผิด)
         assert persona.fix_persona_slips("ขอบคุณนะครับ") == "ขอบคุณนะคะ"
 
+    def test_cjk_chinese_stripped_midsentence(self):
+        import persona
+        # เคสจริงจาก stress test qwen3:8b: qwen (โมเดลจีน) บลีดคำจีนกลางประโยคไทย
+        # (职场 = "ที่ทำงาน") reply_broke_character จับไม่ได้เพราะมีไทยรอบๆ
+        out = persona.fix_persona_slips("ปัญหาใน职场ก็มาจากความเข้าใจผิด")
+        assert out == "ปัญหาในก็มาจากความเข้าใจผิด"
+
+    def test_cjk_stripped_but_thai_kept(self):
+        import persona
+        import re
+        out = persona.fix_persona_slips("สวัสดีค่ะ 你好 ยินดีที่ได้คุยกันนะคะ")
+        assert not re.search(r"[㐀-鿿]", out)   # ไม่เหลืออักษรจีน
+        assert "สวัสดีค่ะ" in out and "ยินดีที่ได้คุยกันนะคะ" in out
+
+    def test_cjk_double_space_collapsed(self):
+        import persona
+        # ลบจีนที่มีช่องว่างขนาบ ต้องไม่ทิ้งช่องว่างซ้ำ
+        assert "  " not in persona.fix_persona_slips("ปัญหาใน 职场 ก็มา")
+
+    def test_na_kaa_misspelling_fixed(self):
+        import persona
+        # โมเดลชอบพิมพ์ "นะค่ะ" (ผิด) ที่ถูกคือ "นะคะ"
+        assert persona.fix_persona_slips("ขอบคุณนะค่ะ") == "ขอบคุณนะคะ"
+        # "ค่ะ" เดี่ยวๆ ต้องไม่โดนแตะ (ถูกอยู่แล้ว)
+        assert persona.fix_persona_slips("สวัสดีค่ะ") == "สวัสดีค่ะ"
+
 
 # ── rate limiting — cooldown ต่อ user + guild allowlist + SerpApi daily quota ──
 
