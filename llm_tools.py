@@ -245,7 +245,10 @@ async def _tool_get_current_time(args: dict, mem: dict) -> str:
 
 
 async def _tool_get_weather(args: dict, mem: dict) -> str:
-    province = (args.get("province") or "").strip() or HOME_PROVINCE_NAME
+    # ลำดับ fallback: จังหวัดที่ผู้ใช้ระบุมาตรงๆ -> จังหวัดที่เคยบอกไว้ใน fact "ที่อยู่" ->
+    # จังหวัดบ้านของเจ้าของบอท (ค่าคงที่) — เดิมข้ามขั้นกลางไปเลย ทำให้คนที่เคยบอก "อยู่ชุมพร"
+    # ไว้แล้ว ถามอากาศลอยๆ กลับได้อากาศจังหวัดบ้านเจ้าของบอทแทน (ไม่ตรงกับที่ search_places ทำ)
+    province = (args.get("province") or "").strip() or find_saved_location(mem) or HOME_PROVINCE_NAME
     # ลองกรมอุตุฯ (TMD) ก่อน — แม่นสำหรับไทย — รับได้ทั้งชื่อจังหวัดไทยตรงๆ หรือชื่อเมืองอังกฤษ
     # ถ้าไม่ตรงเป๊ะเลย ลองสะกดใกล้เคียง (เช่น "เชียงไหม่" -> "เชียงใหม่") ก่อนปล่อยไป Open-Meteo
     # สำรอง — กันเสียโอกาสใช้ TMD (แม่นกว่า) ทั้งที่พิมพ์ผิดแค่นิดเดียว
@@ -277,7 +280,8 @@ async def _tool_get_weather(args: dict, mem: dict) -> str:
 async def _tool_get_power_outage(args: dict, mem: dict) -> str:
     # หมายเหตุ: รองรับเฉพาะจังหวัดบ้านที่ตั้งค่าไว้ (HOME_PROVINCE_ID/NAME) — ไม่มี mapping
     # ชื่อจังหวัดอื่น → PEA province_id ให้ใช้ ตาม tool description ที่บอกโมเดลไว้แล้ว
-    province = (args.get("province") or "").strip() or HOME_PROVINCE_NAME
+    # ลำดับ fallback เดียวกับ _tool_get_weather: ผู้ใช้ระบุ -> fact "ที่อยู่" -> จังหวัดบ้านเจ้าของบอท
+    province = (args.get("province") or "").strip() or find_saved_location(mem) or HOME_PROVINCE_NAME
     # validate ชื่อจังหวัดก่อนยิง PEA เหมือน _tool_get_weather ทำ — ไม่งั้นถ้าโมเดลสะกดเพี้ยน
     # (เช่น "นครศรีธรรมราชย์" หรือใส่ชื่ออำเภอมาแทนจังหวัด) get_power_outage() จะ exact-match
     # ไม่เจอแล้วคืน "ไม่มีประกาศตัดไฟ" ซึ่งฟังดูเหมือนคำตอบถูกต้อง ทั้งที่จริงคือหาไม่เจอเพราะชื่อผิด
