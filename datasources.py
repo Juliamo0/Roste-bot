@@ -5,6 +5,7 @@
 แยกออกมาจาก bot.py เพราะไม่พึ่งอะไรในนั้นเลยนอกจาก config (TMD_TOKEN) — แต่ละฟังก์ชัน
 คืนข้อความดิบล้วนๆ ไม่รู้เรื่อง tool-calling/persona (ส่วนนั้นอยู่ใน _tool_* wrapper ใน bot.py)
 """
+import difflib
 import re
 import aiohttp
 
@@ -62,6 +63,17 @@ def find_province_in_text(text: str) -> str:
             continue
         return prov
     return ""
+
+
+def fuzzy_match_province(name: str, cutoff: float = 0.7) -> str:
+    """หาจังหวัดที่สะกดใกล้เคียง 'name' ที่สุด คืนชื่อจังหวัดที่ถูกต้อง หรือ '' ถ้าไม่มีตัวไหนใกล้พอ
+    ใช้แก้ปัญหาผู้ใช้/โมเดลพิมพ์จังหวัดผิดเล็กน้อย (เช่น 'นครศรีธรรมราชย์', 'เชียงไหม่') โดยไม่ต้อง
+    ถามซ้ำ — เหมือนที่ Claude เข้าใจคำพิมพ์ผิดได้โดยไม่ต้องให้ผู้ใช้พิมพ์ใหม่ทุกครั้ง
+    cutoff 0.7 = ต้องคล้ายอย่างน้อย 70% กันจับคนละจังหวัดมั่วๆ (เช่น 'ตาก' ไม่ควรจับเป็น 'ตรัง')"""
+    if not name:
+        return ""
+    matches = difflib.get_close_matches(name, THAI_PROVINCES, n=1, cutoff=cutoff)
+    return matches[0] if matches else ""
 
 
 def find_saved_location(mem: dict) -> str:
