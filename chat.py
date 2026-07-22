@@ -8,6 +8,7 @@ user_message) คืน reply เป็น string ล้วน ไม่แต�
 import asyncio
 import logging
 import random
+import re
 
 import memory
 import persona
@@ -181,11 +182,31 @@ def _maybe_append_summary_notice(user_id: int, will_summarize: bool, reply: str)
     return reply + separator + phrase, True
 
 
+# คำถาม "ย้อนถามขอข้อมูลเพิ่ม" ของรอสเต้ — ขอจังหวัด/พื้นที่/ให้ระบุเจาะจงขึ้น เพื่อจะได้ตอบตรง
+# ถ้าข้อความล่าสุดของบอทเข้าเงื่อนไขนี้ ข้อความถัดไปของผู้ใช้คือ "คำตอบ" ไม่ใช่การเปลี่ยนหัวข้อ
+_CLARIFY_QUESTION_RE = re.compile(
+    r"บอกจังหวัด|จังหวัด(ไหน|อะไร|ที่คุณ|ที่อยู่|ของคุณ)|อยู่(จังหวัด|ที่ไหน|แถวไหน|อำเภอ)|"
+    r"อำเภอไหน|แถวไหน|พื้นที่ไหน|ระบุ(จังหวัด|ให้เจาะจง|มากขึ้น|เพิ่ม)|เจาะจง(ขึ้น|กว่านี้|มากขึ้น)|"
+    r"อยากได้แบบไหน|ประเภทไหน|ชนิดไหน|อยากหาอะไร"
+)
+
+
 async def detect_topic_change(new_message: str, history_pairs: list) -> bool:
     """ตรวจว่าข้อความใหม่เปลี่ยน "หมวดใหญ่" จาก history ที่สะสมอยู่ไหม (LLM call เบา)
     - คืน False ถ้า history ว่าง หรือ history < 2 คู่ (บทสั้นเกินไม่คุ้มสรุป)
+    - คืน False ถ้ารอสเต้เพิ่งย้อนถามขอข้อมูล (จังหวัด/ให้เจาะจง) — ข้อความใหม่คือคำตอบ ไม่ใช่หัวข้อใหม่
     - คืน False ถ้าเรียก LLM ไม่สำเร็จ (fail-safe)"""
     if not history_pairs:
+        return False
+    # 🚫 ถ้าข้อความล่าสุดของรอสเต้เป็น "คำถามย้อนถามขอข้อมูลเพิ่ม" (ขอจังหวัด/ให้ระบุเจาะจง) แสดงว่า
+    #    ข้อความใหม่ของผู้ใช้คือ "คำตอบ" ของคำถามนั้น = คุยเรื่องเดิมต่อ ไม่ใช่เปลี่ยนหัวข้อ ห้ามล้าง history
+    #    เจอจริง (เทสสด): บอทถามจังหวัด → ผู้ใช้ตอบ "จังหวัดชุมพร" → topic-change ล้าง context →
+    #    โมเดลเหลือแค่ชื่อจังหวัดลอยๆ เดาไปเรียก get_power_outage ตอบเรื่องไฟดับแทนร้านอาหาร
+    last_assistant = next(
+        (m.get("content", "") for m in reversed(history_pairs) if m.get("role") == "assistant"),
+        "",
+    )
+    if _CLARIFY_QUESTION_RE.search(last_assistant):
         return False
     # guard: ต้องมีอย่างน้อย 2 คู่ (4 messages) ในบทเดิม ถึงจะคุ้มสรุป
     pair_count = sum(1 for m in history_pairs if m.get("role") == "user")
