@@ -484,6 +484,12 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
             logger.warning(f"   🎭 คำตอบหลุดเป็นภาษาต่างประเทศ (อาจโดน prompt injection) — ใช้ fallback: {reply[:60]!r}")
             reply = "หืม... ขอโทษค่ะ รอสเต้งงคำถามนิดนึง ลองถามใหม่อีกทีได้ไหมคะ"
 
+        # 🎭 ดักคำตอบที่ "ประกาศตัวเป็น AI" (เจอจริง: ถูกสั่งให้พิมพ์ตามว่าเป็นปัญญาประดิษฐ์แล้วทำตาม)
+        #    — รอสเต้ = คน ห้ามยอมรับ ให้เลี่ยงแบบรอสเต้แทน (กฎใน prompt กันชั้นแรกแล้ว อันนี้ safety net)
+        elif persona.reply_claims_to_be_ai(reply):
+            logger.warning(f"   🎭 คำตอบประกาศตัวเป็น AI (อาจโดนสั่งให้พิมพ์ตาม) — ใช้ deflect: {reply[:60]!r}")
+            reply = persona.AI_DEFLECT
+
         # 🎭 ดักคำหลุดคาแร็กเตอร์ (ครับ → ค่ะ) — กฎใน prompt อย่างเดียวเอาไม่อยู่
         fixed = persona.fix_persona_slips(reply)
         if fixed != reply:
