@@ -15,6 +15,7 @@
 import os
 import json
 import logging
+import re
 
 # ไม่ต้อง config handler เอง — bot.py ตั้ง root logger ไว้แล้ว (rotating file + console)
 logger = logging.getLogger("roste.memory")
@@ -49,13 +50,14 @@ def load_memory(user_id):
                 mem = json.load(f)
             # กันไฟล์เก่าที่ยังไม่มี key ครบ
             mem.setdefault("name", "")
+            mem.setdefault("preferred_name", "")
             mem.setdefault("facts", [])
             mem.setdefault("history", [])
             mem.setdefault("summaries", [])
             return mem
         except Exception as e:
             logger.warning(f"   ↳ อ่านความจำไม่สำเร็จ: {e}")
-    return {"name": "", "facts": [], "history": [], "summaries": []}
+    return {"name": "", "preferred_name": "", "facts": [], "history": [], "summaries": []}
 
 
 def save_memory(user_id, mem):
@@ -383,6 +385,11 @@ def recall_summaries(mem, user_message: str) -> list:
     return [text for _, text in scored[:5]]
 
 
+# จับประโยค "ฉันชื่อ X" / "ผมชื่อ X" / "หนูชื่อ X" ที่บ่งบอกชื่อที่ผู้ใช้อยากให้เรียก
+# (ต่างจาก mem["name"] ที่เป็น Discord username — ดู preferred_name)
+_SELF_NAME_RE = re.compile(r"^(?:ฉัน|ผม|หนู)ชื่อ(.+?)(?:นะ|น่ะ|ค่ะ|ครับ|จ้ะ|จ๊ะ)?$")
+
+
 def handle_memory_command(user_id, user_name, text):
     """จัดการคำสั่งเกี่ยวกับความจำโดยตรง (ไม่ต้องเรียกโมเดล)
     คืนค่าข้อความตอบกลับถ้าเป็นคำสั่ง, คืน None ถ้าไม่ใช่"""
@@ -397,6 +404,17 @@ def handle_memory_command(user_id, user_name, text):
             mem = load_memory(user_id)
             if user_name:
                 mem["name"] = user_name
+
+            # ถ้า fact เป็นการบอกชื่อที่อยากให้เรียก ("ฉันชื่อ X") เก็บลง preferred_name แยกต่างหาก
+            # จาก mem["name"] (Discord username) เด็ดขาด — เจอจริง (stress test): เดิม fact แบบนี้
+            # ถูกเก็บปนกับ facts ทั่วไป แล้ว mem["name"] (Discord username) ก็ยังถูกอัปเดตทับทุกครั้ง
+            # ที่คุย ทำให้ context มี "ชื่อเรียก: X" กับ "ฉันชื่อ Y" ขัดกันเอง โมเดล (qwen3:8b) สับสน
+            # จนเดาชื่อที่สามมั่วๆ ไม่ว่าจะเขียนกฎ prompt ชัดแค่ไหนก็ยังพลาด ต้องแยก preferred_name
+            # ให้เป็นค่าเดียวชัดเจน ไม่ปนกับ Discord username ตั้งแต่จุดบันทึกเลย
+            name_match = _SELF_NAME_RE.match(fact)
+            if name_match:
+                mem["preferred_name"] = name_match.group(1).strip()
+
             added = add_fact(mem, fact)
             save_memory(user_id, mem)
             if added:

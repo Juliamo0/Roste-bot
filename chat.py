@@ -372,17 +372,37 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
         stats.finish_message(_stats_token)
 
 
+# คำถามถามชื่อตัวเองตรงๆ — ตอบจาก mem["preferred_name"] ตรงๆ ไม่ผ่านโมเดล
+# เจอจริง (stress test): "จำไว้ว่าฉันชื่อปอนด์" แล้วถาม "ฉันชื่ออะไรนะ" ทั้งที่ preferred_name
+# ถูกบันทึกไว้ถูกต้องแล้ว แต่โมเดล (qwen3:8b) สับสนระหว่าง mem["name"] (Discord username) กับ
+# preferred_name ที่ต่างกัน แล้วเดาชื่อที่สามมั่วๆ (แม้เขียนกฎ prompt ชัดให้ยึด preferred_name
+# เป็นหลักก็ยังพลาด 3/3 รอบ — เกินความสามารถโมเดลขนาดนี้จะตัดสินใจถูกทุกครั้ง) จึงตอบตรงๆ
+# ผ่านโค้ดเลย ไม่ต้องพึ่งโมเดลตัดสินใจ
+_ASK_OWN_NAME_RE = re.compile(r"^(ฉัน|ผม|หนู|กู|เรา)ชื่ออะไร(นะ|น่ะ|เหรอ|หรอ)?[?ๆ]?$")
+
+
 async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> str:
     async with get_user_lock(user_id):
         mem = load_memory(user_id)
         if user_name:
             mem["name"] = user_name  # อัปเดตชื่อเรียกล่าสุดเสมอ
 
+        if _ASK_OWN_NAME_RE.match(user_message.strip()):
+            preferred_name = mem.get("preferred_name") or ""
+            if preferred_name:
+                return f"คุณชื่อ{preferred_name}ไงคะ จำได้อยู่แล้ว"
+
         # 🧠 สร้างบล็อก "สิ่งที่รอสเต้จำได้เกี่ยวกับคนนี้" แล้วต่อท้าย system prompt
         #    ใช้ selective recall — ดึงเฉพาะ fact ที่เกี่ยวกับข้อความนี้ (กัน context ล้น)
+        #    preferred_name (ชื่อที่ผู้ใช้สั่ง "จำไว้ว่าฉันชื่อ...") มาก่อน mem["name"] (Discord
+        #    username) เสมอ และ inject แค่ตัวเดียว ไม่ใส่ทั้งคู่พร้อมกัน — เจอจริง (stress test):
+        #    เดิม inject ทั้ง "ชื่อเรียก: <discord>" และ fact "ฉันชื่อ<preferred>" พร้อมกันเสมอ
+        #    ทำให้ context มีชื่อขัดแย้งกันเองในทุกข้อความ ไม่ใช่แค่ตอนถามชื่อตรงๆ โมเดล (qwen3:8b)
+        #    สับสนจนเดาชื่อที่สามมั่วๆ ได้ตลอดเวลา ไม่ใช่แค่บั๊กเฉพาะจุดเดียว
         profile_lines = []
-        if mem.get("name"):
-            profile_lines.append(f"- ชื่อเรียก: {mem['name']}")
+        display_name = mem.get("preferred_name") or mem.get("name")
+        if display_name:
+            profile_lines.append(f"- ชื่อเรียก: {display_name}")
         for fact in memory.recall_facts(mem, user_message):
             profile_lines.append(f"- {fact}")
 
