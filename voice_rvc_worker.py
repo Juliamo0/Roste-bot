@@ -20,6 +20,18 @@ import time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+# torch>=2.6 flipped torch.load default to weights_only=True, which rejects
+# fairseq's hubert_base.pt (it stores a fairseq Dictionary global) and makes RVC
+# fail with a downstream "'tuple' object has no attribute 'dtype'". The RVC base
+# models are local and trusted, so restore the pre-2.6 behaviour. Needed on
+# Blackwell (torch 2.11/cu128) where downgrading torch is not an option.
+import torch as _torch
+_orig_torch_load = _torch.load
+def _torch_load_compat(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _orig_torch_load(*args, **kwargs)
+_torch.load = _torch_load_compat
+
 MODEL_DIR  = os.getenv("RVC_MODEL_DIR", r"D:\rvc_voice_model")  # inherit env จาก bot (parent) — server ตั้งใน .env
 DEVICE     = "cuda:0"
 F0_UP_KEY  = 0

@@ -12,6 +12,40 @@ import sys, os, time, json, traceback
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
+# torchaudio 2.11 dropped its built-in audio backends and routes load/save through
+# torchcodec, which needs FFmpeg *shared* DLLs we don't ship -> f5_tts_th's internal
+# torchaudio.load(ref_audio) dies with "TorchCodec is required". Route torchaudio's
+# audio I/O through soundfile (already installed) instead. Must run BEFORE importing
+# f5_tts_th. Needed on Blackwell (torch 2.11/cu128) where downgrading torch isn't an option.
+import torchaudio as _ta
+import soundfile as _sf
+import torch as _torch
+
+def _ta_load(filepath, frame_offset=0, num_frames=-1, normalize=True,
+             channels_first=True, format=None, buffer_size=4096, backend=None):
+    data, sr = _sf.read(str(filepath), dtype="float32", always_2d=True)  # (frames, channels)
+    if frame_offset or num_frames != -1:
+        end = None if num_frames == -1 else frame_offset + num_frames
+        data = data[frame_offset:end]
+    tensor = _torch.from_numpy(data.T.copy())  # (channels, frames)
+    return (tensor, sr) if channels_first else (tensor.t(), sr)
+
+def _ta_save(filepath, src, sample_rate, channels_first=True, **_kw):
+    arr = src.detach().cpu().numpy()
+    if channels_first and arr.ndim == 2:
+        arr = arr.T
+    _sf.write(str(filepath), arr, sample_rate)
+
+class _TAInfo:
+    def __init__(self, sr, frames, ch):
+        self.sample_rate, self.num_frames, self.num_channels = sr, frames, ch
+
+def _ta_info(filepath, *_a, **_k):
+    i = _sf.info(str(filepath))
+    return _TAInfo(i.samplerate, i.frames, i.channels)
+
+_ta.load, _ta.save, _ta.info = _ta_load, _ta_save, _ta_info
+
 MODEL_VERSION = "v2"
 
 print(f"F5_WORKER_START", flush=True)
