@@ -14,7 +14,7 @@ import memory
 import persona
 import stats
 import vectormemory
-from datasources import find_province_in_text
+from datasources import find_province_in_text, fuzzy_match_province
 from llm_tools import TOOLS, TOOL_HANDLERS, _validate_tool_args, _strip_ungrounded_optional_args
 from ollama_client import _chat_once, _get_json_post, _strip_think, MODEL
 
@@ -198,17 +198,50 @@ _CLARIFY_QUESTION_RE = re.compile(
 # กลับไปเรื่องกิน — บังคับ (deterministic) เรียก search_places ไปเลยแทนรอให้โมเดลตัดสินใจ
 _FOOD_TALK_RE = re.compile(r"กิน|เมนู|ร้าน|อาหาร|ของกิน|หิว")
 
+# กลุ่มคำที่บ่งชี้ว่า assistant reply ล่าสุดตอบเรื่องอะไร (ไฟดับ/อากาศ/น้ำมัน) จับคู่กับ tool ที่ต้อง
+# เรียกซ้ำเมื่อผู้ใช้พิมพ์แค่ชื่อจังหวัดใหม่มาต่อ — เจอจริง (stress test): "มีไฟดับที่นครศรีธรรมราช
+# ไหม" ตอบถูก แล้วถาม "แล้วสุราษฎร์ล่ะ" (ไม่มีคำว่าไฟดับเลย ดูจากบริบทเท่านั้น) โมเดลไม่เรียก tool
+# ซ้ำ กลับถามว่า "อยากถามเรื่องอะไร" ทั้งที่ context ชัดเจนอยู่แล้วว่าเป็นเรื่องไฟดับ — เหมือน
+# pattern เดียวกับ "กินอะไรดี" ที่โมเดลตัดสินใจซับซ้อนไม่ได้ ต้องบังคับ action แทน
+_TOPIC_TOOL_MAP = (
+    (re.compile(r"ไฟดับ|ตัดไฟ|งดจ่ายไฟ"), "get_power_outage", "province"),
+    (re.compile(r"อากาศ|ฝนตก|องศา|อุณหภูมิ|พกร่ม"), "get_weather", "province"),
+)
+
+
+# คำเชื่อม/ถามต่อเนื่องที่ไม่นับเป็น "เจตนาอื่น" — เจอจริง (stress test): "แล้วสุราษฎร์ล่ะ" (ถามจังหวัด
+# ถัดไปต่อจากที่คุยไฟดับ) ต้องยังนับเป็น "แค่ชื่อจังหวัด" ทั้งที่มีคำว่า "แล้ว"/"ล่ะ" ปนอยู่ด้วย
+_FOLLOWUP_WORDS_RE = re.compile(r"แล้ว|ล่ะ|เอ่อ|อ่ะ|ล่ะคะ|ล่ะค่ะ")
+
 
 def _is_bare_province_message(text: str) -> str:
     """คืนชื่อจังหวัดถ้าข้อความ "เป็นแค่ชื่อจังหวัด" ล้วนๆ (ไม่ใช่ประโยคยาวที่บังเอิญมีชื่อจังหวัดปน)
-    เช่น 'จังหวัดชุมพร' หรือ 'ชุมพรค่ะ' นับ แต่ 'ชุมพรมีที่เที่ยวเยอะไหม' ไม่นับ (มีคำถามอื่นปนมาด้วย
-    ต้องปล่อยให้ native tool-calling ตัดสินใจตามปกติ ไม่ใช่ force เพราะมีเจตนาอื่นที่ชัดเจนกว่า)"""
+    เช่น 'จังหวัดชุมพร' หรือ 'ชุมพรค่ะ' หรือ 'แล้วสุราษฎร์ล่ะ' (ถามจังหวัดถัดไปต่อเนื่อง) นับ แต่
+    'ชุมพรมีที่เที่ยวเยอะไหม' ไม่นับ (มีคำถามอื่นปนมาด้วย ต้องปล่อยให้ native tool-calling ตัดสินใจ
+    ตามปกติ ไม่ใช่ force เพราะมีเจตนาอื่นที่ชัดเจนกว่า)
+
+    รองรับชื่อจังหวัดแบบย่อด้วย (เช่น "สุราษฎร์" แทน "สุราษฎร์ธานี") — find_province_in_text หา
+    ไม่เจอเพราะคำย่อไม่อยู่ใน THAI_PROVINCES set เลย ต้อง fallback ไป fuzzy_match_province
+    (เหมือน pattern เดียวกับที่แก้ไว้ใน llm_tools._strip_ungrounded_optional_args)"""
     prov = find_province_in_text(text)
-    if not prov:
-        return ""
-    remainder = text.replace(prov, "").replace("จังหวัด", "")
-    remainder = re.sub(r"[ค่ะคะครับนะจ๊ะจ้ะ\s.]+", "", remainder)
-    return prov if not remainder else ""
+    remainder = text
+    if prov:
+        remainder = remainder.replace(prov, "")
+    remainder = remainder.replace("จังหวัด", "")
+    remainder = _FOLLOWUP_WORDS_RE.sub("", remainder)
+    # ตัดคำลงท้ายสุภาพแบบเต็มคำ (alternation) ไม่ใช่ character class ทีละตัวอักษร — เจอจริง:
+    # character class เดิม [ค่ะคะครับ...] ไปกินตัวอักษรที่ปนอยู่กลางชื่อจังหวัดด้วย (เช่น "ร" ใน
+    # "ครับ" ไปลบ "ร" ตัวแรกของ "สุราษฎร์" ทำให้เหลือ "สุาษฎ์" fuzzy match ไม่เจอ) alternation
+    # จับเป็นคำเต็มที่ตำแหน่งท้ายสตริงเท่านั้น จึงไม่ไปกินตัวอักษรกลางคำอื่น
+    remainder = re.sub(r"(?:ค่ะ|คะ|ครับ|นะ|จ๊ะ|จ้ะ)+$", "", remainder.strip())
+    remainder = re.sub(r"[\s.?]+", "", remainder)
+    if prov:
+        return prov if not remainder else ""
+    # ไม่เจอชื่อเต็มเลย ลอง fuzzy ทั้งข้อความหลังตัดคำเชื่อม/ลงท้ายออกแล้ว (เหลือแค่คำย่อจังหวัด)
+    if remainder and len(remainder) >= 2:
+        fuzzy = fuzzy_match_province(remainder)
+        return fuzzy
+    return ""
 
 
 async def detect_topic_change(new_message: str, history_pairs: list) -> bool:
@@ -495,11 +528,34 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
                 (m.get("content", "") for m in reversed(history) if m.get("role") == "assistant"),
                 "",
             )
-            if _FOOD_TALK_RE.search(last_assistant):
+            # เช็คทั้ง last_assistant และ last_user — เจอจริง (regression): บอทถามกลับแบบทั่วไป
+            # ("คุณอยู่แถวไหนหรือคะ? พูดแค่จังหวัดก็ได้แล้วนะ") โดยไม่ echo คำเรื่องอาหารกลับมาเลย
+            # ทำให้ _FOOD_TALK_RE.search(last_assistant) เป็น False (LLM randomness ไม่แน่นอนว่า
+            # จะ echo คำหรือเปล่า) ทั้งที่ last_user ("หาร้านก๋วยเตี๋ยวอร่อยๆให้หน่อย") มีคำชัดเจน
+            # อยู่แล้ว — user_message เป็นแหล่งที่เชื่อถือได้กว่าเพราะมาจากคนพิมพ์ตรงๆ ไม่ผ่านการ
+            # generate ของโมเดลอีกที
+            last_user = next(
+                (m.get("content", "") for m in reversed(history) if m.get("role") == "user"),
+                "",
+            )
+            food_context = _FOOD_TALK_RE.search(last_assistant) or _FOOD_TALK_RE.search(last_user)
+            if food_context:
                 logger.info(f"   🍜 บังคับเรียก search_places (ชื่อจังหวัดลอยๆ ต่อจากคุยเรื่องกิน): {bare_province!r}")
                 forced_tool_calls = [{
                     "function": {"name": "search_places", "arguments": {"query": "ร้านอาหาร", "province": bare_province}}
                 }]
+            else:
+                # ชื่อจังหวัดลอยๆ ต่อจากคุยเรื่องไฟดับ/อากาศ (ดูจากบริบท last_assistant/last_user
+                # เพราะข้อความปัจจุบัน เช่น "แล้วสุราษฎร์ล่ะ" ไม่มีคำเฉพาะทางเลย) — เรียก tool เดิม
+                # ซ้ำด้วยจังหวัดใหม่
+                combined_context = last_assistant + " " + last_user
+                for topic_re, tool_name, param_key in _TOPIC_TOOL_MAP:
+                    if topic_re.search(combined_context):
+                        logger.info(f"   🔁 บังคับเรียก {tool_name} ซ้ำ (ชื่อจังหวัดลอยๆ ต่อจากคุยเรื่องเดิม): {bare_province!r}")
+                        forced_tool_calls = [{
+                            "function": {"name": tool_name, "arguments": {param_key: bare_province}}
+                        }]
+                        break
 
         # 🔁 ลูปเรียกเครื่องมือ: โมเดลตัดสินใจเองว่าต้องใช้เครื่องมือไหน (ถ้าต้อง) วนได้สูงสุด 3 รอบ
         #    ถ้า get_weather สำเร็จแล้วในรอบก่อนหน้า ตัด search_web ออกจากตัวเลือกรอบถัดไปเลย
@@ -529,6 +585,22 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
                 msg = await _chat_once(messages, temperature=reply_temp, tools=turn_tools)
             tool_calls = msg.get("tool_calls")
             if not tool_calls:
+                content = msg.get("content", "") or ""
+                # เจอจริง (stress test): โมเดล "พูดถึงเจตนา" จะเรียก tool ในเนื้อ content แต่ไม่ได้
+                # ใส่ tool_calls จริง (chain-of-thought พูดออกเสียงแล้วหยุดกลางคัน) เช่น "คำถามของ
+                # คุณเกี่ยวกับอากาศ... เราควรเรียกใช้เครื่องมือ get_weather" แล้ว break ออกมาเลย
+                # ทำให้ reasoning ที่ยังไม่ได้ข้อมูลจริงกลายเป็นคำตอบสุดท้ายที่ผู้ใช้เห็น (รวมถึงเดา
+                # วันที่/ข้อมูลอื่นมั่วปนมาด้วย เช่น "วันจันทร์ที่ 25 พฤศจิกายน 2024" ทั้งที่คำถาม
+                # ไม่เกี่ยวกับวันที่เลย) ถ้ายังมีโควตารอบเหลือ ให้ยิงซ้ำแบบไม่แนบ content เดิม
+                # (กันโมเดลเห็น pattern ตัวเองแล้วเลียนแบบซ้ำ) บังคับให้ตัดสินใจให้จบในรอบเดียว
+                if turn_tools and persona.reply_leaks_tool_reasoning(content):
+                    logger.warning(f"   🕳️ โมเดลพูดถึงเจตนาเรียก tool แต่ไม่ได้เรียกจริง — ยิงซ้ำ: {content[:60]!r}")
+                    messages.append({
+                        "role": "system",
+                        "content": "ตัดสินใจให้จบในคำตอบนี้เลย ถ้าต้องใช้เครื่องมือให้เรียกจริงทันที "
+                                    "ไม่ต้องอธิบายว่ากำลังจะเรียกอะไร",
+                    })
+                    continue
                 break  # ไม่ขอเครื่องมือแล้ว = ได้คำตอบสุดท้าย
 
             reply_temp = 0.5  # ได้ข้อมูลจริงจาก tool แล้ว ตอบต่อจากนี้ต้องแม่น ไม่ใช่เดา
@@ -595,11 +667,16 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
         elif persona.reply_leaks_tool_reasoning(reply):
             logger.warning(f"   🕳️ คำตอบลอกวลี tool reasoning — ตัดประโยคที่รั่วออก: {reply[:60]!r}")
             sentences = re.split(r"(?<=[.!?ๆ])\s+|(?<=ค่ะ)\s+|(?<=คะ)\s+|(?<=นะ)\s+", reply)
-            reply = " ".join(
+            cleaned = " ".join(
                 s for s in sentences if not persona.reply_leaks_tool_reasoning(s)
             ).strip()
-            if not reply:
-                reply = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
+            # เจอจริง (stress test): บางครั้งทั้งคำตอบถูก reasoning ปนเปื้อนตั้งแต่ต้น (ไม่ใช่แค่
+            # ประโยคแรก) พอตัดประโยคที่รั่วออกแล้ว ส่วนที่เหลือสั้น/ขาดบริบทจนไม่สมเหตุสมผล เช่น
+            # "ไม่ใช่ข้อเท็จจริง/คำถามที่ต้องการข้อมูลเฉพาะ... ลองเปิดใจรับฟังคำแนะนำจากคนจริงไปเลย"
+            # ตัดประโยคแรกออกแล้วเหลือ "ลองเปิดใจรับฟังคำแนะนำจากคนจริงไปเลย" ซึ่งยังฟังดูแปลกเพราะ
+            # ขาดบริบทของคำถามเดิม (แนะนำหนังสือ) ไปเลย — ถ้าตัดแล้วเหลือสั้นเกินไป (< 15 ตัวอักษร)
+            # ถือว่าไม่พอเป็นคำตอบสมบูรณ์ fallback ทั้งหมดดีกว่าส่งเนื้อครึ่งๆ กลางๆ ไป
+            reply = cleaned if len(cleaned) >= 15 else "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
 
         # 🎭 ดักคำตอบหลุดเป็นภาษาต่างประเทศล้วน (มักโดน prompt injection สั่งให้เปลี่ยนภาษา/เผยตัวตนโมเดล)
         #    — persona รอสเต้ = ไทยล้วนเสมอ ถ้าหลุดเป็นอังกฤษล้วนให้ทิ้งแล้วตอบ fallback แทน
