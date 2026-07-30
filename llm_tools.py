@@ -69,9 +69,15 @@ TOOLS = [
                     "province": {
                         "type": "string",
                         "description": (
+                            # 🧪 ทดลอง (2026-07-30): เดิมบรรทัดล่างเขียนตัวอย่างค่าที่ห้ามใส่ไว้คำต่อคำ
+                            # ("ห้ามใส่ 'ไม่ระบุ' หรือ 'จังหวัดบ้าน'") แต่ bench scenario F วัดได้ว่า
+                            # qwen3:8b ใส่ province='ไม่ระบุ' กลับมา 100% ของรอบที่ผู้ใช้ไม่ระบุจังหวัด
+                            # — คือใส่คำที่ description ห้ามไว้ *คำต่อคำ* ทุกรอบแบบ deterministic
+                            # สมมติฐาน: การเอ่ยคำนั้นในคำสั่งเป็นตัว prime ให้โมเดลหยิบมาใช้เอง
+                            # (negative example กลายเป็น template) จึงตัดตัวอย่างออก คงแต่กฎห้าม
                             "ชื่อจังหวัด/เมืองที่ถามจริงๆ เท่านั้น (เช่น 'เชียงใหม่', 'ภูเก็ต') "
-                            "ถ้าผู้ใช้ไม่ได้ระบุจังหวัด ห้ามใส่ parameter นี้เข้ามาเด็ดขาด "
-                            "ห้ามเขียนคำอธิบาย/ค่า default เอง เช่น ห้ามใส่ 'ไม่ระบุ' หรือ 'จังหวัดบ้าน'"
+                            "ถ้าผู้ใช้ไม่ได้ระบุจังหวัด ให้ละ parameter นี้ไว้ ไม่ต้องส่งมาเลย "
+                            "ค่าที่ส่งมาต้องเป็นชื่อจังหวัดจริงที่ปรากฏในคำถามเท่านั้น"
                         ),
                     }
                 },
@@ -93,9 +99,12 @@ TOOLS = [
                     "province": {
                         "type": "string",
                         "description": (
+                            # 🧪 ทดลองชุดเดียวกับ get_weather.province — ตัดวลีที่บอก "ค่าที่จะใช้แทน"
+                            # ("จะใช้จังหวัดบ้านแทน") ออก เพราะ scenario F เจอ province='บ้าน' 0/3
+                            # จากคำถาม "มีไฟดับแถวบ้านไหมวันนี้" — โมเดลหยิบคำว่า "บ้าน" มาเป็นค่าจริง
                             "ชื่อจังหวัดที่ถามจริงๆ (เช่น 'นครศรีธรรมราช', 'เชียงราย') "
-                            "ถ้าผู้ใช้ไม่ได้ระบุจังหวัด ห้ามใส่ parameter นี้เข้ามา (จะใช้จังหวัดบ้านแทน) "
-                            "ห้ามเดา/ห้ามใส่ค่า default เอง"
+                            "ถ้าผู้ใช้ไม่ได้ระบุจังหวัด ให้ละ parameter นี้ไว้ ไม่ต้องส่งมาเลย "
+                            "ค่าที่ส่งมาต้องเป็นชื่อจังหวัดจริงที่ปรากฏในคำถามเท่านั้น"
                         ),
                     }
                 },
@@ -117,8 +126,12 @@ TOOLS = [
                     "brand": {
                         "type": "string",
                         "description": (
+                            # 🧪 ทดลองชุดเดียวกัน — เดิมท้ายประโยคบอกว่า "(จะใช้ ptt แทน)" แล้ว
+                            # scenario F เจอ brand='ptt' 0/3 จาก "น้ำมันวันนี้ราคาเท่าไหร่" (ไม่ระบุยี่ห้อ)
+                            # คือโมเดลส่งค่า default ที่เราเอ่ยไว้เองกลับมา แทนที่จะละ parameter
                             "รหัสยี่ห้อน้ำมัน: ptt, bcp (บางจาก), shell, caltex, irpc, pt (พีที), "
-                            "susco, pure — ถ้าผู้ใช้ไม่ได้ระบุยี่ห้อ เว้นว่างไว้ได้ (จะใช้ ptt แทน)"
+                            "susco, pure — ส่งมาเฉพาะตอนผู้ใช้ระบุยี่ห้อชัดเจน "
+                            "ถ้าผู้ใช้ไม่ได้ระบุยี่ห้อ ให้ละ parameter นี้ไว้ ไม่ต้องส่งมาเลย"
                         ),
                     }
                 },
@@ -394,6 +407,18 @@ def _validate_tool_args(fn: str, args: dict) -> str | None:
     return None
 
 
+# parameter ที่ค่าต้องเป็น "ชื่อจังหวัดไทย" เท่านั้น — value space ตายตัว (77 จังหวัด) จึงตรวจได้
+# เข้มกว่า param ข้อความอิสระ (query) ที่ต้องยอมรับค่าอะไรก็ได้ที่ผู้ใช้พิมพ์มา
+_PROVINCE_PARAM_KEYS = {"province"}
+
+# brand ก็มี value space ตายตัว (รหัสใน OIL_BRANDS) แต่ค่าที่โมเดลส่งมาเป็น *รหัสอังกฤษ* ('bcp')
+# ขณะที่ผู้ใช้พิมพ์ *ชื่อไทย* ('บางจาก') — substring check จึงหาไม่เจอและตัดทิ้งทุกครั้ง ทำให้ผู้ใช้
+# ถามยี่ห้อเจาะจงแล้วได้ราคายี่ห้อ default (ptt) แทนแบบเงียบๆ (บั๊กที่มีอยู่ก่อน เจอตอนไล่เคส
+# scenario F: โมเดล map 'บางจาก'→'bcp' ถูกต้องแล้ว แต่ guard ตัดของที่ถูกทิ้ง)
+# แก้โดยเทียบ "ชื่อไทยของรหัสนั้น" กับบทสนทนาด้วย ไม่ใช่เทียบแค่ตัวรหัส
+_BRAND_PARAM_KEYS = {"brand"}
+
+
 def _strip_ungrounded_optional_args(fn: str, args: dict, user_message: str,
                                      history: list, mem: dict) -> dict:
     """ตัด optional parameter ที่ "ไม่มีที่มาจริง" ในบทสนทนาทิ้ง (เสมือนโมเดลไม่ได้ใส่มาแต่แรก)
@@ -417,7 +442,12 @@ def _strip_ungrounded_optional_args(fn: str, args: dict, user_message: str,
     วิธีที่ได้ผลจริงคือหา "longest common substring" ระหว่าง val กับ h ตรงๆ ด้วย
     difflib.SequenceMatcher แล้วเทียบสัดส่วนกับความยาว val ("สุราษฎร์" ตรงกับ "สุราษฎร์ธานี"
     ได้ 8/12 ตัวอักษร = 66.7% ผ่าน threshold ชัดเจน) ค่าที่ไม่ใช่จังหวัด (query, brand) ยังใช้
-    substring ตรงๆ เหมือนเดิม"""
+    substring ตรงๆ เหมือนเดิม
+
+    การเช็ค province แยกสาขาด้วย *ชื่อ parameter* (_PROVINCE_PARAM_KEYS) ไม่ใช่ด้วยค่า —
+    เดิมใช้ `val in THAI_PROVINCES` เป็นตัวแยก ทำให้ค่าที่ไม่ใช่จังหวัดเลยตกไปเช็คแบบ substring
+    แล้วหลุดผ่านได้ถ้าคำนั้นอยู่ในข้อความผู้ใช้ (province='บ้าน' จาก "มีไฟดับแถวบ้านไหมวันนี้")
+    ตอนนี้ param ชื่อ province ต้องผ่านทั้ง "เป็นชื่อจังหวัดจริง" และ "มีที่มาในบทสนทนา" """
     schema = next((t["function"] for t in TOOLS if t["function"]["name"] == fn), None)
     if schema is None:
         return args
@@ -431,17 +461,35 @@ def _strip_ungrounded_optional_args(fn: str, args: dict, user_message: str,
     for key, val in args.items():
         if key in required or not isinstance(val, str) or not val.strip():
             continue
-        if val in THAI_PROVINCES:
-            grounded = False
-            for h in haystacks:
-                if not h:
-                    continue
-                sm = difflib.SequenceMatcher(None, val, h)
-                match = sm.find_longest_match(0, len(val), 0, len(h))
-                # อย่างน้อยครึ่งของชื่อจังหวัดต้องตรงกันต่อเนื่อง กันจับคำสั้นๆ ที่บังเอิญคล้ายมั่วๆ
-                if match.size / len(val) >= 0.5:
-                    grounded = True
-                    break
+        if key in _PROVINCE_PARAM_KEYS:
+            # param ที่ต้องเป็น "ชื่อจังหวัด" — เช็ค 2 ชั้น (เดิมแยกสาขาด้วย `val in THAI_PROVINCES`
+            # ทำให้ค่าที่ *ไม่ใช่* จังหวัดเลยตกไปใช้ substring check ธรรมดา แล้วหลุดผ่านได้ถ้าคำนั้น
+            # บังเอิญอยู่ในข้อความผู้ใช้ — เจอจริง (bench scenario F): "มีไฟดับแถวบ้านไหมวันนี้"
+            # → province='บ้าน' ผ่าน grounding เพราะคำว่า "บ้าน" อยู่ในประโยคจริง ทั้งที่ไม่ใช่
+            # ชื่อจังหวัด ปลายทางแปลงเป็น '' อยู่แล้วจึงไม่ตอบผิด แต่เสียงานเปล่าไปหนึ่งชั้น)
+            #
+            # ชั้น 1: ต้องเป็นชื่อจังหวัดจริง (ตรงตัว หรือคำย่อที่ fuzzy หาชื่อเต็มเจอ เช่น
+            #         'สุราษฎร์' → 'สุราษฎร์ธานี') — ตัดค่าที่ไม่ใช่จังหวัดเลยออกตั้งแต่ต้น
+            if val not in THAI_PROVINCES and not fuzzy_match_province(val):
+                grounded = False
+            else:
+                # ชั้น 2: ต้องมีที่มาในบทสนทนาจริง — longest-common-substring กันเคสผู้ใช้พิมพ์
+                # ชื่อย่อแล้วโมเดลเติมเต็ม (ดูคำอธิบายใน docstring)
+                grounded = False
+                for h in haystacks:
+                    if not h:
+                        continue
+                    sm = difflib.SequenceMatcher(None, val, h)
+                    match = sm.find_longest_match(0, len(val), 0, len(h))
+                    # อย่างน้อยครึ่งของชื่อจังหวัดต้องตรงกันต่อเนื่อง กันจับคำสั้นๆ ที่บังเอิญคล้ายมั่วๆ
+                    if match.size / len(val) >= 0.5:
+                        grounded = True
+                        break
+        elif key in _BRAND_PARAM_KEYS:
+            # ผ่านถ้าพบ "รหัส" (bcp) หรือ "ชื่อไทย" (บางจาก) ของยี่ห้อนั้นในบทสนทนา
+            code = val.strip().lower()
+            brand_names = {code, OIL_BRANDS.get(code, "")} - {""}
+            grounded = any(n in h for h in haystacks if h for n in brand_names)
         else:
             grounded = any(val in h for h in haystacks if h)
         if not grounded:

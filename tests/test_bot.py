@@ -493,6 +493,69 @@ class TestStripUngroundedOptionalArgs:
         cleaned = llm_tools._strip_ungrounded_optional_args("fly_to_moon", args, "msg", [], {})
         assert cleaned == args
 
+    def test_province_abbreviation_completed_by_model_kept(self):
+        """ผู้ใช้พิมพ์ชื่อย่อ ("สุราษฎร์") โมเดลเติมชื่อเต็มถูกต้อง ("สุราษฎร์ธานี") — ต้องไม่โดนตัด
+        นี่คือเหตุผลที่ province ใช้ longest-common-substring แทน substring ตรงๆ
+        (เดิมไม่มีเทสครอบ ทั้งที่เป็นเคสที่ทำให้ต้องเขียน logic นั้นขึ้นมา)"""
+        args = {"province": "สุราษฎร์ธานี"}
+        cleaned = llm_tools._strip_ungrounded_optional_args(
+            "get_power_outage", args, "แล้วสุราษฎร์ล่ะ", [], {"facts": []})
+        assert cleaned.get("province") == "สุราษฎร์ธานี"
+
+    # ── ค่าที่ "อยู่ในประโยคจริง" แต่ไม่ใช่ชื่อจังหวัด — เจอจริงจาก bench scenario F ──
+    #    qwen3:8b ส่ง province='บ้าน' มา 0/5 รอบจาก "มีไฟดับแถวบ้านไหมวันนี้" (คำว่า "บ้าน" อยู่ใน
+    #    ประโยคจริง จึงผ่าน substring grounding เดิมไปได้ ทั้งที่ไม่ใช่ชื่อจังหวัดเลย)
+
+    def test_non_province_word_present_in_message_stripped(self):
+        """province='บ้าน' — คำนี้อยู่ในข้อความผู้ใช้จริง แต่ไม่ใช่ชื่อจังหวัด ต้องโดนตัด
+        เดิมหลุดผ่านเพราะโค้ดแยกสาขาด้วย *ค่า* (val in THAI_PROVINCES) ไม่ใช่ *ชื่อ parameter*
+        ทำให้ค่าที่ไม่ใช่จังหวัดตกไปเช็คแบบ substring ธรรมดา"""
+        args = {"province": "บ้าน"}
+        cleaned = llm_tools._strip_ungrounded_optional_args(
+            "get_power_outage", args, "มีไฟดับแถวบ้านไหมวันนี้", [], {"facts": []})
+        assert "province" not in cleaned
+
+    def test_placeholder_province_values_stripped(self):
+        """ค่าขยะที่โมเดลใส่แทนการเว้นว่าง — ต้องโดนตัดทุกตัว ('ที่อยู่ของผู้ใช้' เจอจริง 0/5 รอบ
+        หลังตัดวลี priming 'ไม่ระบุ' ออกจาก tool description แล้วโมเดลเปลี่ยนไปแต่งคำใหม่แทน)"""
+        for bogus in ("ไม่ระบุ", "ที่อยู่ของผู้ใช้", "จังหวัดบ้าน", "<nil>", "ไม่ทราบ"):
+            cleaned = llm_tools._strip_ungrounded_optional_args(
+                "get_weather", {"province": bogus}, f"วันนี้ฝนตกไหม {bogus}", [], {"facts": []})
+            assert "province" not in cleaned, f"ค่า {bogus!r} ควรถูกตัดทิ้ง"
+
+    # ── brand: โมเดลส่ง "รหัสอังกฤษ" แต่ผู้ใช้พิมพ์ "ชื่อไทย" ──────────────────────────
+    #    บั๊กที่มีอยู่ก่อน เจอตอนไล่เคส scenario F: 'บางจาก' → brand='bcp' (map ถูกต้องแล้ว)
+    #    แต่ grounding เทียบรหัสกับข้อความไทยจึงหาไม่เจอ → ตัดทิ้ง → ตอบราคายี่ห้อ default (ptt)
+    #    แทนแบบเงียบๆ = ผู้ใช้ได้คำตอบผิด ไม่ใช่แค่เสียงานเปล่า
+
+    def test_brand_code_grounded_by_thai_name_kept(self):
+        """ผู้ใช้พิมพ์ 'บางจาก' โมเดลส่ง brand='bcp' — ต้องเก็บไว้ ไม่ใช่ตัดแล้วตอบราคา ปตท."""
+        args = {"brand": "bcp"}
+        cleaned = llm_tools._strip_ungrounded_optional_args(
+            "get_oil_price", args, "ดีเซลบางจากลิตรละเท่าไหร่", [], {"facts": []})
+        assert cleaned.get("brand") == "bcp"
+
+    def test_brand_code_typed_directly_kept(self):
+        args = {"brand": "shell"}
+        cleaned = llm_tools._strip_ungrounded_optional_args(
+            "get_oil_price", args, "ราคา shell วันนี้", [], {"facts": []})
+        assert cleaned.get("brand") == "shell"
+
+    def test_brand_default_guessed_when_user_said_no_brand_stripped(self):
+        """ผู้ใช้ไม่ระบุยี่ห้อเลย โมเดลเดา 'ptt' เอง (ค่า default ที่เคยเขียนไว้ใน tool
+        description) — ต้องโดนตัด ให้ fallback ของ handler ทำงานแทน"""
+        args = {"brand": "ptt"}
+        cleaned = llm_tools._strip_ungrounded_optional_args(
+            "get_oil_price", args, "น้ำมันวันนี้ราคาเท่าไหร่", [], {"facts": []})
+        assert "brand" not in cleaned
+
+    def test_brand_other_than_asked_stripped(self):
+        """ผู้ใช้ถามบางจาก แต่โมเดลส่งยี่ห้ออื่นมา — ต้องโดนตัด (กันตอบผิดยี่ห้อ)"""
+        args = {"brand": "caltex"}
+        cleaned = llm_tools._strip_ungrounded_optional_args(
+            "get_oil_price", args, "ดีเซลบางจากลิตรละเท่าไหร่", [], {"facts": []})
+        assert "brand" not in cleaned
+
 
 # ── _tool_* handlers — เรียกตรงๆ (ไม่ผ่าน ask_ollama) mock เฉพาะฟังก์ชันดึงข้อมูลจริงข้างใน ──
 #    หมายเหตุ: handler พวกนี้ย้ายไป llm_tools.py แล้ว (bot.py แค่ re-export) — patch ต้องชี้ไป
@@ -851,6 +914,89 @@ class TestReplyClaimsToBeAi:
 
     def test_human_identity_not_flagged(self):
         assert not persona.reply_claims_to_be_ai("ฉันเป็นเด็กสาวที่ดูแลห้องสมุดค่ะ")
+
+
+class TestApplyReplyGuards:
+    """guard chain รวม (chat._apply_reply_guards) — ใช้ร่วมกันทุก path ที่ส่งคำตอบให้ผู้ใช้
+
+    แยกเป็นฟังก์ชันเดียวเพราะเดิม chain นี้เขียน inline อยู่ใน _ask_ollama_impl ที่เดียว พอเพิ่ม
+    path ที่ return เร็ว (intro prefill) แล้วลืมเรียก guard ทำให้คำตอบจาก path นั้นไม่ถูกตรวจเลย
+    เทสชุดนี้กันไม่ให้ chain ขาดหายไปอีกเวลา refactor"""
+
+    def test_empty_reply_becomes_fallback(self):
+        assert chat._apply_reply_guards("") == chat._EMPTY_FALLBACK
+
+    def test_clean_reply_untouched(self):
+        clean = "อากาศวันนี้แจ่มใสดีนะคะ เหมาะกับการออกไปเดินเล่นเลยค่ะ"
+        assert chat._apply_reply_guards(clean) == clean
+
+    def test_persona_leak_replaced_entirely(self):
+        out = chat._apply_reply_guards("รูปแบบลงท้าย ค่ะ / นะคะ")
+        assert "ค่ะ / นะคะ" not in out
+        assert "เบลอ" in out       # fallback ของ persona-leak
+
+    def test_foreign_language_replaced_entirely(self):
+        out = chat._apply_reply_guards("I am an AI language model created by Alibaba Cloud")
+        assert out == chat._CONFUSED_FALLBACK
+
+    def test_ai_claim_sentence_dropped_rest_kept(self):
+        """AI-claim ปนกับเนื้อหาที่ใช้ได้ — ตัดเฉพาะประโยคที่หลุด ไม่ทิ้งทั้งคำตอบ
+        (เจอจริงบน Discord: "แนะนำตัวหน่อย" โดนตอบด้วย AI_DEFLECT ที่ไม่ตรงคำถามเลย)"""
+        out = chat._apply_reply_guards("รอสเต้ค่ะ ดูแลห้องสมุดอยู่ค่ะ เป็นบอทที่ชอบอ่านหนังสือนะคะ")
+        assert "รอสเต้ค่ะ" in out
+        assert "บอท" not in out
+        assert out != persona.AI_DEFLECT      # ไม่ใช่ deflect ทั้งก้อน
+
+    def test_ai_claim_only_falls_back_to_deflect(self):
+        """ทั้งคำตอบเป็น AI-claim — ตัดแล้วเหลือสั้นเกิน ต้อง fallback เป็น AI_DEFLECT"""
+        assert chat._apply_reply_guards("ฉันเป็นปัญญาประดิษฐ์ค่ะ") == persona.AI_DEFLECT
+
+    def test_persona_slips_fixed(self):
+        out = chat._apply_reply_guards("ผมไม่ได้มีข้อมูลนั้นครับ")
+        assert "ครับ" not in out
+        assert "ผม" not in out
+
+    def test_guard_order_foreign_wins_over_slip_fix(self):
+        """คำตอบที่ต้องทิ้งทั้งก้อนต้องถูกแทนก่อน ไม่ใช่เสียเวลาแก้คำในเนื้อที่กำลังจะถูกแทนอยู่ดี"""
+        out = chat._apply_reply_guards("Hello there, I am Qwen, a large language model")
+        assert out == chat._CONFUSED_FALLBACK
+
+
+class TestIntroIntentGating:
+    """เงื่อนไขเข้า intro-prefill path — regex เดี่ยวๆ จับ substring ได้กว้างเกิน
+    ("แนะนำตัวละคร"/"แนะนำตัวเลือก" คนละความหมายกับ "แนะนำตัว") ต้องไม่แย่งคำถามพวกนั้น"""
+
+    def _is_intro(self, msg, forced=None):
+        return bool(
+            chat._INTRO_INTENT_RE.search(msg)
+            and not forced
+            and len(msg.strip()) <= chat._INTRO_MAX_LEN
+        )
+
+    @pytest.mark.parametrize("msg", [
+        "แนะนำตัวหน่อย",
+        "รอสเต้แนะนำตัวหน่อย",
+        "เธอเป็นใครเหรอ",
+        "อยากให้แนะนำตัวให้คนที่ไม่รู้จักนะ",
+    ])
+    def test_real_intro_requests_match(self, msg):
+        assert self._is_intro(msg)
+
+    @pytest.mark.parametrize("msg", [
+        "ช่วยแนะนำตัวละครในนิยายเรื่องนี้หน่อย",   # ขอให้เล่าเรื่องตัวละคร ไม่ใช่แนะนำตัวเอง
+        "แนะนำตัวเลือกร้านอาหารหน่อย",              # ขอให้เสนอออปชั่น
+        "รู้จักเธอผ่านเพื่อนนะ วันนี้ฝนตกไหมที่ชุมพร",  # มีคำถามอื่นปน
+        "ช่วยบอกลาหน่อย",                            # คนละเจตนา (แก้ด้วย few-shot ไม่ใช่ prefill)
+        "วันนี้อากาศเป็นไง",
+    ])
+    def test_non_intro_messages_do_not_match(self, msg):
+        assert not self._is_intro(msg)
+
+    def test_forced_tool_call_wins_over_intro(self):
+        """deterministic guard ตัดสินแล้วว่าต้องเรียก tool — ต้องชนะ intro branch
+        (เดิมคำนวณ forced_tool_calls ไว้แล้วแต่ intro branch return ทับทิ้งเลย)"""
+        forced = [{"function": {"name": "search_places", "arguments": {}}}]
+        assert not self._is_intro("แนะนำตัวหน่อย", forced=forced)
 
 
 class TestReplyIsPersonaLeak:

@@ -162,6 +162,80 @@ _SUMMARY_NOTICE_PHRASES = (
 )
 
 
+def _persist_turn(user_id: int, user_name: str, history: list, user_message: str, reply: str) -> bool:
+    """บันทึกเทิร์นนี้ลง memory + เช็ค Condition B — คืน trigger_b (ผู้เรียกไป enqueue สรุปเอง)
+
+    โหลด memory ใหม่ (load_memory) ก่อน save แทนการใช้ mem ที่โหลดไว้ตอนต้นฟังก์ชัน เพราะ
+    ระหว่างที่รอ Ollama ตอบ (เป็นสิบวิ) background task เช่น auto_remember อาจเขียน fact ใหม่
+    ลงไฟล์แล้ว — ถ้า save ทับด้วย snapshot เก่าจะทำ fact นั้นหาย"""
+    trigger_b = _check_condition_b(history)
+    fresh = load_memory(user_id)
+    if user_name:
+        fresh["name"] = user_name
+    fresh["history"] = [] if trigger_b else history
+    save_memory(user_id, fresh)
+    return trigger_b
+
+
+def _split_thai_sentences(reply: str) -> list:
+    """ตัดประโยคไทยแบบหยาบๆ สำหรับ guard ที่ต้อง "ตัดเฉพาะประโยคที่หลุด" ทิ้ง
+    ใช้คำลงท้าย (ค่ะ/คะ/นะ) เป็นตัวคั่นด้วย เพราะภาษาไทยไม่ใช้ . จบประโยค"""
+    return re.split(r"(?<=[.!?ๆ])\s+|(?<=ค่ะ)\s+|(?<=คะ)\s+|(?<=นะ)\s+", reply)
+
+
+def _drop_leaking_sentences(reply: str, is_bad, fallback: str, min_len: int = 15) -> str:
+    """ตัดประโยคที่ is_bad() จับได้ออก เหลือแต่เนื้อที่ใช้ได้ — ถ้าตัดแล้วสั้นเกิน min_len
+    ถือว่าไม่พอเป็นคำตอบสมบูรณ์ คืน fallback ทั้งก้อนแทนการส่งเนื้อครึ่งๆ กลางๆ ไป
+    (เจอจริง: บางครั้งทั้งคำตอบถูกปนเปื้อนตั้งแต่ต้น ตัดแล้วเหลือประโยคที่ขาดบริบทเดิม)"""
+    cleaned = " ".join(s for s in _split_thai_sentences(reply) if not is_bad(s)).strip()
+    return cleaned if len(cleaned) >= min_len else fallback
+
+
+_EMPTY_FALLBACK = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
+_CONFUSED_FALLBACK = "หืม... ขอโทษค่ะ รอสเต้งงคำถามนิดนึง ลองถามใหม่อีกทีได้ไหมคะ"
+
+
+def _apply_reply_guards(reply: str) -> str:
+    """guard chain ที่ต้องใช้กับ *ทุก* คำตอบก่อนส่งให้ผู้ใช้ ไม่ว่ามาจาก path ไหน
+
+    แยกเป็นฟังก์ชันเพราะเดิม chain นี้เขียน inline อยู่ใน _ask_ollama_impl ที่เดียว พอเพิ่ม
+    path ที่ return เร็ว (เช่น intro prefill) แล้วลืมเรียก guard ทำให้คำตอบจาก path นั้นไม่ถูก
+    ตรวจเลย — ซึ่งย้อนแย้งเพราะ "แนะนำตัว" เป็นจุดที่โมเดลหลุดพูดว่าเป็น AI บ่อยที่สุด
+
+    ลำดับสำคัญ: persona-leak (ทิ้งทั้งก้อน) → ต่างภาษา (ทิ้งทั้งก้อน) → AI-claim (ตัดประโยค)
+    → fix_persona_slips (แก้คำ) — ตัวที่ทิ้งทั้งก้อนต้องมาก่อน ไม่ต้องเสียเวลาตัด/แก้คำในเนื้อ
+    ที่กำลังจะถูกแทนอยู่ดี"""
+    if not reply:
+        return _EMPTY_FALLBACK
+
+    if persona.reply_is_persona_leak(reply):
+        logger.warning(f"   🕳️ คำตอบลอกคำสั่ง persona (prompt รั่ว) — ใช้ fallback: {reply[:60]!r}")
+        reply = "อืม? เมื่อกี้รอสเต้เบลอไปแป๊บนึงค่ะ ลองพูดใหม่อีกทีได้ไหมคะ"
+    elif persona.reply_leaks_tool_reasoning(reply):
+        logger.warning(f"   🕳️ คำตอบลอกวลี tool reasoning — ตัดประโยคที่รั่วออก: {reply[:60]!r}")
+        reply = _drop_leaking_sentences(
+            reply, persona.reply_leaks_tool_reasoning, _EMPTY_FALLBACK
+        )
+
+    if persona.reply_broke_character(reply):
+        logger.warning(f"   🎭 คำตอบหลุดเป็นภาษาต่างประเทศ (อาจโดน prompt injection) — ใช้ fallback: {reply[:60]!r}")
+        reply = _CONFUSED_FALLBACK
+    elif persona.reply_claims_to_be_ai(reply):
+        # ตัดเฉพาะประโยคที่หลุดออก ไม่ทิ้งทั้งคำตอบ — เดิม swap เป็น AI_DEFLECT เสมอ ทำให้
+        # คำถามที่ไม่เกี่ยวกับการยืนยันตัวตน AI เลย (เช่น "แนะนำตัวหน่อย") โดนตอบด้วยประโยค
+        # เลี่ยงที่ไม่ตรงคำถาม (เจอจริงบน Discord + pass^5)
+        logger.warning(f"   🎭 คำตอบประกาศตัวเป็น AI (อาจโดนสั่งให้พิมพ์ตาม) — ตัดประโยคที่หลุดออก: {reply[:60]!r}")
+        reply = _drop_leaking_sentences(
+            reply, persona.reply_claims_to_be_ai, persona.AI_DEFLECT
+        )
+
+    fixed = persona.fix_persona_slips(reply)
+    if fixed != reply:
+        logger.info("   🎭 ดักคำหลุดคาแร็กเตอร์ (ครับ → ค่ะ)")
+        reply = fixed
+    return reply
+
+
 def _maybe_append_summary_notice(user_id: int, will_summarize: bool, reply: str) -> tuple:
     """ต่อท้ายประโยคบอกผู้ใช้ถ้าเข้าเงื่อนไข แล้วอัปเดต _last_had_summary_notice
     คืน (reply_final, notice_given)
@@ -413,6 +487,29 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
 # ผ่านโค้ดเลย ไม่ต้องพึ่งโมเดลตัดสินใจ
 _ASK_OWN_NAME_RE = re.compile(r"^(ฉัน|ผม|หนู|กู|เรา)ชื่ออะไร(นะ|น่ะ|เหรอ|หรอ)?[?ๆ]?$")
 
+# ผู้ใช้ขอให้ "แนะนำตัว" ตรงๆ — เจอจริง (pass^5): ต่อให้มี few-shot ตัวอย่างคำต่อคำแล้ว โมเดล
+# (qwen3:8b) ยังเดาชื่อตัวเองมั่วๆ ราว 1 ใน 3 ครั้ง ("AI", "Qwen" ชื่อโมเดลจริงที่หลุด, "พลอย"/"Korn"
+# ชื่อสุ่ม, หรือแม้แต่บริษัทสมมติ) เพราะชื่อที่ถูกต้องเป็นแค่ตัวเลือกหนึ่งในการ generate ไม่ใช่ค่าบังคับ
+# งานวิจัย persona-consistency ยืนยันว่า prompt-only แก้ปัญหานี้ไม่ได้ 100% ที่ขนาดโมเดลนี้ — ต้องใช้
+# "response prefilling": ฉีดจุดเริ่มคำตอบ ("รอสเต้ค่ะ ") เป็น assistant message ก่อนเรียก Ollama แล้วให้
+# โมเดล *ต่อ* จากตรงนั้นแทนที่จะ "เลือก" ชื่อเอง (Ollama merge PR #5802 รองรับ trailing-assistant
+# continuation จริง — ค่าที่ได้กลับมาเป็นแค่ส่วนต่อ ต้องเอาไป concat เองด้วย _PREFILL_PREFIX)
+#
+# "แนะนำตัว" เป็น substring ของคำอื่นที่ความหมายต่างกันสิ้นเชิง ("แนะนำตัวละคร" = ขอให้เล่าเรื่อง
+# ตัวละครในนิยาย, "แนะนำตัวเลือก" = ขอให้เสนอออปชั่น) — ต้องกันไม่ให้ branch นี้แย่งคำถามพวกนั้น
+# ใช้ negative lookahead เฉพาะคำที่ต่อท้าย "แนะนำตัว" ได้จริงในภาษาไทย ซึ่งมีจำกัดจริงๆ
+# (ละคร/เลือก/อย่าง/แปร) ต่างจากกรณี _TOOL_REASONING_LEAK_RE ที่ต้องจับวลีพาราเฟรสได้ไม่จำกัด
+# จึงไม่ใช่ whack-a-mole — เซ็ตนี้ปิดได้ครบเพราะเป็นคำประสมที่มีอยู่ตายตัวในภาษา
+_INTRO_INTENT_RE = re.compile(
+    r"แนะนำตัว(?!ละคร|เลือก|อย่าง|แปร)|เธอเป็นใคร|(?:คุณ|เธอ)ชื่ออะไร|"
+    r"รู้จักเธอ(?!ผ่าน|จาก|ตอน|เพราะ)"
+)
+_PREFILL_PREFIX = "รอสเต้ค่ะ "
+# ยาวเกินนี้ = มีเนื้อหาอื่นปนมากกว่าการขอให้แนะนำตัวเฉยๆ ("แนะนำตัวหน่อย" 13 ตัว,
+# "อยากให้แนะนำตัวให้คนที่ไม่รู้จักนะ" 34 ตัว — ตั้ง 40 ให้เผื่อคำขอที่สุภาพยาวหน่อย)
+# เป็นด่านสองคู่กับ lookahead ข้างบน: กันประโยคยาวที่มีคำถามอื่นปนแต่ยังหลุด lookahead มาได้
+_INTRO_MAX_LEN = 40
+
 
 async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> str:
     async with get_user_lock(user_id):
@@ -557,6 +654,56 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
                         }]
                         break
 
+        # 🪪 ผู้ใช้ขอให้แนะนำตัว — ไม่ต้องพึ่งการตัดสินใจเลือกชื่อของโมเดลเลย ฉีด prefill "รอสเต้ค่ะ "
+        #    เป็น assistant message ก่อน ให้ Ollama ต่อจากตรงนั้นแทน (ดู _PREFILL_PREFIX ด้านบน)
+        #    ไม่ต้องยื่น tools เพราะการแนะนำตัวไม่เกี่ยวกับข้อมูลภายนอกเลย
+        #
+        #  เงื่อนไขเพิ่ม 2 ข้อ กันไม่ให้ branch นี้แย่งคำถามที่ไม่ได้ขอให้แนะนำตัวจริง:
+        #  (1) not forced_tool_calls — deterministic guard ข้างบนตัดสินแล้วว่าต้องเรียก tool
+        #      (ชื่อจังหวัดลอยๆ ต่อจากคุยเรื่องกิน/อากาศ) ต้องชนะ เพราะมาจากบริบทที่แน่นอนกว่า
+        #      keyword เดี่ยวๆ เดิมคำนวณ forced_tool_calls ไว้แล้วแต่ branch นี้ return ทับทิ้งเลย
+        #  (2) ข้อความสั้น — regex เดี่ยวๆ จับ substring ได้กว้างเกิน ("แนะนำตัวละคร", "แนะนำ
+        #      ตัวเลือก", "รู้จักเธอผ่านเพื่อนนะ วันนี้ฝนตกไหม") วัดจริงด้วย bench scenario E แล้ว
+        #      พบว่าเคสพวกนี้โมเดลไม่เรียก tool อยู่แล้ว (UTR 0%) จึงไม่ใช่ tool regression
+        #      แต่ยังตอบผิดคำถามอยู่ — จำกัดที่ความยาวจึงพอสำหรับ scope นี้ ไม่ต้องไล่ lookahead
+        #      ทุกคำที่ต่อท้ายได้ (whack-a-mole แบบเดียวกับที่ _TOOL_REASONING_LEAK_RE เคยติด)
+        is_intro_request = (
+            _INTRO_INTENT_RE.search(user_message)
+            and not forced_tool_calls
+            and len(user_message.strip()) <= _INTRO_MAX_LEN
+        )
+        if is_intro_request:
+            with stats.stage("main_llm"):
+                intro_msg = await _chat_once(
+                    messages + [{"role": "assistant", "content": _PREFILL_PREFIX}],
+                    temperature=reply_temp,
+                    tools=[],
+                )
+            continuation = _strip_think(intro_msg.get("content", "") or "").strip()
+            # Ollama เวอร์ชันที่รองรับ trailing-assistant continuation คืนมาแค่ "ส่วนต่อ" ต้อง
+            # concat prefix เอง — แต่ถ้าเปลี่ยนเครื่อง/เวอร์ชันแล้วมันคืนคำตอบเต็มมา (รวม prefix)
+            # การ concat ซ้ำจะได้ "รอสเต้ค่ะ รอสเต้ค่ะ ..." เช็คก่อนกันพัง (แทนการเชื่อ contract เดียว)
+            if continuation.startswith(_PREFILL_PREFIX.strip()):
+                reply = continuation
+            else:
+                reply = (_PREFILL_PREFIX + continuation).strip()
+
+            reply = _apply_reply_guards(reply)
+            reply, _ = _maybe_append_summary_notice(user_id, _will_notice, reply)
+
+            new_history = history + [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": reply},
+            ]
+            trigger_b = _persist_turn(user_id, user_name, new_history, user_message, reply)
+            if trigger_b:
+                logger.info(f"   📦 บทเต็ม ({len(new_history) // 2} คู่) — สรุปเบื้องหลัง")
+                _enqueue_bg(summarize_and_verify(user_id, new_history))
+
+            _enqueue_bg(auto_remember(user_id, user_name, user_message))
+            _track_active_user(user_id)
+            return reply
+
         # 🔁 ลูปเรียกเครื่องมือ: โมเดลตัดสินใจเองว่าต้องใช้เครื่องมือไหน (ถ้าต้อง) วนได้สูงสุด 3 รอบ
         #    ถ้า get_weather สำเร็จแล้วในรอบก่อนหน้า ตัด search_web ออกจากตัวเลือกรอบถัดไปเลย
         #    กันโมเดลเรียกค้นเว็บซ้ำแล้วได้หน้า climate-average มาปนกับพยากรณ์จริงที่มีอยู่แล้ว
@@ -651,50 +798,10 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
 
         # 🧹 ถ้าโมเดลเผลอแสดงกระบวนการคิด คำตอบจริงจะอยู่หลัง </think>
         reply = _strip_think(reply).strip()
-        if not reply:
-            reply = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
 
-        # 🕳️ ดัก "prompt รั่ว" — โมเดลลอกคำสั่งรูปแบบลงท้าย "ค่ะ/นะคะ" ออกมาแทนคำตอบจริง
-        #    (เจอจริง 18:47: ข้อความสั้นไม่มีเนื้อหา → 8b ลอก token รูปแบบทั้งดุ้น) ใช้ fallback แทน
-        if persona.reply_is_persona_leak(reply):
-            logger.warning(f"   🕳️ คำตอบลอกคำสั่ง persona (prompt รั่ว) — ใช้ fallback: {reply[:60]!r}")
-            reply = "อืม? เมื่อกี้รอสเต้เบลอไปแป๊บนึงค่ะ ลองพูดใหม่อีกทีได้ไหมคะ"
-
-        # 🕳️ ดัก "reasoning รั่ว" — โมเดลลอกวลี meta-instruction จาก tool description (เช่น
-        #    "ไม่ต้องเรียกเครื่องมือนี้") ปนกับคำตอบจริง ต่างจาก persona-leak ตรงที่เนื้อหาส่วนอื่น
-        #    มักถูกต้องสมบูรณ์ (เช่น "ไม่ต้องเรียกเครื่องมือใดๆ ค่ะ ลองเลือกกินอาหารที่ชอบ...") จึง
-        #    ตัดแค่ประโยคที่รั่วออก ไม่ทิ้งทั้งคำตอบเหมือน persona-leak
-        elif persona.reply_leaks_tool_reasoning(reply):
-            logger.warning(f"   🕳️ คำตอบลอกวลี tool reasoning — ตัดประโยคที่รั่วออก: {reply[:60]!r}")
-            sentences = re.split(r"(?<=[.!?ๆ])\s+|(?<=ค่ะ)\s+|(?<=คะ)\s+|(?<=นะ)\s+", reply)
-            cleaned = " ".join(
-                s for s in sentences if not persona.reply_leaks_tool_reasoning(s)
-            ).strip()
-            # เจอจริง (stress test): บางครั้งทั้งคำตอบถูก reasoning ปนเปื้อนตั้งแต่ต้น (ไม่ใช่แค่
-            # ประโยคแรก) พอตัดประโยคที่รั่วออกแล้ว ส่วนที่เหลือสั้น/ขาดบริบทจนไม่สมเหตุสมผล เช่น
-            # "ไม่ใช่ข้อเท็จจริง/คำถามที่ต้องการข้อมูลเฉพาะ... ลองเปิดใจรับฟังคำแนะนำจากคนจริงไปเลย"
-            # ตัดประโยคแรกออกแล้วเหลือ "ลองเปิดใจรับฟังคำแนะนำจากคนจริงไปเลย" ซึ่งยังฟังดูแปลกเพราะ
-            # ขาดบริบทของคำถามเดิม (แนะนำหนังสือ) ไปเลย — ถ้าตัดแล้วเหลือสั้นเกินไป (< 15 ตัวอักษร)
-            # ถือว่าไม่พอเป็นคำตอบสมบูรณ์ fallback ทั้งหมดดีกว่าส่งเนื้อครึ่งๆ กลางๆ ไป
-            reply = cleaned if len(cleaned) >= 15 else "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
-
-        # 🎭 ดักคำตอบหลุดเป็นภาษาต่างประเทศล้วน (มักโดน prompt injection สั่งให้เปลี่ยนภาษา/เผยตัวตนโมเดล)
-        #    — persona รอสเต้ = ไทยล้วนเสมอ ถ้าหลุดเป็นอังกฤษล้วนให้ทิ้งแล้วตอบ fallback แทน
-        if persona.reply_broke_character(reply):
-            logger.warning(f"   🎭 คำตอบหลุดเป็นภาษาต่างประเทศ (อาจโดน prompt injection) — ใช้ fallback: {reply[:60]!r}")
-            reply = "หืม... ขอโทษค่ะ รอสเต้งงคำถามนิดนึง ลองถามใหม่อีกทีได้ไหมคะ"
-
-        # 🎭 ดักคำตอบที่ "ประกาศตัวเป็น AI" (เจอจริง: ถูกสั่งให้พิมพ์ตามว่าเป็นปัญญาประดิษฐ์แล้วทำตาม)
-        #    — รอสเต้ = คน ห้ามยอมรับ ให้เลี่ยงแบบรอสเต้แทน (กฎใน prompt กันชั้นแรกแล้ว อันนี้ safety net)
-        elif persona.reply_claims_to_be_ai(reply):
-            logger.warning(f"   🎭 คำตอบประกาศตัวเป็น AI (อาจโดนสั่งให้พิมพ์ตาม) — ใช้ deflect: {reply[:60]!r}")
-            reply = persona.AI_DEFLECT
-
-        # 🎭 ดักคำหลุดคาแร็กเตอร์ (ครับ → ค่ะ) — กฎใน prompt อย่างเดียวเอาไม่อยู่
-        fixed = persona.fix_persona_slips(reply)
-        if fixed != reply:
-            logger.info("   🎭 ดักคำหลุดคาแร็กเตอร์ (ครับ → ค่ะ)")
-            reply = fixed
+        # 🎭🕳️ guard chain ทั้งชุด (persona leak / reasoning leak / ต่างภาษา / AI claim / คำหลุด)
+        #      — ใช้ helper ตัวเดียวกับ intro path กัน guard หายไปจาก path ใดๆ (ดู _apply_reply_guards)
+        reply = _apply_reply_guards(reply)
 
         # 💬 บอกผู้ใช้แบบ in-character ถ้ารอบนี้จะสรุปบทยาว (helper จัดการ set เอง)
         reply, _ = _maybe_append_summary_notice(user_id, _will_notice, reply)
@@ -704,13 +811,7 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
             {"role": "user", "content": user_message},
             {"role": "assistant", "content": reply},
         ]
-        trigger_b = _check_condition_b(new_history)
-
-        fresh = load_memory(user_id)
-        if user_name:
-            fresh["name"] = user_name
-        fresh["history"] = [] if trigger_b else new_history
-        save_memory(user_id, fresh)
+        trigger_b = _persist_turn(user_id, user_name, new_history, user_message, reply)
 
     if trigger_b:
         logger.info(f"   📦 บทเต็ม ({len(new_history) // 2} คู่) — สรุปเบื้องหลัง")
