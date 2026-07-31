@@ -64,3 +64,4 @@ tts_raw/
 *.pth
 *.index
 *.onnx
+.coverage
