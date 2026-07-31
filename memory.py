@@ -23,6 +23,64 @@ logger = logging.getLogger("roste.memory")
 MEMORY_DIR = "memory"
 os.makedirs(MEMORY_DIR, exist_ok=True)
 
+
+# ── การตัดคำสำหรับ keyword recall ──────────────────────────────────────────────
+#
+# ภาษาไทยไม่เขียนเว้นวรรคระหว่างคำ — user_message.split() จึงคืน "ทั้งประโยคเป็นก้อนเดียว"
+# ไม่ใช่รายการคำ ทำให้ keyword match ไม่มีวันตรงกับอะไรเลย (วัดจริงบนเคสจากบทสนทนา Discord:
+# recall_summaries คืน 0 อันทั้ง 5 เคส ทั้งที่ summary ที่ตรงมีอยู่ในไฟล์)
+#   'ว่าแต่รอสเต้เราเคยคุยเรื่องการอ่าน...'.split()  → 1 ก้อน  → คะแนน 0 เสมอ
+#   word_tokenize(...)                              → 15 คำ   → จับคู่ได้จริง
+_STOPWORDS = {
+    # คำที่โผล่ในแทบทุกคำถามถึงอดีต — ไม่ได้บอกว่า "หัวข้อ" คืออะไร ถ้าไม่ตัดทิ้งจะไปแมตช์
+    # กับ summary ทุกอันเท่าๆ กัน แล้วกลบคำที่สื่อความหมายจริง
+    "ว่าแต่", "เรา", "เคย", "คุย", "เรื่อง", "การ", "อะไร", "พวก", "นั้น", "ด้วย",
+    "ไหม", "ก่อนหน้านี้", "ตอนนั้น", "กัน", "หรือเปล่า", "จำได้", "นะ", "พอ",
+    "บ้าง", "รอ", "สเต้", "ที่", "ของ", "ให้", "และ", "มี", "ครับ", "ค่ะ", "คะ",
+}
+
+# คำพ้อง/คำใกล้เคียงเฉพาะโดเมนที่บอทคุยบ่อย — ปิดช่องว่างที่ keyword match ล้วนแก้ไม่ได้
+# (ผู้ใช้ถาม "การอ่าน" แต่ summary เขียนว่า "นิยาย"/"หนังสือ" ไม่มีคำร่วมกันเลยสักคำ)
+# วัดผลแล้วช่วยจาก 3/5 เป็น 4/5 เคส แลกกับดึงของไม่เกี่ยวมาเพิ่ม 2 อัน — คุ้ม เพราะการ
+# "พลาดความทรงจำที่มีจริง" ทำให้บอทตอบว่าไม่เคยคุย ซึ่งแย่กว่าการเสนอ context เกินมานิดหน่อย
+_SYNONYMS = {
+    "อ่าน":     ["หนังสือ", "นิยาย"],
+    "หนังสือ":  ["นิยาย", "อ่าน"],
+    "นิยาย":    ["หนังสือ", "อ่าน"],
+    "ของหวาน":  ["ขนม", "ไอศกรีม", "เจลาโต้"],
+    "ขนม":      ["ของหวาน", "ไอศกรีม"],
+    "อากาศ":    ["ฝน", "ร้อน", "หนาว", "อุณหภูมิ"],
+    "น้ำมัน":   ["ดีเซล", "เบนซิน"],
+    "กิน":      ["อาหาร", "ร้าน", "เมนู"],
+    "อาหาร":    ["กิน", "ร้าน", "เมนู"],
+}
+
+
+def _keywords(text: str, expand: bool = True) -> list:
+    """ตัดข้อความไทยเป็น "คำที่สื่อความหมาย" สำหรับเอาไปจับคู่กับ fact/summary
+
+    ตัด stopword ทิ้งแล้วขยายด้วยคำพ้อง (ถ้า expand) — ถ้า pythainlp ใช้ไม่ได้
+    ถอยไปใช้ split() แบบเดิม ซึ่งแม้จะด้อยกว่ามากแต่ยังดีกว่าพังทั้งฟังก์ชัน
+    """
+    try:
+        from pythainlp.tokenize import word_tokenize
+        toks = [t for t in word_tokenize(text, engine="newmm") if t.strip()]
+    except Exception:
+        toks = text.split()
+    words = {t for t in toks if len(t) >= 2 and t not in _STOPWORDS}
+    if expand:
+        for w in list(words):
+            words.update(_SYNONYMS.get(w, []))
+            # newmm รวมคำประสมเป็น token เดียวได้ ("อ่านหนังสือ" ไม่ใช่ "อ่าน"+"หนังสือ")
+            # ทำให้ key คำพ้องที่เป็นคำเดี่ยวไม่ถูกจับ — เช็คแบบ substring เพิ่มอีกชั้น
+            # (เจอจริง: "เรื่องเกี่ยวกับการอ่านหนังสือนะพอจำได้ไหม" ได้ token 'อ่านหนังสือ'
+            #  แล้วพลาด summary เรื่อง 'นิยาย' ทั้งที่ควรเจอ)
+            for key, syns in _SYNONYMS.items():
+                if key != w and key in w:
+                    words.add(key)
+                    words.update(syns)
+    return list(words)
+
 # จำนวนคู่บทสนทนา (ถาม-ตอบ) ที่จะจำย้อนหลังต่อหนึ่งคน
 MAX_HISTORY_PAIRS = 8
 
@@ -173,8 +231,8 @@ def recall_facts(mem, user_message):
     if len(facts) <= MAX_FACTS_IN_CONTEXT:
         return [_fact_text(f) for f in facts]
 
-    # แตกข้อความเป็นคำ (กรองคำสั้นเกินทิ้ง)
-    words = [w for w in user_message.lower().split() if len(w) >= 2]
+    # แตกข้อความเป็นคำ — ต้องตัดคำไทยจริง ไม่ใช่ split() ตามช่องว่าง (ดู _keywords)
+    words = [w.lower() for w in _keywords(user_message)]
 
     scored = []
     for f in facts:
@@ -368,7 +426,8 @@ def recall_summaries(mem, user_message: str) -> list:
     if not (has_clear_hint or has_ambiguous_hint):
         return []
 
-    words = [w for w in user_message.split() if len(w) >= 2]
+    # ตัดคำไทยจริง + ขยายคำพ้อง — split() ตามช่องว่างใช้กับภาษาไทยไม่ได้ (ดู _keywords)
+    words = _keywords(user_message)
 
     scored = []
     for entry in summaries:

@@ -411,3 +411,86 @@ class TestLoadMemorySummaries:
         (tmp_path / "456.json").write_text(json.dumps(existing), encoding="utf-8")
         mem = memory.load_memory(456)
         assert mem["summaries"] == ["22 มิ.ย.: คุยเรื่องก๋วยเตี๋ยว"]
+
+
+# ============================================================
+#  keyword recall กับภาษาไทย — _keywords / recall_summaries
+#
+#  ทำไมต้องมีชุดนี้: เดิมทั้ง recall_facts และ recall_summaries ใช้ user_message.split()
+#  ซึ่งใช้กับภาษาไทยไม่ได้เลย เพราะไทยไม่เขียนเว้นวรรคระหว่างคำ — ทั้งประโยคกลายเป็น token
+#  เดียว แล้วไม่มีวันตรงกับ fact/summary ใดๆ วัดจริงบนคำถามจากบทสนทนา Discord: 0/5 เคส
+#  (บอทตอบว่า "ไม่เคยคุย" ทั้งที่ summary ที่ตรงมีอยู่ในไฟล์) หลังแก้เป็น 5/5
+# ============================================================
+
+class TestThaiKeywordRecall:
+
+    SUMMARIES = [
+        {"date": "2026-07-22", "text": "22 ก.ค.: คุยเรื่องนิยายและแนะนำหนังสือที่มีเนื้อหาลึกลับ"},
+        {"date": "2026-07-21", "text": "21 ก.ค.: คุยเรื่องอากาศและของหวานที่ชอบ"},
+        {"date": "2026-07-08", "text": "8 ก.ค.: คุยเรื่องราคาน้ำมันและร้านอาหาร"},
+    ]
+
+    def test_thai_sentence_is_tokenized_not_split_on_space(self):
+        """หัวใจของบั๊ก: ประโยคไทยไม่มีช่องว่าง split() จึงคืนก้อนเดียว ใช้จับคู่ไม่ได้
+
+        ใช้คำที่ *ไม่มี* ในตาราง _SYNONYMS ("แมว") เพื่อวัดผลของการตัดคำล้วนๆ —
+        ถ้าใช้คำที่มีคำพ้อง การขยายแบบ substring จะช่วยกลบไว้จนเทสไม่จับ regression
+        """
+        q = "เคยคุยเรื่องแมวกันไหม"
+        assert len([w for w in q.split() if len(w) >= 2]) == 1   # พฤติกรรมเดิมที่พัง
+        assert memory._keywords(q) == ["แมว"]                     # หลังแก้ต้องแยกคำได้จริง
+
+    def test_recall_depends_on_tokenizer_for_unlisted_words(self):
+        """คำที่ไม่มีคำพ้องช่วย ต้องพึ่งการตัดคำอย่างเดียว — regression guard ตัวจริง"""
+        summaries = [{"date": "2026-07-22", "text": "22 ก.ค.: คุยเรื่องแมวที่บ้าน"}]
+        got = memory.recall_summaries({"summaries": summaries}, "เคยคุยเรื่องแมวกันไหม")
+        assert any("แมว" in s for s in got)
+
+    def test_stopwords_removed(self):
+        """คำที่โผล่ในทุกคำถามถึงอดีตต้องถูกตัด ไม่งั้นไปแมตช์ summary ทุกอันเท่าๆ กัน"""
+        kws = memory._keywords("เราเคยคุยเรื่องอะไรกันบ้างไหม")
+        assert "เคย" not in kws and "คุย" not in kws and "เรื่อง" not in kws
+
+    def test_synonym_expansion_bridges_vocabulary_gap(self):
+        """ผู้ใช้ถาม 'การอ่าน' แต่ summary เขียน 'นิยาย/หนังสือ' — ไม่มีคำร่วมกันเลย"""
+        kws = memory._keywords("เคยคุยเรื่องการอ่านไหม")
+        assert "หนังสือ" in kws or "นิยาย" in kws
+
+    def test_compound_word_still_expands(self):
+        """newmm รวมคำประสมเป็น token เดียว ('อ่านหนังสือ') — ต้องยังจับคำพ้องได้
+
+        เจอจริงตอนแก้: เคสนี้พลาดอยู่เคสเดียวจาก 5 เคส จนต้องเช็ค substring เพิ่ม
+        """
+        kws = memory._keywords("เรื่องเกี่ยวกับการอ่านหนังสือนะพอจำได้ไหม")
+        assert "นิยาย" in kws
+
+    @pytest.mark.parametrize("question,expect", [
+        ("ว่าแต่รอสเต้เราเคยคุยเรื่องการอ่านอะไรพวกนั้นด้วยไหมก่อนหน้านี้", "นิยาย"),
+        ("เรื่องเกี่ยวกับการอ่านหนังสือนะพอจำได้ไหมตอนนั้นคุยอะไรกัน", "นิยาย"),
+        ("เราเคยคุยเรื่องของหวานกันไหม", "ของหวาน"),
+        ("จำได้ไหมว่าเคยคุยเรื่องน้ำมันอะไรบ้าง", "น้ำมัน"),
+        ("เคยคุยเรื่องอากาศกันหรือเปล่า", "อากาศ"),
+    ])
+    def test_recalls_matching_summary(self, question, expect):
+        """5 เคสจริงจาก Discord ที่เดิมพลาดทั้งหมด"""
+        got = memory.recall_summaries({"summaries": self.SUMMARIES}, question)
+        assert any(expect in s for s in got), f"ไม่เจอ {expect!r} ใน {got}"
+
+    @pytest.mark.parametrize("question", [
+        "วันนี้อากาศเป็นไง", "ราคาน้ำมันวันนี้", "สวัสดีค่ะ",
+    ])
+    def test_does_not_inject_when_not_asking_about_past(self, question):
+        """ไม่ได้ถามอดีต → ต้องไม่ inject summary (เปลือง context + ทำโมเดลสับสน)
+
+        สำคัญหลังเพิ่มคำพ้อง: 'อากาศ'/'น้ำมัน' ตรงกับ summary เต็มๆ ถ้าด่าน hint พัง
+        จะ inject ทุกข้อความที่พูดถึงหัวข้อพวกนี้
+        """
+        assert memory.recall_summaries({"summaries": self.SUMMARIES}, question) == []
+
+    def test_tokenizer_failure_falls_back_to_split(self, monkeypatch):
+        """pythainlp พังต้องไม่ทำให้ recall ล้มทั้งระบบ — ถอยไป split() แบบเดิม"""
+        import pythainlp.tokenize as tk
+        monkeypatch.setattr(
+            tk, "word_tokenize",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert memory._keywords("อยู่ ชุมพร") != []
