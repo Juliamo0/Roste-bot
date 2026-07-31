@@ -10,6 +10,14 @@ import pytest
 
 import stats
 
+# ความละเอียดของนาฬิกาที่ stats.stage() ใช้จับเวลา — บน Windows คือ 15.625 ms (ไม่ใช่ ~1 ms
+# เหมือน Linux/macOS) ทำให้ time.sleep(0.01) วัดได้ 0.000 s บ่อยครั้ง เพราะยังไม่ข้าม tick
+#
+# เดิมเทสชุดนี้ sleep 0.01 แล้ว assert >= 0.01/0.02 ตรงๆ จึง fail แบบสุ่ม 4 ใน 5 รอบบนเครื่องนี้
+# (ไม่ใช่บั๊กของ stats.py — โค้ดถูก แต่เทสตั้งสมมติฐานเรื่องนาฬิกาผิด) แก้โดยอิงจาก resolution
+# จริงของนาฬิกา แล้ว sleep ให้ข้าม tick แน่ๆ
+_TICK = max(time.get_clock_info("monotonic").resolution, 0.001)
+
 
 @pytest.fixture(autouse=True)
 def _clean_history():
@@ -43,20 +51,21 @@ class TestBasicRecording:
     def test_stage_time_recorded_under_its_name(self):
         token = stats.start_message("llm")
         with stats.stage("main_llm"):
-            time.sleep(0.01)
+            time.sleep(_TICK * 2)
         stats.finish_message(token)
         record = stats.get_recent()[0]
-        assert record["main_llm"] >= 0.01
+        assert record["main_llm"] >= _TICK
 
     def test_repeated_stage_name_accumulates(self):
         token = stats.start_message("llm")
         with stats.stage("tool_calls"):
-            time.sleep(0.01)
+            time.sleep(_TICK * 2)
         with stats.stage("tool_calls"):
-            time.sleep(0.01)
+            time.sleep(_TICK * 2)
         stats.finish_message(token)
         record = stats.get_recent()[0]
-        assert record["tool_calls"] >= 0.02
+        # เทียบกับ "2 ช่วงอย่างน้อย 1 tick" ไม่ใช่ผลรวมของ sleep ตรงๆ — นาฬิกาปัดเศษลงได้
+        assert record["tool_calls"] >= _TICK * 2
 
     def test_stage_not_entered_is_absent_from_record(self):
         token = stats.start_message("llm")
@@ -122,7 +131,7 @@ class TestSummary:
         for _ in range(3):
             token = stats.start_message("llm")
             with stats.stage("main_llm"):
-                time.sleep(0.01)
+                time.sleep(_TICK * 2)
             stats.finish_message(token)
         summary = stats.get_summary()
         assert "main_llm" in summary
@@ -156,12 +165,12 @@ class TestConcurrentMessagesIsolated:
     def test_two_separate_start_finish_cycles_produce_two_records(self):
         token_a = stats.start_message("llm")
         with stats.stage("main_llm"):
-            time.sleep(0.01)
+            time.sleep(_TICK)
         stats.finish_message(token_a)
 
         token_b = stats.start_message("llm")
         with stats.stage("main_llm"):
-            time.sleep(0.02)
+            time.sleep(_TICK * 4)      # ต่างกันหลาย tick ให้เทียบมาก/น้อยได้จริง
         stats.finish_message(token_b)
 
         records = stats.get_recent()
