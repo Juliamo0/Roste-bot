@@ -14,7 +14,8 @@
 - 🧠 **ความจำหลายชั้น**
   - จำชื่อ/ข้อเท็จจริงถาวร (สั่งได้ + จำเองอัตโนมัติเบื้องหลัง)
   - สรุปบทสนทนาเก่าอัตโนมัติเมื่อ history ล้น (แทนที่จะทิ้ง)
-  - Selective recall — ดึงเฉพาะ fact ที่เกี่ยวกับบทสนทนาตอนนั้น
+  - Selective recall — ดึงเฉพาะ fact ที่เกี่ยวกับบทสนทนาตอนนั้น (ตัดคำไทยด้วย `newmm` +
+    stopword + คำพ้อง — `str.split()` ใช้กับภาษาไทยไม่ได้เพราะไม่มีช่องว่างระหว่างคำ)
   - คำสั่งความจำ: `จำไว้ว่า…` / `ลืมเรื่อง…` / `จำอะไรได้บ้าง`
 - 🌐 **ข้อมูลจริง**
   - 🕐 เวลา/วันที่ (UTC+7, พ.ศ.)
@@ -23,6 +24,8 @@
   - 🔌 ประกาศตัดไฟ (การไฟฟ้าส่วนภูมิภาค PEA)
   - 🔎 ค้นเว็บ (Google ผ่าน SerpApi + DuckDuckGo สำรอง)
   - 🍜 หาร้าน/สถานที่ (Google Maps ผ่าน SerpApi)
+  - 🎯 **Dynamic tool selection** — ยื่นเฉพาะเครื่องมือที่เกี่ยวกับคำถามนั้น ไม่ยื่นครบทุกตัว
+    (ดู [ระบบเลือกเครื่องมือ](#-ระบบเลือกเครื่องมือ-dynamic-tool-selection))
 - 🖨️ **สั่งพิมพ์ PDF** — แนบไฟล์ใน Discord แล้วให้รอสเต้สั่งเครื่องพิมพ์จริง
 - 🎵 **เล่นเพลง** — เล่นไฟล์ mp3 ในห้อง voice ตามที่ขอ
 - 🎤 **ร้องเพลง karaoke** — ร้องเพลง cover ด้วยเสียง RVC (ส่วนตัว ไม่แจกจ่ายโมเดล) จากโฟลเดอร์ `karaoke/`, ขอเพลงเจาะจงหรือสุ่มได้, TTS เกริ่นก่อนเล่น
@@ -54,17 +57,21 @@
 
 | ไฟล์ | ประเภท | จำนวน tests |
 |------|--------|-------------|
-| `test_bot.py` | pytest | 83 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding, persona-slip filter, rate limiting, karaoke outro, fewshot ไม่มีข้อเท็จจริงตายตัว |
-| `test_memory.py` | pytest | 56 — facts, recall, parse, summaries, supersede/consolidation |
-| `test_realtime.py` | pytest | 51 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
-| `test_vectormemory.py` | pytest | 15 — rerank fail-safe (output หลุดฟอร์แมต, temperature, edge case), PDF page cap |
-| `test_voice.py` | pytest | 25 — streaming segment order/fail-safe, f5_preprocess (ปี/หน่วย), worker hang timeout |
+| `test_bot.py` | pytest | 194 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding, **dynamic tool selection**, persona-slip filter, AI-claim guard, rate limiting, karaoke outro |
+| `test_memory.py` | pytest | 70 — facts, recall (ตัดคำไทย/คำพ้อง), parse, summaries, supersede/consolidation |
+| `test_realtime.py` | pytest | 55 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
+| `test_voice.py` | pytest | 55 — streaming segment order/fail-safe, ตัวซอยข้อความไทย, f5_preprocess, worker hang timeout |
+| `test_vectormemory.py` | pytest | 19 — rerank fail-safe (output หลุดฟอร์แมต, temperature, edge case), PDF page cap |
+| `test_stats.py` | pytest | 17 — stage timing, concurrent message isolation |
+| `test_monitor.py` | pytest | 16 — health check, resource sampling |
+| `test_config.py` | pytest | 14 — โหลด `.env`, ค่า default |
 | `test_printing.py` | pytest | 9 — print_jobs cleanup, pending_prints expiry |
 | `test_music.py` | pytest | 9 — song_requests.json entry cap, extract_song_query tokenize |
+| `test_tts_stream.py` | pytest | 8 — prefetch ไม่บล็อก, ลำดับ segment, เก็บกวาดไฟล์ตอนหยุดกลางคัน |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
-รัน tests ทั้งหมด (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว): `pytest`
-(เทสใน `tests/test_realtime.py` + `test_all_systems.py` ต้องมี Ollama รันอยู่)
+**รวม 466 unit tests** — รันทั้งหมดด้วย `pytest` (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว)
+ไม่ต้องเปิด Ollama หรือต่อเน็ต (mock ล้วน) ยกเว้น `test_all_systems.py` ที่ยิง HTTP จริง
 
 ### tools/ — สคริปต์เสริม (ไม่ใช่ regression test)
 
@@ -76,6 +83,12 @@
 | `simulate_vectormemory.py` | เทส RAG PDF + semantic recall แบบ end-to-end กับ Ollama/ChromaDB จริง |
 | `simulate_toolcalling.py` | เทส LLM tool calling จริง — เลือกเครื่องมือถูกไหม + multi-turn place-search |
 | `simulate_fact_consolidation.py` | เทส fact supersede จริงกับ Ollama — ย้ายที่อยู่ต้อง supersede ไม่ใช่เพิ่มซ้อน |
+| `bench_attention.py` | เทียบ 4 ทางแก้ attention dilution — ตัวที่เผยว่าทุกทางแลกกันหมด (ได้ความจำเสียข้อมูลสด) |
+| `bench_realistic_tools.py` | เทียบกลยุทธ์คัด tool ผ่าน `chat.ask_ollama` เส้นจริง วัด 5 เกณฑ์พร้อมกัน (ความจำ/ข้อมูลสด/คุยเล่น/ยั่วให้หลุดเป็น AI/สรรพนาม) |
+| `bench_memory_full.py` | ทดสอบความจำครบวงจรผ่าน `ask_ollama` (ไม่ประกอบ prompt เอง) |
+| `bench_memory_prompt.py` | วัดผลของถ้อยคำใน prompt — ตัวที่พิสูจน์ว่าถ้อยคำไม่ใช่ตัวแปรหลัก |
+| `bench_recall.py` | วัด recall layer แยกจากโมเดล (แยกความผิดของ recall ออกจาก LLM) |
+| `bench_model_upgrade.py` | เทียบโมเดล/พารามิเตอร์ด้วย pass^k — เผยความไม่แน่นอนที่ pass@1 ซ่อนไว้ |
 | `test_oil.py` | ดึงราคาน้ำมัน Kapook แบบ print-and-check |
 | `test_tmd.py` | ดึงพยากรณ์อากาศ TMD รายวัน |
 | `test_tmd_hourly.py` | ดึงพยากรณ์อากาศ TMD รายชั่วโมง |
@@ -139,6 +152,8 @@
 | จำนวน history ที่เก็บ | `memory.py` → `MAX_HISTORY_PAIRS` |
 | จำนวน facts สูงสุดต่อคน | `memory.py` → `MAX_FACTS` |
 | จำนวน summaries สูงสุดต่อคน | `memory.py` → `MAX_SUMMARIES` |
+| คำที่ชี้ว่าคำถามต้องใช้เครื่องมือไหน | `llm_tools.py` → `TOOL_HINTS` (ดู [ระบบเลือกเครื่องมือ](#-ระบบเลือกเครื่องมือ-dynamic-tool-selection)) |
+| ยื่น `search_web` ไว้เสมอ | `llm_tools.py` → `ALWAYS_OFFER_SEARCH_WEB` |
 | ตั้งค่าเครื่องพิมพ์ | `printing.py` → `PRINTER_NAME` |
 | เพิ่มเพลงทั่วไป | วางไฟล์ `.mp3` ในโฟลเดอร์ `songs/` |
 | เพิ่มเพลง karaoke | วางไฟล์ `.wav` ในโฟลเดอร์ `karaoke/` ตั้งชื่อ `[ชื่อเพลง]_[ศิลปิน].wav` |
@@ -164,12 +179,58 @@ summaries  → สรุปบทสนทนาเก่า 1 บรรทั�
 
 นอกจากนั้น รอสเต้จะ **จำเองอัตโนมัติ** (auto-remember) ในเบื้องหลัง — ถ้าข้อความมีสัญญาณว่าพูดถึงตัวเอง (เช่น "ฉันทำงาน..." "ผมมี..." "ชื่อ...") โมเดลจะสกัดเป็น fact และบันทึกโดยไม่รบกวนการตอบ
 
+## 🎯 ระบบเลือกเครื่องมือ (Dynamic tool selection)
+
+รอสเต้มีเครื่องมือ 6 ตัว แต่**ไม่ได้ยื่นให้โมเดลครบทุกตัวทุกครั้ง** — คัดเฉพาะตัวที่เกี่ยวกับคำถามนั้น
+ผ่าน `llm_tools.select_tools()`
+
+### ทำไมต้องคัด
+
+เจอปัญหาจริง: ผู้ใช้ถาม "เราเคยคุยเรื่องการอ่านไหม" แล้วรอสเต้ตอบว่าไม่เคย **ทั้งที่ summary
+ของบทสนทนานั้นอยู่ใน context ครบถ้วนแล้ว**
+
+ต้นเหตุไม่ใช่ระบบความจำ และไม่ใช่ถ้อยคำใน prompt — เป็น**ขนาดของ tool schema** เมื่อยื่นเครื่องมือ
+เยอะเกินไป โมเดลจะละเลยข้อมูลส่วนอื่นใน context (attention dilution / *Over-Tooled Agent*)
+
+วัดได้ว่าเกณฑ์อยู่ราว **3,700 ตัวอักษร** — และไม่เกี่ยวกับ*เนื้อหา*ของ tool เลย เพราะ tool ปลอมที่
+description เป็นตัว `x` ล้วนก็ทำให้พังเท่ากับ tool จริง เครื่องมือทั้ง 6 ตัวรวมกัน = 4,292c จึงเกิน
+เกณฑ์ทุกครั้ง
+
+### ผลที่วัดได้
+
+| | ความจำ | ข้อมูลสด | ขนาด tool |
+|---|---|---|---|
+| ยื่นครบ 6 ตัว | 30/120 (25%) | 100/100 | 4,292c |
+| **คัดตามคำถาม** | **120/120 (100%)** | 100/100 | **725c** |
+
+วัดด้วย pass^40 (n=120) ช่วงความเชื่อมั่น 95% ไม่ซ้อนทับกัน = ต่างจริง ไม่ใช่ noise
+และความแม่นในการเลือกเครื่องมือ**ไม่ตกเลย** — ได้ทั้งสองฝั่งพร้อมกัน
+
+### ข้อดีที่ตามมา
+
+คำถามที่ไม่ต้องใช้เครื่องมือ (ความจำล้วน/คุยเล่น) จะได้ 0 tool **โดยอัตโนมัติ** เพราะไม่มีคำที่ชี้
+เครื่องมือใดๆ — ไม่ต้องมีกฎเดาว่า "คำถามนี้เป็นเรื่องความจำหรือเปล่า" ซึ่งเปราะและผิดได้ง่าย
+(เช่น "เมื่อวานอากาศเป็นไง" เป็นทั้งคำถามความจำและข้อมูลสดพร้อมกัน)
+
+### ปรับแต่ง
+
+| ต้องการ | ทำอย่างไร |
+|---------|-----------|
+| เพิ่มคำที่ชี้เครื่องมือ | `llm_tools.py` → `TOOL_HINTS` |
+| ยื่น `search_web` ไว้เสมอ | `llm_tools.py` → `ALWAYS_OFFER_SEARCH_WEB = True` |
+
+> ⚠️ **เพิ่มเครื่องมือใหม่ต้องเพิ่มคำใน `TOOL_HINTS` ด้วย** ไม่งั้นเครื่องมือนั้นจะไม่ถูกยื่นให้โมเดลเลย
+
+เปิด `ALWAYS_OFFER_SEARCH_WEB` เมื่อเจอคำถามข้อมูลสดที่ `TOOL_HINTS` ครอบไม่ถึง (เช่น
+"ใครชนะเลือกตั้ง") แล้วรอสเต้เดาคำตอบแทนการค้น — วัดแล้วว่าเปิดไม่ทำให้ด้านอื่นแย่ลง แค่ขนาดโตขึ้น
+เป็น ~1,057c ซึ่งยังห่างเกณฑ์มาก
+
 ## 🧪 ทดสอบ
 
 รัน unit tests ทั้งหมด (ไม่ต้องเปิด Ollama หรือมี internet):
 
 ```bash
-pytest test_bot.py test_memory.py test_realtime.py test_vectormemory.py test_voice.py test_printing.py test_music.py -v
+pytest
 ```
 
 รัน integration test (ยิง HTTP จริง — ต้องต่อ internet):
