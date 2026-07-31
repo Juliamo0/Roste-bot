@@ -15,7 +15,10 @@ import persona
 import stats
 import vectormemory
 from datasources import find_province_in_text, fuzzy_match_province
-from llm_tools import TOOLS, TOOL_HANDLERS, _validate_tool_args, _strip_ungrounded_optional_args
+from llm_tools import (
+    TOOL_HANDLERS, select_tools,
+    _validate_tool_args, _strip_ungrounded_optional_args,
+)
 from ollama_client import _chat_once, _get_json_post, _strip_think, MODEL
 
 logger = logging.getLogger("roste.chat")
@@ -194,8 +197,37 @@ def _drop_leaking_sentences(reply: str, is_bad, fallback: str, min_len: int = 15
 _EMPTY_FALLBACK = "หืม... ขอโทษค่ะ ยังหาคำตอบที่แน่ใจไม่ได้พอดี"
 _CONFUSED_FALLBACK = "หืม... ขอโทษค่ะ รอสเต้งงคำถามนิดนึง ลองถามใหม่อีกทีได้ไหมคะ"
 
+# fallback สำหรับคำถามเรื่อง "ความจำ/เคยคุยกันไหม" โดยเฉพาะ
+_MEMORY_FALLBACK = "อืม... รอสเต้จำรายละเอียดไม่ค่อยได้แล้วค่ะ เล่าให้ฟังอีกทีได้ไหมคะ"
 
-def _apply_reply_guards(reply: str) -> str:
+# คำถามที่ "เกี่ยวกับตัวตนของรอสเต้จริงๆ" — เฉพาะกรณีนี้ที่ AI_DEFLECT ตอบแล้วเข้าเรื่อง
+_IDENTITY_QUESTION_RE = re.compile(
+    r"(?:เป็น|คือ)\s*(?:AI|เอไอ|หุ่นยนต์|โปรแกรม|โมเดล|บอท|แชทบอท|คน|มนุษย์|ปัญญาประดิษฐ์)"
+    r"|ตัวจริง|ตัวตน(?:จริง)?|มนุษย์จริง",
+    re.IGNORECASE,
+)
+
+
+def _fallback_for(user_message: str) -> str:
+    """เลือกประโยคสำรองให้ "ตรงกับสิ่งที่ผู้ใช้ถาม" เมื่อคำตอบถูก guard ตัดจนไม่เหลือพอ
+
+    เดิมใช้ AI_DEFLECT ("เอ๋? ก็ฉันเป็นฉันนี่แหละค่ะ") กับทุกกรณี ซึ่งเป็นประโยคสำหรับตอบ
+    คำถาม "เธอเป็น AI ไหม" เท่านั้น — พอเอาไปตอบคำถามอื่นจะไม่ตรงคำถามเลย เจอจริงบน
+    Discord (31 ก.ค. 13:50): ผู้ใช้ถาม "เราเคยคุยเรื่องการอ่านไหม" โมเดลตอบหลุดว่าเป็น AI
+    → guard ตัดถูกต้อง → แต่เหลือสั้นเกิน → fallback เป็น AI_DEFLECT → ผู้ใช้เห็นคำตอบที่
+    ไม่เกี่ยวกับคำถามเลย ทั้งที่ระบบทำงานถูกทุกขั้น
+
+    ใช้ PAST_HINTS ชุดเดียวกับ recall_summaries เพื่อให้ "อะไรนับเป็นคำถามถึงอดีต" ตรงกัน
+    ทั้งสองที่ ไม่ต้องดูแลสองรายการ
+    """
+    if _IDENTITY_QUESTION_RE.search(user_message):
+        return persona.AI_DEFLECT
+    if any(h in user_message for h in memory.PAST_HINTS):
+        return _MEMORY_FALLBACK
+    return _EMPTY_FALLBACK
+
+
+def _apply_reply_guards(reply: str, user_message: str = "") -> str:
     """guard chain ที่ต้องใช้กับ *ทุก* คำตอบก่อนส่งให้ผู้ใช้ ไม่ว่ามาจาก path ไหน
 
     แยกเป็นฟังก์ชันเพราะเดิม chain นี้เขียน inline อยู่ใน _ask_ollama_impl ที่เดียว พอเพิ่ม
@@ -226,7 +258,7 @@ def _apply_reply_guards(reply: str) -> str:
         # เลี่ยงที่ไม่ตรงคำถาม (เจอจริงบน Discord + pass^5)
         logger.warning(f"   🎭 คำตอบประกาศตัวเป็น AI (อาจโดนสั่งให้พิมพ์ตาม) — ตัดประโยคที่หลุดออก: {reply[:60]!r}")
         reply = _drop_leaking_sentences(
-            reply, persona.reply_claims_to_be_ai, persona.AI_DEFLECT
+            reply, persona.reply_claims_to_be_ai, _fallback_for(user_message)
         )
 
     fixed = persona.fix_persona_slips(reply)
@@ -544,9 +576,23 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
             )
         recalled = memory.recall_summaries(mem, user_message)
         if recalled:
+            # ⚠️ ถ้อยคำตรงนี้ *ไม่ใช่* ตัวแปรหลัก — วัดแล้ว 36% → 40% (= noise)
+            # ต้นเหตุจริงของอาการ "ตอบว่าไม่เคยคุย ทั้งที่ summary อยู่ใน context ครบ" คือ
+            # attention dilution จากขนาดของ tool schema: วัดได้ว่า tool รวม ≤3,607c ผ่าน 6/6
+            # แต่ ≥3,707c พังเหลือ 0-1/6 — และพิสูจน์ว่าไม่เกี่ยวกับ *เนื้อหา* tool เลย เพราะ
+            # tool ปลอมที่ description เป็นตัว 'x' ล้วนก็ทำให้พังเท่ากับ tool จริง
+            # (ตรงกับที่งานวิจัยเรียกว่า Over-Tooled Agent / Prompt Budget Starvation)
+            # ดู tools/bench_attention.py
+            #
+            # แก้แล้วที่ต้นเหตุด้วย llm_tools.select_tools (คัด tool ตามคำถามแทนยื่นครบ 6 ตัว
+            # = 4,292c) วัดด้วย pass^40: ความจำ 25% → 100% โดย tool accuracy ไม่ตก
+            # คงถ้อยคำที่ชัดกว่าเดิมไว้เพราะอ่านง่ายขึ้น แต่อย่าเข้าใจผิดว่านี่คือตัวแก้ปัญหา
             system_text += (
-                "\n\nเรื่องที่เคยคุยกันก่อนหน้า (บทสนทนาเก่า ใช้เป็น context เฉยๆ ไม่ต้องพูดถึงโดยตรง):\n"
+                "\n\nเรื่องที่เคยคุยกันก่อนหน้า (รอสเต้จำได้จริง — นี่คือความทรงจำของคุณเอง):\n"
                 + "\n".join(f"- {s}" for s in recalled)
+                + "\nปกติไม่ต้องท่องรายการนี้ออกมาเอง แต่ถ้าผู้ใช้ถามว่า \"เคยคุยเรื่องนี้กันไหม\" "
+                  "หรือ \"จำได้ไหม\" แล้วเรื่องนั้นอยู่ในรายการข้างบน = เคยคุยกันจริง "
+                  "ให้ตอบยืนยันแล้วเล่าเท่าที่จำได้ ห้ามตอบว่าไม่เคยคุยหรือจำไม่ได้"
             )
 
         # 🔎 semantic recall — เสริม recall_summaries (keyword) ด้วยการค้นความหมายผ่าน vector memory
@@ -688,7 +734,7 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
             else:
                 reply = (_PREFILL_PREFIX + continuation).strip()
 
-            reply = _apply_reply_guards(reply)
+            reply = _apply_reply_guards(reply, user_message)
             reply, _ = _maybe_append_summary_notice(user_id, _will_notice, reply)
 
             new_history = history + [
@@ -727,7 +773,11 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
             # ดึงข้อมูลหลักได้แล้ว (อากาศ/น้ำมัน/ไฟดับ/เวลา) → รอบถัดไปไม่ยื่น tool ให้เลย = บังคับสรุป
             # จากข้อมูลนั้น กันทั้ง (1) วนเรียก tool เดิมซ้ำจนตอบ fallback เปล่า และ
             # (2) หลงไปเรียก tool อื่นต่อ (เช่น ถามอากาศ→ดึงอากาศได้แล้ว→ดันเรียก search_places ต่อ→ตอบร้าน)
-            turn_tools = [] if got_primary else TOOLS
+            # คัด tool ตามคำถาม แทนการยื่นครบ 6 ตัว — ขนาด schema รวมเป็นตัวกำหนดว่าโมเดลจะ
+            # เห็น summary ใน system prompt หรือไม่ (ยื่นครบ = 4,292c → ตอบว่าไม่เคยคุย 75%
+            # ของรอบ ทั้งที่ summary อยู่ครบ) วัดด้วย pass^40: คัดแล้วความจำ 25%→100% โดย
+            # tool accuracy ไม่ตก (100/100 เท่ากัน) — ดู llm_tools.select_tools
+            turn_tools = [] if got_primary else select_tools(user_message)
             with stats.stage("main_llm"):
                 msg = await _chat_once(messages, temperature=reply_temp, tools=turn_tools)
             tool_calls = msg.get("tool_calls")
@@ -801,7 +851,8 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
 
         # 🎭🕳️ guard chain ทั้งชุด (persona leak / reasoning leak / ต่างภาษา / AI claim / คำหลุด)
         #      — ใช้ helper ตัวเดียวกับ intro path กัน guard หายไปจาก path ใดๆ (ดู _apply_reply_guards)
-        reply = _apply_reply_guards(reply)
+        #      ส่ง user_message ไปด้วยเพื่อให้เลือก fallback ได้ตรงบริบทคำถาม
+        reply = _apply_reply_guards(reply, user_message)
 
         # 💬 บอกผู้ใช้แบบ in-character ถ้ารอบนี้จะสรุปบทยาว (helper จัดการ set เอง)
         reply, _ = _maybe_append_summary_notice(user_id, _will_notice, reply)
