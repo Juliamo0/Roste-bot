@@ -29,6 +29,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import chat  # noqa: E402
 import llm_tools  # noqa: E402
@@ -38,7 +39,9 @@ import persona  # noqa: E402
 
 logging.disable(logging.CRITICAL)
 
-SRC_MEM = "memory/387387058638815243.json"
+from _bench_target import resolve_memory_file  # noqa: E402
+
+SRC_MEM = resolve_memory_file()
 TEST_UID = 999_888_777_666_554
 
 DENIAL = [
