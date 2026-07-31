@@ -540,47 +540,122 @@ print('done', flush=True)
 
 # ── Thai text splitter ────────────────────────────────────────────────────────
 
-def _split_thai_text(text: str, max_chars: int = 300) -> list[str]:
-    """แบ่ง text สำหรับ F5:
-    1. ลอง crfcut ก่อน — ดีสำหรับ conversational text (ประโยคสมบูรณ์)
-    2. ถ้า crfcut ไม่แบ่ง (list data เช่นราคาน้ำมัน) + ยาวเกิน → keyword split
+# ความยาว segment ที่ "กำลังดี" สำหรับ F5 — ไม่ใช่เพดานตายตัว แต่เป็นเป้าที่ตัวซอยพยายามเข้าใกล้
+#
+# ทำไมต้องมีเป้า ไม่ใช่แค่เพดาน: เดิมใช้แต่เพดาน (max_chars) ทำให้ได้ segment ยาวไม่เท่ากันมาก
+# (วัดจริงจากคำตอบพยากรณ์อากาศ: 31c / 120c / 144c ต่างกัน 4 เท่า) — segment แรกสั้นเกินจนเล่นจบ
+# ก่อนอันถัดไปจะ generate เสร็จ ผู้ฟังเลยได้ยินเงียบคั่นทั้งที่ระบบตามทันอยู่
+_SEG_TARGET_CHARS = 90    # เป้าหมาย ~90c ≈ เสียง 3-4 วินาที (นานพอให้เจนอันถัดไปทัน)
+_SEG_MIN_CHARS    = 45    # สั้นกว่านี้ให้ยุบรวมกับเพื่อนบ้าน กันเศษประโยคห้วนๆ
+
+
+def _thai_word_bounds(text: str) -> list[int]:
+    """คืนตำแหน่ง (index) ทุกจุดที่เป็น "ขอบเขตคำ" ของภาษาไทย — ตัดตรงนี้เท่านั้นถึงจะปลอดภัย
+
+    ภาษาไทยไม่เขียนเว้นวรรคระหว่างคำ การตัดด้วยการนับตัวอักษรจึงผ่ากลางคำได้ง่ายมาก
+    (เจอจริง: ตัดที่ตัวที่ 100 ได้ 'ทุกวั' | 'นที่ผ่าน' — คำว่า "วัน" ถูกผ่าครึ่ง F5 อ่านเพี้ยน)
+    ใช้ newmm ของ pythainlp หาขอบเขตคำจริง — keep_whitespace=True สำคัญมาก เพราะต้องได้
+    เนื้อหาคืนครบทุกตัวอักษร (ยืนยันแล้วว่า ''.join(tokens) == text)
+
+    คืน [] ถ้า tokenize ไม่ได้ — ผู้เรียกต้องถือว่า "ไม่มีจุดตัดปลอดภัย" แล้วไม่ตัดเลย
     """
     try:
-        from pythainlp.tokenize import sent_tokenize
-        segs = [s.strip() for s in sent_tokenize(text, engine="crfcut") if s.strip()]
-        # merge segment ที่สั้นมาก (< 40c) เข้ากับ segment ก่อนหน้า
-        merged = []
-        for s in segs:
-            if merged and len(s) < 40:
-                merged[-1] = merged[-1] + " " + s
-            else:
-                merged.append(s)
-        # ใช้ crfcut เฉพาะเมื่อ segment สั้นจริง (≤150c) = ประโยคสนทนา
-        # ถ้า segment ยาว = list data → ปล่อยให้ keyword split จัดการ
-        if len(merged) > 1 and all(len(s) <= 150 for s in merged):
-            return merged
+        from pythainlp.tokenize import word_tokenize
+        tokens = word_tokenize(text, engine="newmm", keep_whitespace=True)
     except Exception:
-        pass
+        return []
+    if "".join(tokens) != text:
+        return []           # tokenizer ทำเนื้อหาเพี้ยน — ไม่ยอมใช้ ปลอดภัยไว้ก่อน
+    bounds, off = [], 0
+    for tok in tokens:
+        off += len(tok)
+        bounds.append(off)
+    return bounds
 
-    # crfcut ไม่แบ่ง (1 segment) หรือ error → keyword split ถ้ายาวเกิน
-    if len(text) <= max_chars:
-        return [text]
-    segments, remaining = [], text
-    while len(remaining) > max_chars:
-        chunk = remaining[:max_chars]
-        best = -1
-        for ending in ['ค่ะ ', 'คะ ', 'ครับ ', 'นะ ', 'ลิตร ', '. ']:
-            pos = chunk.rfind(ending)
-            if pos > max_chars // 3 and pos + len(ending) > best:
-                best = pos + len(ending)
-        if best == -1:
-            pos = chunk.rfind(' ')
-            best = pos if pos > 0 else max_chars
-        segments.append(remaining[:best].strip())
-        remaining = remaining[best:].strip()
-    if remaining:
-        segments.append(remaining)
-    return [s for s in segments if s]
+
+def _cut_at_word_bound(text: str, target: int, bounds: list[int]) -> int:
+    """หาจุดตัดที่เป็นขอบเขตคำ ใกล้ target ที่สุด — คืน 0 ถ้าไม่มีจุดที่ใช้ได้เลย
+
+    เลือกจากขอบเขตคำที่อยู่ในช่วง [target*0.5, target*1.6] แล้วเอาตัวใกล้ target ที่สุด
+    (ยอมให้เลย target ได้บ้าง ดีกว่าตัดสั้นจนเป็นเศษ) — ถ้าไม่มีเลยในช่วงนั้นคืน 0
+    แปลว่า "ไม่ควรตัด" ปล่อยให้ segment ยาวไปดีกว่าตัดผิดที่จนเสียงเพี้ยน
+    """
+    if not bounds:
+        return 0
+    lo, hi = int(target * 0.5), int(target * 1.6)
+    usable = [b for b in bounds if lo <= b <= hi and b < len(text)]
+    if not usable:
+        return 0
+    return min(usable, key=lambda b: abs(b - target))
+
+
+def _split_thai_text(text: str, max_chars: int = 300,
+                     target: int = _SEG_TARGET_CHARS) -> list[str]:
+    """แบ่งข้อความไทยสำหรับ F5 โดย "ตัดเฉพาะจุดที่ปลอดภัย" เรียงตามความน่าเชื่อถือ:
+
+      1. ขอบเขตประโยคจาก crfcut  — ดีสุด โมเดลเข้าใจไวยากรณ์
+      2. ขอบเขตคำจาก newmm       — กันตัดกลางคำ (ไทยไม่มีตัวคั่นคำ ตัดผิด = อ่านเพี้ยน)
+      3. ไม่ตัดเลย               — ถ้าไม่มีจุดปลอดภัย ยอมให้ยาวดีกว่าเสียงพัง
+
+    ต่างจากเดิมที่ fallback เป็น `remaining[:max_chars]` ดิบๆ (ตัดกลางคำได้) และใช้แค่
+    เพดานความยาว ทำให้ segment ยาวไม่เท่ากันมากจนเกิดช่องเงียบระหว่างเล่น — ตอนนี้เล็งที่
+    `target` เป็นหลัก แล้วยุบตัวที่สั้นเกิน (_SEG_MIN_CHARS) รวมกับเพื่อนบ้าน
+
+    ช่องว่างระหว่างประโยคถูกรักษาไว้ (ไม่ strip ทิ้งกลางทาง) เพราะวัดแล้วว่ามีผลต่อจังหวะ
+    หยุดที่ F5 สังเคราะห์ออกมาจริง — ข้อความเดียวกันแบบมี/ไม่มีช่องว่างให้ silence gap
+    ต่างกัน (5 จังหวะ vs 3 จังหวะ)
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    # ── ชั้น 1: ขอบเขตประโยค ──
+    pieces: list[str] = []
+    try:
+        from pythainlp.tokenize import sent_tokenize
+        pieces = [s for s in sent_tokenize(text, engine="crfcut") if s.strip()]
+    except Exception:
+        pieces = []
+    if not pieces:
+        pieces = [text]
+
+    # ── ชั้น 2: ตัวไหนยังยาวเกินไป ซอยต่อที่ขอบเขตคำ ──
+    # เกณฑ์คือ target (ไม่ใช่ max_chars) — max_chars เป็นเพดานกันพังของ F5 ส่วนเป้าหมาย
+    # ที่อยากได้จริงคือความยาวสม่ำเสมอราว target เผื่อไว้เล็กน้อย (1.25x) ไม่ให้ซอยถี่เกิน
+    # จนเป็นเศษ แต่ก็ไม่หลวมจนปล่อยก้อน 125c ผ่านทั้งที่ target แค่ 90
+    limit = min(max_chars, int(target * 1.25))
+    refined: list[str] = []
+    for piece in pieces:
+        while len(piece) > limit:
+            bounds = _thai_word_bounds(piece)
+            cut = _cut_at_word_bound(piece, target, bounds)
+            if cut <= 0:
+                break        # ไม่มีจุดปลอดภัย — ปล่อยยาวไปทั้งก้อน (ชั้น 3)
+            refined.append(piece[:cut])
+            piece = piece[cut:]
+        if piece:
+            refined.append(piece)
+
+    # ── ยุบตัวที่สั้นเกินไปรวมกับเพื่อนบ้าน ──
+    # ต่อกันตรงๆ ไม่แทรก/ตัดอักขระ — เนื้อหาต้องเท่าเดิมทุกตัวหลังรวม (มีเทสยืนยัน)
+    #
+    # ยุบได้เฉพาะเมื่อ "ผลลัพธ์ไม่บวมเกิน limit" — ไม่งั้นการแก้ segment สั้นจะไปสร้าง
+    # segment ยาวผิดปกติแทน (เจอจริง: 36c + 125c → 160c ทั้งที่ target แค่ 90 กลายเป็น
+    # ตัวที่เล่นนานจนตัวถัดไปเจนไม่ทัน ซึ่งเป็นปัญหาเดิมที่พยายามแก้อยู่พอดี)
+    merged: list[str] = []
+    for seg in refined:
+        if (merged and len(seg.strip()) < _SEG_MIN_CHARS
+                and len(merged[-1]) + len(seg) <= limit):
+            merged[-1] = merged[-1] + seg
+        else:
+            merged.append(seg)
+    # ตัวแรกสั้นเกิน (ไม่มีตัวก่อนหน้าให้ยุบตอนวนข้างบน) → ยุบเข้ากับตัวถัดไปแทน
+    if (len(merged) > 1 and len(merged[0].strip()) < _SEG_MIN_CHARS
+            and len(merged[0]) + len(merged[1]) <= limit):
+        merged[1] = merged[0] + merged[1]
+        merged.pop(0)
+
+    return [s for s in (seg.strip() for seg in merged) if s]
 
 
 def _concat_wavs(paths: list[str], out_path: str, silence_ms: int = 150) -> None:
@@ -650,6 +725,20 @@ def _gen_one_segment(
         return None
 
 
+# จำนวน segment ที่ generate ล่วงหน้าเก็บไว้ในคิว "ระหว่างที่ segment ก่อนหน้ากำลังเล่นอยู่"
+#
+# ทำไมต้องมี: generator ธรรมดาจะค้างที่ yield จนกว่า caller จะขอชิ้นถัดไป แปลว่าตลอดเวลาที่
+# เสียง segment ก่อนหน้าเล่นอยู่ (~4s) GPU ว่างเปล่า แล้วผู้ฟังต้องมารอเจนอีก ~2s ทุกช่วง
+# วัดจริง (คำตอบ 6 segment ขณะ Ollama เจนอยู่เบื้องหลังด้วย): ช่วงเงียบกลางคำตอบรวม 20.7s
+# ย้าย generate ไปอยู่ใน thread แยกที่เดินหน้าเติมคิวไม่รอ consumer → ช่วงเงียบเหลือ 0.0s
+# และคำตอบทั้งก้อนจบเร็วขึ้นจาก 49.5s เหลือ 29.8s ด้วย worker ชุดเดิม (ไม่ต้องเพิ่ม VRAM)
+#
+# ทำไมเป็น 2 ไม่ใช่มากกว่า: ล่วงหน้า 1 ชิ้นก็พอกันเงียบในกรณีปกติแล้ว (เจน 2.2s < เล่น 4.4s)
+# ชิ้นที่ 2 เผื่อ segment ที่เจนช้าผิดปกติ — วัดความแกว่งได้ worst/median 1.25x ยังมีของสำรอง
+# ให้เล่นระหว่างนั้น ลึกกว่านี้ไม่ช่วยเพิ่ม แต่เปลืองงาน generate ทิ้งตอนผู้ใช้หยุดกลางคัน
+_TTS_PREFETCH_DEFAULT = 2
+
+
 def text_to_roste_voice_segments(
     text: str,
     *,
@@ -657,11 +746,19 @@ def text_to_roste_voice_segments(
     f5_worker: F5Worker | None = None,
     out_dir: str | None = None,
     filename: str | None = None,
+    prefetch: int = _TTS_PREFETCH_DEFAULT,
 ):
-    """ข้อความ → yield path .wav ทีละ segment ทันทีที่เสร็จ (ลำดับตาม text เสมอ
-    เพราะ generate เป็น sequential) — ให้ caller เริ่มเล่น segment แรกได้โดยไม่รอทั้งก้อน
+    """ข้อความ → yield path .wav ทีละ segment ทันทีที่เสร็จ (ลำดับตาม text เสมอ)
+    — ให้ caller เริ่มเล่น segment แรกได้โดยไม่รอทั้งก้อน
+
+    generate ทำใน thread เบื้องหลังที่เดินหน้าเติมคิวล่วงหน้า `prefetch` ชิ้นโดยไม่รอ caller
+    (ดู _TTS_PREFETCH_DEFAULT ว่าทำไม) — ลำดับยังตรงกับ text เสมอเพราะ producer มีตัวเดียว
+    และ generate เรียงตามลำดับ ไม่ต้องมี reorder buffer
+
+    prefetch=0 = พฤติกรรมเดิม (เจนทีละชิ้นตอน caller ขอ) ไว้เป็นทางถอยถ้าเจอปัญหา
 
     ไฟล์ที่ yield เขียนลง out_dir (persistent) — caller รับผิดชอบลบหลังใช้เสร็จ
+    ยกเว้น segment ที่เจนล่วงหน้าไว้แล้วแต่ caller เลิกฟังก่อน — ฟังก์ชันนี้ลบให้เอง
     segment ที่พังทุกชั้น fail-safe จะถูกข้าม (ไม่ yield ไม่ raise)
     ถ้าไม่มี f5_worker → เส้น edge-tts ทั้งก้อนแบบเดิม (yield ไฟล์เดียว)
     """
@@ -675,23 +772,88 @@ def text_to_roste_voice_segments(
     uid     = filename or uuid.uuid4().hex[:8]
     tmp_dir = tempfile.mkdtemp(prefix="roste_")
 
+    producer: threading.Thread | None = None
+    stop = threading.Event()
+
     try:
         if f5_worker and f5_worker.alive:
-            from f5_preprocess import preprocess_for_f5
-            preprocessed, warns = preprocess_for_f5(text)
-            for w in warns:
-                logger.warning(f"   ⚠️ F5 preprocess: {w}")
-            segments = _split_thai_text(preprocessed, max_chars=300)
+            from f5_preprocess import preprocess_for_f5, split_lines_for_tts
+            # preprocess ทีละบรรทัด แล้วซอยแยกกัน — ขอบเขตบรรทัดคือจุดตัดที่เชื่อถือได้ที่สุด
+            # (คนเขียน/โมเดลขึ้นบรรทัดใหม่ = ตั้งใจให้เป็นคนละประโยค) ถ้า preprocess ทั้งก้อน
+            # ก่อน \n จะถูกยุบเป็นช่องว่างจนตัวซอยมองไม่เห็นขอบเขตนั้นอีกเลย ดู split_lines_for_tts
+            segments, parts = [], []
+            for line in split_lines_for_tts(text):
+                pre_line, warns = preprocess_for_f5(line)
+                for w in warns:
+                    logger.warning(f"   ⚠️ F5 preprocess: {w}")
+                if not pre_line.strip():
+                    continue
+                parts.append(pre_line)
+                segments.extend(_split_thai_text(pre_line, max_chars=300))
+            preprocessed = " ".join(parts)
             # เนื้อหาข้อความจริง (มาจากบทสนทนา) แยกไป DEBUG — INFO เห็นแค่จำนวนตัวอักษร/segment
             logger.info(f"   🔤 F5 gen_text ({len(preprocessed)}c, {len(segments)} ส่วน)")
             logger.debug(f"   🔤 F5 gen_text เนื้อหา: {preprocessed!r}")
-            for i, seg in enumerate(segments):
-                out_path = os.path.join(out_dir, f"{uid}_{i}_rvc.wav")
-                got = _gen_one_segment(
-                    seg, f"{uid}_{i}", out_path,
-                    worker=worker, f5_worker=f5_worker, tmp_dir=tmp_dir)
-                if got:
-                    yield got
+
+            if prefetch <= 0:
+                # ทางถอย: เจนทีละชิ้นตอน caller ขอ (พฤติกรรมก่อนมี prefetch)
+                for i, seg in enumerate(segments):
+                    out_path = os.path.join(out_dir, f"{uid}_{i}_rvc.wav")
+                    got = _gen_one_segment(
+                        seg, f"{uid}_{i}", out_path,
+                        worker=worker, f5_worker=f5_worker, tmp_dir=tmp_dir)
+                    if got:
+                        yield got
+                return
+
+            # คิวมีขนาดจำกัด → พอเต็ม put() บล็อกเอง เป็น backpressure ไม่ให้ producer
+            # เจนรวดทั้งคำตอบทิ้งไว้ (เปลืองงาน+ดิสก์ ถ้า caller หยุดกลางคัน)
+            q: queue.Queue = queue.Queue(maxsize=prefetch)
+            sentinel = object()
+
+            def _produce() -> None:
+                try:
+                    for i, seg in enumerate(segments):
+                        if stop.is_set():
+                            break
+                        out_path = os.path.join(out_dir, f"{uid}_{i}_rvc.wav")
+                        got = _gen_one_segment(
+                            seg, f"{uid}_{i}", out_path,
+                            worker=worker, f5_worker=f5_worker, tmp_dir=tmp_dir)
+                        if not got:
+                            continue
+                        # วน put แบบมี timeout แทน put() เปล่า — คิวเต็มแล้ว caller เลิกฟัง
+                        # (ไม่มีใครดึงออกอีก) จะค้างตรงนี้ถาวรและ thread ไม่มีวันจบ
+                        while not stop.is_set():
+                            try:
+                                q.put(got, timeout=0.2)
+                                break
+                            except queue.Full:
+                                continue
+                        else:
+                            # caller หยุดแล้ว — ไฟล์นี้ไม่มีใครเล่น ลบทิ้งเลย (คิวไม่ได้รับไป
+                            # จึงไม่ถูกเก็บกวาดในลูป drain ข้างล่าง)
+                            try:
+                                os.remove(got)
+                            except OSError:
+                                pass
+                            break
+                except Exception as exc:   # ส่งข้ามไปให้ฝั่ง consumer raise ในบริบทของ caller
+                    q.put(exc)
+                finally:
+                    q.put(sentinel)   # ต้องมีเสมอ ไม่งั้น consumer ค้างรอตลอดไป
+
+            producer = threading.Thread(
+                target=_produce, name=f"tts-produce-{uid}", daemon=True)
+            producer.start()
+
+            while True:
+                item = q.get()
+                if item is sentinel:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
         else:
             out_path = os.path.join(out_dir, f"{uid}_rvc.wav")
             raw_wav = os.path.join(tmp_dir, f"{uid}_raw.wav")
@@ -701,6 +863,34 @@ def text_to_roste_voice_segments(
             _rvc_convert(adj_wav, out_path, worker)
             yield out_path
     finally:
+        # ต้องรอ producer จบก่อนลบ tmp_dir เสมอ — ไม่งั้นลบไฟล์ที่มันกำลังเขียนอยู่
+        # (caller ปิด generator กลางคันได้ทุกเมื่อ เช่น ผู้ใช้ออกจากห้อง voice)
+        if producer is not None:
+            stop.set()
+            # ดึงคิวทิ้งระหว่างรอ — ปลด producer ที่อาจค้างอยู่ที่ put() แล้วเก็บกวาด
+            # segment ที่เจนเสร็จแล้วแต่ไม่มีใครเล่นไปด้วยในตัว
+            while producer.is_alive():
+                try:
+                    leftover = q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if isinstance(leftover, str):
+                    try:
+                        os.remove(leftover)
+                    except OSError:
+                        pass
+            producer.join(timeout=_WORKER_READ_TIMEOUT_SEC)
+            while True:   # เก็บที่ค้างในคิวหลัง producer จบ
+                try:
+                    leftover = q.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(leftover, str):
+                    try:
+                        os.remove(leftover)
+                    except OSError:
+                        pass
+
         for fn in os.listdir(tmp_dir):
             try:
                 os.remove(os.path.join(tmp_dir, fn))

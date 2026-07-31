@@ -8,6 +8,8 @@
 #    - text_to_roste_voice (API เดิม) ยังคืนไฟล์เดียวหลัง refactor
 # ============================================================
 import os
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -157,10 +159,16 @@ def test_all_segments_fail_yields_nothing_without_raise(
 def test_dead_f5_worker_goes_straight_to_edge_per_segment(
         three_segments, edge_ok, tmp_path):
     # worker ตายหลังเริ่ม (alive=False ตอนเข้า _gen_one_segment) → ไม่ retry F5 เลย
+    #
+    # ใช้ prefetch=0 เพราะเทสนี้ต้องคุม "จังหวะ" ที่ worker ตาย ให้ตกระหว่าง segment 0 กับ 1
+    # พอดี — ซึ่งทำได้ต่อเมื่อ generate เกิดตอน caller ขอเท่านั้น ส่วนโหมด prefetch (default)
+    # producer เดินหน้าเจนล่วงหน้าไปแล้วโดยตั้งใจ จังหวะจึงคุมจากฝั่ง caller ไม่ได้
+    # (พฤติกรรมที่เทสนี้สนใจจริงๆ — ตายแล้วต้องไป edge-tts ไม่เงียบ — เทสแยกไว้ด้านล่าง
+    #  แบบไม่ผูกกับจังหวะ)
     f5, rvc = FakeF5(), FakeRvc()
     got = []
     gen = voice.text_to_roste_voice_segments(
-        "อะไรก็ได้", worker=rvc, f5_worker=f5, out_dir=str(tmp_path))
+        "อะไรก็ได้", worker=rvc, f5_worker=f5, out_dir=str(tmp_path), prefetch=0)
     got.append(next(gen))     # seg0 เส้น F5 ปกติ
     f5.alive = False          # worker ตายกลางคัน
     got.extend(gen)           # seg1, seg2 ต้องไปเส้น edge-tts ต่อ ไม่เงียบ
@@ -168,6 +176,105 @@ def test_dead_f5_worker_goes_straight_to_edge_per_segment(
     assert len(got) == 3
     assert f5.calls == [three_segments[0]]           # F5 ไม่ถูกเรียกอีกหลังตาย
     assert edge_ok == three_segments[1:]             # ที่เหลือ edge-tts ครบ
+
+
+def test_f5_failing_every_call_falls_back_per_segment_under_prefetch(
+        three_segments, edge_ok, tmp_path):
+    """F5 พังทุกครั้ง (worker ยัง alive) → ทุก segment ต้องตกไป edge-tts ครบ ไม่มีอันหาย
+
+    เทียบกับเทสข้างบน: อันนั้นคุมจังหวะที่ worker ตายกลางคัน (ต้อง prefetch=0) อันนี้เช็ค
+    "ผลลัพธ์" ที่ต้องจริงทุกโหมด จึงรันบน default (prefetch เปิด) — ยืนยันว่า fail-safe
+    chain ต่อ segment ยังทำงานเหมือนเดิมหลังย้าย generate ไปอยู่ใน producer thread
+    """
+    f5, rvc = FakeF5(fail_calls=set(range(1, 20))), FakeRvc()
+    got = _collect("อะไรก็ได้", f5, rvc, tmp_path)
+
+    assert len(got) == 3
+    assert edge_ok == three_segments      # ครบทั้ง 3 ตามลำดับ
+
+
+def test_prefetch_generates_ahead_of_consumer(three_segments, edge_ok, tmp_path):
+    """หัวใจของ prefetch: producer ต้องเดินหน้าเจน segment ถัดไปโดยไม่รอ caller ขอ
+
+    เทสนี้คือ regression guard ของบั๊กที่แก้: เดิม generate ค้างที่ yield จนกว่า caller
+    จะขอชิ้นถัดไป ทำให้ระหว่างที่เสียงเล่นอยู่ GPU ว่างเปล่า แล้วผู้ฟังต้องรอเจนใหม่ทุกช่วง
+    (วัดจริงบนคำตอบ 6 segment: เงียบรวม 20.7s → 0.0s หลังแก้)
+    """
+    f5, rvc = FakeF5(), FakeRvc()
+    gen = voice.text_to_roste_voice_segments(
+        "อะไรก็ได้", worker=rvc, f5_worker=f5, out_dir=str(tmp_path), prefetch=2)
+    first = next(gen)         # ขอแค่ชิ้นแรกชิ้นเดียว แล้วไม่ขอต่อ
+
+    # ให้ producer มีโอกาสเดินหน้า — รอจนเจนเกิน 1 ชิ้น (timeout กัน hang ถ้าพัง)
+    deadline = time.monotonic() + 5
+    while len(f5.calls) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert first is not None
+    # ถ้ายังเป็น lock-step แบบเดิม f5.calls จะมีแค่ 1 ตลอด (ค้างที่ yield)
+    assert len(f5.calls) >= 2, "producer ไม่ได้เจนล่วงหน้า — prefetch ไม่ทำงาน"
+    gen.close()
+
+
+def test_prefetch_respects_queue_bound(three_segments, edge_ok, tmp_path, monkeypatch):
+    """คิวเต็มแล้ว producer ต้องหยุดรอ ไม่เจนรวดทั้งคำตอบทิ้งไว้
+
+    สำคัญเพราะถ้าไม่มี bound งาน generate ที่ผู้ใช้ไม่มีวันได้ยิน (หยุดกลางคัน) จะกิน
+    GPU + ดิสก์ฟรีๆ ทั้งก้อน — 6 segment ที่เตรียมไว้ให้ split ในเทสนี้ใช้ 5 ชิ้น
+    """
+    monkeypatch.setattr(voice, "_split_thai_text", lambda t, max_chars=300: [f"s{i}" for i in range(5)])
+    f5, rvc = FakeF5(), FakeRvc()
+    gen = voice.text_to_roste_voice_segments(
+        "อะไรก็ได้", worker=rvc, f5_worker=f5, out_dir=str(tmp_path), prefetch=1)
+    first = next(gen)
+
+    time.sleep(0.5)   # ให้เวลา producer เดินหน้าจนสุดที่คิวยอมให้
+    # prefetch=1 → คิวถือได้ 1 + ชิ้นที่ producer กำลังถืออยู่ระหว่าง put
+    # ถ้าไม่มี bound เลยจะเจนครบ 5 ชิ้นทันที
+    assert first is not None
+    assert len(f5.calls) < 5, f"producer เจนเกินขอบเขตคิว ({len(f5.calls)}/5)"
+    gen.close()
+
+
+def test_close_midway_cleans_up_prefetched_files(three_segments, edge_ok, tmp_path):
+    """caller เลิกฟังกลางคัน → ไฟล์ที่เจนล่วงหน้าไว้ต้องถูกลบ ไม่ค้างสะสมใน out_dir
+
+    (เฉพาะไฟล์ที่ยังไม่ได้ yield ออกไป — ที่ yield แล้วเป็นความรับผิดชอบของ caller
+     ตามสัญญาเดิมของฟังก์ชัน)
+    """
+    f5, rvc = FakeF5(), FakeRvc()
+    gen = voice.text_to_roste_voice_segments(
+        "อะไรก็ได้", worker=rvc, f5_worker=f5, out_dir=str(tmp_path), prefetch=2)
+    first = next(gen)
+    time.sleep(0.3)        # ให้ producer เจนล่วงหน้าไว้บ้าง
+    gen.close()            # ผู้ใช้ออกจากห้อง / สั่งหยุด
+
+    os.remove(first)       # caller ลบชิ้นที่ตัวเองรับไปแล้ว (ตามสัญญาเดิม)
+    leftover = [f for f in os.listdir(tmp_path) if f.endswith(".wav")]
+    assert leftover == [], f"ไฟล์ prefetch ค้างไม่ถูกลบ: {leftover}"
+
+
+def test_producer_thread_does_not_leak_after_close(three_segments, edge_ok, tmp_path):
+    """ปิด generator แล้ว producer thread ต้องจบ ไม่ค้างถือ worker ไว้
+
+    เดิมถ้า producer ค้างอยู่ที่ q.put() ตอนคิวเต็มแล้วไม่มีใครดึง มันจะไม่มีวันจบเลย
+    """
+    f5, rvc = FakeF5(), FakeRvc()
+    before = set(threading.enumerate())
+    gen = voice.text_to_roste_voice_segments(
+        "อะไรก็ได้", worker=rvc, f5_worker=f5, out_dir=str(tmp_path), prefetch=1)
+    next(gen)
+    time.sleep(0.3)
+    gen.close()
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        extra = [t for t in threading.enumerate()
+                 if t not in before and t.name.startswith("tts-produce-")]
+        if not extra:
+            break
+        time.sleep(0.05)
+    assert not extra, f"producer thread ค้างหลังปิด generator: {extra}"
 
 
 def test_no_f5_worker_single_edge_segment(edge_ok, tmp_path):
@@ -464,3 +571,199 @@ class TestStderrDrain:
         assert finished
         assert "error" in result
         assert "boom: something went wrong" in str(result["error"])
+
+
+# ============================================================
+#  _split_thai_text — การซอยข้อความไทยสำหรับ F5
+#
+#  ทำไมต้องมีเทสชุดนี้: เดิมฟังก์ชันนี้ถูก mock ทิ้งในทุกเทส ไม่เคยมีใครเช็คพฤติกรรมจริง
+#  ทั้งที่มันตัดสินว่าเสียงจะเพี้ยนหรือไม่ — ภาษาไทยไม่เขียนเว้นวรรคระหว่างคำ ตัดผิดตำแหน่ง
+#  = F5 อ่านผิดคำทันที (เจอจริง: ตัดที่ตัวที่ 100 ได้ 'ทุกวั' | 'นที่ผ่าน')
+# ============================================================
+
+def _word_boundary_set(text):
+    """ตำแหน่งทั้งหมดที่เป็นขอบเขตคำจริงของ text (ใช้ตรวจว่าจุดตัดปลอดภัย)"""
+    from pythainlp.tokenize import word_tokenize
+    bounds, off = {0}, 0
+    for tok in word_tokenize(text, engine="newmm", keep_whitespace=True):
+        off += len(tok)
+        bounds.add(off)
+    return bounds
+
+
+class TestSplitThaiText:
+
+    LONG_NO_SPACE = (
+        "การเรียนรู้สิ่งใหม่ทุกวันทำให้ชีวิตมีความหมายและเราจะเติบโตขึ้น"
+        "เรื่อยๆอย่างไม่มีที่สิ้นสุดในทุกทุกวันที่ผ่านไปนะคะ"
+    ) * 2
+    WEATHER = (
+        "วันนี้อากาศที่ชุมพรมีเมฆบางส่วนนะคะ อุณหภูมิประมาณสามสิบสององศา "
+        "ช่วงบ่ายอาจมีฝนตกเล็กน้อยประมาณสามสิบเปอร์เซ็นต์ค่ะ "
+        "ถ้าจะออกไปข้างนอกพกร่มติดตัวไว้หน่อยก็ดีนะคะ "
+        "ส่วนพรุ่งนี้อากาศจะดีขึ้น ฝนน้อยลงเหลือแค่สิบเปอร์เซ็นต์"
+    )
+
+    @pytest.mark.parametrize("text", [
+        LONG_NO_SPACE,
+        WEATHER,
+        "รอสเต้อยากบอกว่าการดูแลสุขภาพเป็นเรื่องสำคัญมากนะคะ " * 6,
+        "ดีเซล 32.94 บาท เบนซิน 41.500 บาท แก๊สโซฮอล์ 95 อยู่ที่ 37.35 บาท",
+        "สวัสดีค่ะ",
+    ])
+    def test_content_preserved_exactly(self, text):
+        """เนื้อหาต้องครบทุกตัวอักษรหลังซอย — ตัวอักษรหายแม้ตัวเดียว = ผู้ใช้ไม่ได้ยินคำนั้น"""
+        segs = voice._split_thai_text(text)
+        assert "".join(segs).replace(" ", "") == text.replace(" ", "")
+
+    @pytest.mark.parametrize("text", [LONG_NO_SPACE, WEATHER])
+    def test_never_cuts_mid_word(self, text):
+        """จุดตัดทุกจุดต้องตรงกับขอบเขตคำจริง — หัวใจของการซอยภาษาไทย
+
+        เดิม fallback เป็น remaining[:max_chars] ดิบๆ ตัดกลางคำได้ ('ทุกวั'|'นที่ผ่าน')
+        """
+        segs = voice._split_thai_text(text)
+        if len(segs) < 2:
+            pytest.skip("ข้อความนี้ไม่ถูกซอย ไม่มีจุดตัดให้ตรวจ")
+        bounds = _word_boundary_set(text)
+        pos = 0
+        for seg in segs[:-1]:
+            idx = text.find(seg.strip(), pos)
+            assert idx >= 0, "หา segment ในข้อความเดิมไม่เจอ"
+            end = idx + len(seg.strip())
+            assert end in bounds, (
+                f"ตัดกลางคำที่ตำแหน่ง {end}: "
+                f"{text[max(0, end-10):end]!r} | {text[end:end+10]!r}")
+            pos = end
+
+    def test_no_empty_segments(self):
+        for text in [self.LONG_NO_SPACE, self.WEATHER, "สวัสดีค่ะ", "  ", ""]:
+            assert all(s.strip() for s in voice._split_thai_text(text))
+
+    def test_short_text_not_split(self):
+        assert voice._split_thai_text("สวัสดีค่ะ") == ["สวัสดีค่ะ"]
+
+    def test_segments_stay_near_target_length(self):
+        """ความยาวต้องสม่ำเสมอราว target — ตัวที่ยาวผิดปกติทำให้ตัวถัดไปเจนไม่ทัน
+
+        เดิมได้ 31c/120c/144c (ต่างกัน 4 เท่า) segment แรกเล่นจบก่อนอันถัดไปเจนเสร็จ
+        ผู้ฟังเลยได้ยินเงียบคั่นทั้งที่ระบบตามทันอยู่
+        """
+        segs = voice._split_thai_text(self.WEATHER, target=90)
+        assert len(segs) > 1
+        limit = int(90 * 1.25)
+        assert all(len(s) <= limit for s in segs), [len(s) for s in segs]
+
+    def test_merge_does_not_create_oversized_segment(self):
+        """การยุบ segment สั้นต้องไม่ไปสร้างตัวยาวเกินแทน
+
+        เจอจริงตอนพัฒนา: 36c + 125c ถูกยุบเป็น 160c ทั้งที่ target แค่ 90 —
+        แก้ปัญหาหนึ่งแล้วสร้างอีกปัญหาที่กำลังพยายามแก้อยู่พอดี
+        """
+        segs = voice._split_thai_text(self.WEATHER, target=90)
+        assert max(len(s) for s in segs) <= int(90 * 1.25)
+
+    def test_falls_back_to_whole_text_when_no_safe_cut(self, monkeypatch):
+        """หาขอบเขตคำไม่ได้ → ไม่ตัดเลย ดีกว่าตัดมั่วจนเสียงเพี้ยน"""
+        monkeypatch.setattr(voice, "_thai_word_bounds", lambda t: [])
+        text = "ก" * 400
+        segs = voice._split_thai_text(text)
+        assert segs == [text]
+
+    def test_tokenizer_failure_is_not_fatal(self, monkeypatch):
+        """pythainlp พังต้องไม่ทำให้ทั้ง pipeline ล้ม — เสียงยังต้องออก"""
+        import pythainlp.tokenize as tk
+        monkeypatch.setattr(
+            tk, "word_tokenize",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        segs = voice._split_thai_text(self.LONG_NO_SPACE)
+        assert "".join(segs).replace(" ", "") == self.LONG_NO_SPACE.replace(" ", "")
+
+    def test_word_bounds_rejects_lossy_tokenizer(self, monkeypatch):
+        """tokenizer ที่คืนเนื้อหาไม่ครบต้องถูกปฏิเสธ ไม่เอามาใช้หาจุดตัด"""
+        import pythainlp.tokenize as tk
+        monkeypatch.setattr(tk, "word_tokenize", lambda *a, **k: ["ตัดทิ้ง"])
+        assert voice._thai_word_bounds("ข้อความจริงที่ยาวกว่านั้นมาก") == []
+
+
+# ============================================================
+#  split_lines_for_tts — รักษาขอบเขตบรรทัดไว้เป็นจุดตัด
+#
+#  preprocess_for_f5 ยุบ \n เป็นช่องว่าง (จำเป็นสำหรับ F5) แต่นั่นทำให้ขอบเขตประโยคที่
+#  ชัดที่สุดหายไปด้วย เจอจริงกับคำตอบ markdown list (31 ก.ค.): "1." กลายเป็น "หนึ่ง."
+#  แล้วถูกตัดไปค้างท้าย segment ก่อนหน้า แทนที่จะนำหน้าข้อของตัวเอง — ฟังแล้วสะดุด
+# ============================================================
+
+class TestSplitLinesForTTS:
+
+    MARKDOWN_REPLY = (
+        "การทักทายในภาษาญี่ปุ่นมีหลายแบบ ขึ้นอยู่กับบริบท เช่น:\n"
+        "1. **คำว่าอาริงาโตะ** - เป็นคำขอบคุณทั่วไป\n"
+        " - ใช้เมื่อต้องการขอบคุณคนอื่น\n"
+        "2. **คำว่าโดโมอาริงาโตะ** - เป็นรูปแบบที่สุภาพมากขึ้น\n"
+    )
+
+    def test_no_newline_returns_single_piece(self):
+        from f5_preprocess import split_lines_for_tts
+        assert split_lines_for_tts("สวัสดีค่ะ") == ["สวัสดีค่ะ"]
+
+    def test_blank_lines_dropped(self):
+        from f5_preprocess import split_lines_for_tts
+        assert split_lines_for_tts("บรรทัดหนึ่ง\n\n\nบรรทัดสอง") == ["บรรทัดหนึ่ง", "บรรทัดสอง"]
+
+    def test_empty_text_returns_empty(self):
+        from f5_preprocess import split_lines_for_tts
+        assert split_lines_for_tts("") == []
+        assert split_lines_for_tts("   \n  \n") == []
+
+    def test_content_preserved_across_lines(self):
+        from f5_preprocess import split_lines_for_tts
+        parts = split_lines_for_tts(self.MARKDOWN_REPLY)
+        joined = "".join(parts).replace(" ", "")
+        original = self.MARKDOWN_REPLY.replace("\n", "").replace(" ", "")
+        assert joined == original
+
+    def test_list_number_leads_its_own_item(self):
+        """หัวใจของบั๊ก: เลขข้อต้องนำหน้าข้อของตัวเอง ไม่ค้างท้าย segment ก่อนหน้า"""
+        from f5_preprocess import preprocess_for_f5, split_lines_for_tts
+        segs = []
+        for line in split_lines_for_tts(self.MARKDOWN_REPLY):
+            pre, _ = preprocess_for_f5(line)
+            if pre.strip():
+                segs.extend(voice._split_thai_text(pre))
+
+        # ไม่มี segment ไหนลงท้ายด้วยเลขข้อลอยๆ ("...เช่น: หนึ่ง.")
+        for s in segs:
+            assert not s.rstrip().endswith(("หนึ่ง.", "สอง.", "สาม.")), \
+                f"เลขข้อค้างท้าย segment: {s!r}"
+        # และต้องมี segment ที่ขึ้นต้นด้วยเลขข้อจริง
+        assert any(s.lstrip().startswith(("หนึ่ง.", "สอง.")) for s in segs), segs
+
+    def test_single_line_behaves_same_as_before(self):
+        """ข้อความบรรทัดเดียว (กรณีส่วนใหญ่) ต้องได้ผลเหมือนเดิมทุกประการ"""
+        from f5_preprocess import preprocess_for_f5, split_lines_for_tts
+        text = "วันนี้อากาศดีนะคะ อุณหภูมิสามสิบองศา ลมพัดเย็นสบายเลย"
+        pre_whole, _ = preprocess_for_f5(text)
+        via_lines = []
+        for line in split_lines_for_tts(text):
+            p, _ = preprocess_for_f5(line)
+            via_lines.extend(voice._split_thai_text(p))
+        assert via_lines == voice._split_thai_text(pre_whole)
+
+    def test_generator_respects_line_boundaries_end_to_end(self, edge_ok, tmp_path, monkeypatch):
+        """เส้นทางจริงใน text_to_roste_voice_segments ต้องแยกบรรทัดก่อน preprocess
+
+        เทสข้างบนเรียก helper ตรงๆ จึงไม่จับว่า voice.py ต่อสายถูกไหม — ตัวนี้ยิงผ่าน
+        generator จริงเพื่อกันกรณีมีคนแก้ให้กลับไป preprocess ทั้งก้อนก่อนซอย
+        """
+        import f5_preprocess
+        monkeypatch.undo()   # ใช้ preprocess ตัวจริง ไม่ใช่ identity ของ fixture อื่น
+        f5, rvc = FakeF5(), FakeRvc()
+        list(voice.text_to_roste_voice_segments(
+            self.MARKDOWN_REPLY, worker=rvc, f5_worker=f5,
+            out_dir=str(tmp_path), prefetch=0))
+
+        assert f5.calls, "ไม่มี segment ถูกสร้างเลย"
+        for seg in f5.calls:
+            assert not seg.rstrip().endswith(("หนึ่ง.", "สอง.", "สาม.")), \
+                f"เลขข้อค้างท้าย segment ที่ส่งเข้า F5 จริง: {seg!r}"
