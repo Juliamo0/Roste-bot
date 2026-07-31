@@ -89,6 +89,9 @@
 | `bench_memory_prompt.py` | วัดผลของถ้อยคำใน prompt — ตัวที่พิสูจน์ว่าถ้อยคำไม่ใช่ตัวแปรหลัก |
 | `bench_recall.py` | วัด recall layer แยกจากโมเดล (แยกความผิดของ recall ออกจาก LLM) |
 | `bench_model_upgrade.py` | เทียบโมเดล/พารามิเตอร์ด้วย pass^k — เผยความไม่แน่นอนที่ pass@1 ซ่อนไว้ |
+
+> `bench_*.py` อ่านความจำผู้ใช้จริงเป็นข้อมูลตั้งต้น — default หยิบไฟล์ที่ใหญ่ที่สุดใน `memory/`
+> เจาะจงได้ด้วย `BENCH_MEMORY_UID=<discord_user_id>` (ดู `tools/_bench_target.py`)
 | `test_oil.py` | ดึงราคาน้ำมัน Kapook แบบ print-and-check |
 | `test_tmd.py` | ดึงพยากรณ์อากาศ TMD รายวัน |
 | `test_tmd_hourly.py` | ดึงพยากรณ์อากาศ TMD รายชั่วโมง |

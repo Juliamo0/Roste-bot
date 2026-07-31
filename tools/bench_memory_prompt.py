@@ -16,15 +16,18 @@ import pathlib
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
-ROOT = pathlib.Path(r"C:\Users\User\Roste-bot")
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import memory  # noqa: E402
 import ollama_client  # noqa: E402
 import persona  # noqa: E402
 
-MEM_FILE = "memory/387387058638815243.json"
+from _bench_target import resolve_memory_file  # noqa: E402
+
+MEM_FILE = resolve_memory_file()
 N = 6
 
 CASES = [

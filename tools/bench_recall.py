@@ -20,14 +20,17 @@ import pathlib
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
-ROOT = pathlib.Path(r"C:\Users\User\Roste-bot")
+ROOT = pathlib.Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from pythainlp.tokenize import word_tokenize  # noqa: E402
 
-MEM_FILE = "memory/387387058638815243.json"
-UID = 387387058638815243
+from _bench_target import resolve_memory_file, resolve_uid  # noqa: E402
+
+MEM_FILE = resolve_memory_file()
+UID = resolve_uid()
 TOP_K = 5
 
 # เคสจริง: (คำถาม, คำที่ต้องปรากฏใน summary ที่ถูกต้อง)
