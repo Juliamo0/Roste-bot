@@ -447,6 +447,94 @@ class TestValidateToolArgs:
         assert llm_tools._validate_tool_args("get_power_outage", {}) is None
 
 
+# ── select_tools — คัด tool ตามคำถาม (dynamic tool selection) ─────────────────────────────
+
+class TestSelectTools:
+    """ล็อกพฤติกรรมการคัด tool
+
+    ทำไมสำคัญ: ขนาดรวมของ tool schema เป็นตัวกำหนดว่าโมเดลจะเห็น summary ใน system prompt
+    หรือไม่ วัดด้วย pass^40 ได้ว่ายื่นครบ 6 ตัว (4,292c) → ตอบเรื่องความจำถูกแค่ 30/120 (25%)
+    แต่คัดด้วย keyword (725c) → 120/120 (100%) โดย tool accuracy ไม่ตก (100/100 เท่ากัน)
+    ถ้าวันหน้ามีใครเผลอกลับไปส่ง TOOLS ทั้งก้อน หรือเพิ่ม tool จนขนาดพุ่ง เทสชุดนี้จับได้
+    """
+
+    # เกณฑ์ที่วัดได้: ≤3,607c ผ่าน 6/6, ≥3,707c เหลือ 0-1/6 — เผื่อ margin ไว้ที่ 3,000c
+    SAFE_LIMIT = 3000
+
+    def _size(self, tools):
+        return sum(len(json.dumps(t, ensure_ascii=False)) for t in tools)
+
+    @pytest.mark.parametrize("question,expected", [
+        ("พรุ่งนี้ฝนตกไหม", "get_weather"),
+        ("ราคาน้ำมันวันนี้เท่าไหร่", "get_oil_price"),
+        ("ตอนนี้กี่โมงแล้ว", "get_current_time"),
+        ("หาร้านก๋วยเตี๋ยวแถวชุมพรให้หน่อย", "search_places"),
+        ("มีไฟดับแถวบ้านไหมวันนี้", "get_power_outage"),
+    ])
+    def test_live_question_gets_its_tool(self, question, expected):
+        """คำถามข้อมูลสดต้องได้ tool ที่ตรงกับเรื่องนั้นเสมอ"""
+        names = [t["function"]["name"] for t in llm_tools.select_tools(question)]
+        assert expected in names, f"{question!r} ไม่ได้ {expected} (ได้ {names})"
+
+    @pytest.mark.parametrize("question", [
+        "เราเคยคุยเรื่องการอ่านอะไรกันบ้างไหมก่อนหน้านี้",
+        "จำได้ไหมว่าเคยคุยเรื่องของหวานอะไรกัน",
+        "วันนี้เหนื่อยจังเลย",
+        "เธอเป็น AI ใช่ไหม",
+    ])
+    def test_memory_and_chitchat_get_no_tools(self, question):
+        """คำถามความจำล้วน/คุยเล่น ต้องได้ 0 tool — ไม่ต้องเดาเจตนา มันคัดออกเองเพราะ
+        ไม่มีคำที่ชี้ tool ใดๆ (นี่คือเหตุผลที่ไม่ต้องมีกฎ 'ตรวจว่าเป็นคำถามความจำ')"""
+        assert llm_tools.select_tools(question) == []
+
+    @pytest.mark.parametrize("question", [
+        "พรุ่งนี้ฝนตกไหม",
+        "มีไฟดับแถวบ้านไหมวันนี้",
+        "เคยคุยเรื่องอากาศกันหรือเปล่า",
+        "หาร้านก๋วยเตี๋ยวแถวชุมพรให้หน่อย",
+    ])
+    def test_selected_size_stays_far_below_threshold(self, question):
+        """ขนาดที่คัดแล้วต้องต่ำกว่าเกณฑ์มาก — นี่คือสาเหตุที่ความจำกลับมาทำงาน"""
+        size = self._size(llm_tools.select_tools(question))
+        assert size < self.SAFE_LIMIT, f"{question!r} ได้ {size}c เกิน {self.SAFE_LIMIT}c"
+
+    def test_full_toolset_would_exceed_threshold(self):
+        """ยืนยันว่า TOOLS ทั้งก้อนยังเกินเกณฑ์อยู่จริง — ถ้าวันหน้ามีคนลดขนาด description
+        จนต่ำกว่าเกณฑ์เอง เทสนี้จะ fail เป็นสัญญาณให้มาทบทวนว่ายังต้องคัดอยู่ไหม"""
+        assert self._size(llm_tools.TOOLS) > 3700
+
+    def test_memory_question_with_topic_keyword_still_small(self):
+        """"เคยคุยเรื่องอากาศไหม" ได้ get_weather ติดมาด้วย (คำว่า 'อากาศ' อยู่ในนั้นจริง)
+        — ยอมรับได้ เพราะวัดแล้วว่าได้ 40/40 เต็ม ตัวแปรคือ *ขนาดรวม* ไม่ใช่การมี tool
+        ที่เกี่ยวข้องอยู่ จึงไม่ต้องเพิ่มกฎเดาเจตนาผู้ใช้มาตัดทิ้ง"""
+        tools = llm_tools.select_tools("เคยคุยเรื่องอากาศกันหรือเปล่า")
+        assert [t["function"]["name"] for t in tools] == ["get_weather"]
+        assert self._size(tools) < self.SAFE_LIMIT
+
+    def test_always_web_switch_adds_search_web(self):
+        """สวิตช์ ALWAYS_OFFER_SEARCH_WEB — ทางเปิดถ้าเจอคำถามที่ keyword ครอบไม่ถึง"""
+        assert llm_tools.select_tools("วันนี้เหนื่อยจังเลย", always_web=False) == []
+        names = [t["function"]["name"]
+                 for t in llm_tools.select_tools("วันนี้เหนื่อยจังเลย", always_web=True)]
+        assert names == ["search_web"]
+
+    def test_default_is_keyword_only(self):
+        """default = S1 (keyword ล้วน) — เลือกเพราะเสมอกับ S2 ทุกด้านแต่เล็กกว่าครึ่ง"""
+        assert llm_tools.ALWAYS_OFFER_SEARCH_WEB is False
+
+    def test_no_duplicate_tools(self):
+        """คำถามที่ชี้ tool เดียวกันหลายคำ ต้องไม่ได้ tool ซ้ำ (ทำให้ขนาดบวมเปล่าๆ)"""
+        tools = llm_tools.select_tools("อากาศร้อนไหม ฝนจะตกหรือเปล่า อุณหภูมิกี่องศา")
+        names = [t["function"]["name"] for t in tools]
+        assert len(names) == len(set(names))
+
+    def test_every_hint_key_is_a_real_tool(self):
+        """กัน TOOL_HINTS อ้างชื่อ tool ที่ไม่มีอยู่ (เช่น เปลี่ยนชื่อ tool แล้วลืมแก้ที่นี่)
+        — ถ้าหลุดไปจะ KeyError ตอน runtime กลางบทสนทนาจริง"""
+        real = {t["function"]["name"] for t in llm_tools.TOOLS}
+        assert set(llm_tools.TOOL_HINTS) <= real
+
+
 # ── _strip_ungrounded_optional_args — กันโมเดลเดา optional param เอง (เช่น province) ──────
 
 class TestStripUngroundedOptionalArgs:
@@ -915,6 +1003,41 @@ class TestReplyClaimsToBeAi:
     def test_human_identity_not_flagged(self):
         assert not persona.reply_claims_to_be_ai("ฉันเป็นเด็กสาวที่ดูแลห้องสมุดค่ะ")
 
+    # ── ยอมรับตัวตน AI โดยไม่ประกาศว่า "เป็น" ────────────────────────────────
+    # เจอจริงบน Discord (31 ก.ค. 00:14) — เดิมรอดทุกด่านเพราะ regex บังคับว่าต้องมี
+    # "เป็น/คือ" นำหน้าคำว่า AI/โมเดล แต่ประโยคนี้พูดถึงตัวเองในรูป "โมเดลนี้..." แทน
+
+    def test_real_discord_leak_flagged(self):
+        """ประโยคที่หลุดจริง — ยาวและมีเนื้อหาปกติปนอยู่ด้วย"""
+        assert persona.reply_claims_to_be_ai(
+            "ไม่สามารถจำได้ว่าเราเคยคุยเรื่องใดกับหนังสือในอดีต "
+            "เนื่องจากโมเดลนี้ไม่มีความทรงจำหรือประสบการณ์ส่วนตัว")
+
+    @pytest.mark.parametrize("text", [
+        "โมเดลนี้ไม่มีความทรงจำ",
+        "โมเดลนี้ไม่มีประสบการณ์ส่วนตัว",
+        "ระบบนี้ไม่สามารถจำได้",
+        "บอทนี้ไม่มีความรู้สึก",
+        "ฉันไม่มีความทรงจำ",
+        "ฉันไม่มีประสบการณ์ส่วนตัว",
+    ])
+    def test_self_as_machine_flagged(self, text):
+        assert persona.reply_claims_to_be_ai(text), f"หลุด: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        # คนพูดแบบนี้ได้ปกติ — จำอะไรไม่ได้ ไม่ได้แปลว่าเป็นเครื่อง
+        "จำไม่ค่อยได้แล้วค่ะ นานมาแล้ว",
+        "ฉันจำไม่ได้ว่าวางไว้ตรงไหน",
+        "รอสเต้จำได้ว่าคุณชอบอ่านหนังสือ",
+        # พูดถึง AI ตัวอื่น ไม่ได้พูดถึงตัวเอง
+        "โมเดลพวกนี้เก่งขึ้นเยอะเลยนะคะ",
+        # "ไม่มีความทรงจำ" ที่ประธานไม่ใช่ตัวเอง
+        "ไม่มีความทรงจำไหนที่ลืมได้ง่ายๆ หรอกค่ะ",
+        "หนังสือเล่มนี้ไม่มีความลึกลับเลย",
+    ])
+    def test_normal_speech_not_flagged(self, text):
+        assert not persona.reply_claims_to_be_ai(text), f"false positive: {text!r}"
+
 
 class TestApplyReplyGuards:
     """guard chain รวม (chat._apply_reply_guards) — ใช้ร่วมกันทุก path ที่ส่งคำตอบให้ผู้ใช้
@@ -947,9 +1070,31 @@ class TestApplyReplyGuards:
         assert "บอท" not in out
         assert out != persona.AI_DEFLECT      # ไม่ใช่ deflect ทั้งก้อน
 
-    def test_ai_claim_only_falls_back_to_deflect(self):
-        """ทั้งคำตอบเป็น AI-claim — ตัดแล้วเหลือสั้นเกิน ต้อง fallback เป็น AI_DEFLECT"""
-        assert chat._apply_reply_guards("ฉันเป็นปัญญาประดิษฐ์ค่ะ") == persona.AI_DEFLECT
+    def test_ai_claim_only_falls_back_by_question_context(self):
+        """ทั้งคำตอบเป็น AI-claim — ตัดแล้วเหลือสั้นเกิน ต้อง fallback ตาม "คำถามที่ถูกถาม"
+
+        เดิม fallback เป็น AI_DEFLECT เสมอ ทำให้ผู้ใช้ที่ถามเรื่องความจำได้คำตอบ
+        "เอ๋? ก็ฉันเป็นฉันนี่แหละค่ะ" ซึ่งไม่ตรงคำถามเลย (เจอจริง Discord 31 ก.ค. 13:50)
+        """
+        leak = "ฉันเป็นปัญญาประดิษฐ์ค่ะ"
+        # ถามเรื่องตัวตนจริงๆ → AI_DEFLECT ยังเหมาะสม
+        assert chat._apply_reply_guards(leak, "เธอเป็น AI หรือเปล่า") == persona.AI_DEFLECT
+        # ถามเรื่องความจำ → ต้องได้ประโยคเรื่องความจำ ไม่ใช่ประโยคเลี่ยงเรื่องตัวตน
+        got = chat._apply_reply_guards(leak, "เราเคยคุยเรื่องการอ่านกันไหม")
+        assert got == chat._MEMORY_FALLBACK
+        assert got != persona.AI_DEFLECT
+
+    @pytest.mark.parametrize("question,expected_attr", [
+        ("เธอเป็น AI หรือเปล่า", "AI_DEFLECT"),
+        ("เป็นหุ่นยนต์ไหมคะ", "AI_DEFLECT"),
+        ("เราเคยคุยเรื่องนี้กันไหม", "_MEMORY_FALLBACK"),
+        ("จำได้ไหมว่าเมื่อก่อนคุยอะไรกัน", "_MEMORY_FALLBACK"),
+        ("วันนี้อากาศเป็นยังไง", "_EMPTY_FALLBACK"),
+    ])
+    def test_fallback_matches_question_kind(self, question, expected_attr):
+        expected = (getattr(persona, expected_attr) if expected_attr == "AI_DEFLECT"
+                    else getattr(chat, expected_attr))
+        assert chat._fallback_for(question) == expected
 
     def test_persona_slips_fixed(self):
         out = chat._apply_reply_guards("ผมไม่ได้มีข้อมูลนั้นครับ")
