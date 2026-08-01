@@ -14,6 +14,8 @@
 - 🧠 **ความจำหลายชั้น**
   - จำชื่อ/ข้อเท็จจริงถาวร (สั่งได้ + จำเองอัตโนมัติเบื้องหลัง)
   - สรุปบทสนทนาเก่าอัตโนมัติเมื่อ history ล้น (แทนที่จะทิ้ง)
+  - **แยกความทรงจำตามเจ้าของ** — รอสเต้รู้ว่าเรื่องไหนของผู้ใช้ เรื่องไหนของตัวเอง
+    (ดู [ระบบความจำแยกเจ้าของ](#-ระบบความจำแยกเจ้าของ))
   - Selective recall — ดึงเฉพาะ fact ที่เกี่ยวกับบทสนทนาตอนนั้น (ตัดคำไทยด้วย `newmm` +
     stopword + คำพ้อง — `str.split()` ใช้กับภาษาไทยไม่ได้เพราะไม่มีช่องว่างระหว่างคำ)
   - คำสั่งความจำ: `จำไว้ว่า…` / `ลืมเรื่อง…` / `จำอะไรได้บ้าง`
@@ -57,8 +59,8 @@
 
 | ไฟล์ | ประเภท | จำนวน tests |
 |------|--------|-------------|
-| `test_bot.py` | pytest | 194 — lock, summarize, memory overflow, tool calling dispatch/validation/grounding, **dynamic tool selection**, persona-slip filter, AI-claim guard, rate limiting, karaoke outro |
-| `test_memory.py` | pytest | 70 — facts, recall (ตัดคำไทย/คำพ้อง), parse, summaries, supersede/consolidation |
+| `test_bot.py` | pytest | 196 — lock, summarize (JSON + tag เจ้าของ), memory overflow, tool calling dispatch/validation/grounding, **dynamic tool selection**, persona-slip filter, AI-claim guard, rate limiting, karaoke outro |
+| `test_memory.py` | pytest | 95 — facts, recall (ตัดคำไทย/คำพ้อง), **แยกความทรงจำตามเจ้าของ**, parse, summaries, supersede/consolidation |
 | `test_realtime.py` | pytest | 55 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
 | `test_voice.py` | pytest | 55 — streaming segment order/fail-safe, ตัวซอยข้อความไทย, f5_preprocess, worker hang timeout |
 | `test_vectormemory.py` | pytest | 19 — rerank fail-safe (output หลุดฟอร์แมต, temperature, edge case), PDF page cap |
@@ -70,7 +72,7 @@
 | `test_tts_stream.py` | pytest | 8 — prefetch ไม่บล็อก, ลำดับ segment, เก็บกวาดไฟล์ตอนหยุดกลางคัน |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
-**รวม 466 unit tests** — รันทั้งหมดด้วย `pytest` (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว)
+**รวม 495 unit tests** — รันทั้งหมดด้วย `pytest` (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว)
 ไม่ต้องเปิด Ollama หรือต่อเน็ต (mock ล้วน) ยกเว้น `test_all_systems.py` ที่ยิง HTTP จริง
 
 ### tools/ — สคริปต์เสริม (ไม่ใช่ regression test)
@@ -89,6 +91,12 @@
 | `bench_memory_prompt.py` | วัดผลของถ้อยคำใน prompt — ตัวที่พิสูจน์ว่าถ้อยคำไม่ใช่ตัวแปรหลัก |
 | `bench_recall.py` | วัด recall layer แยกจากโมเดล (แยกความผิดของ recall ออกจาก LLM) |
 | `bench_model_upgrade.py` | เทียบโมเดล/พารามิเตอร์ด้วย pass^k — เผยความไม่แน่นอนที่ pass@1 ซ่อนไว้ |
+| `memory_fixture.py` | ชุดข้อมูลทดสอบความจำ (แต่งเอง ไม่ใช้บทสนทนาจริง) — 27 เคสรวมชุดหิน/คำพ้อง |
+| `bench_summary_compare.py` | เทียบ 6 วิธีทำ summary — วิธี F (แยกเจ้าของ) ชนะ |
+| `bench_memory_read.py` | ทดสอบส่วน "ค้น" แบบไม่เรียกโมเดล (rule ล้วน ผลไม่แกว่ง) |
+| `bench_memory_search.py` | เทียบ keyword vs vector + วัด latency |
+| `bench_rerank_ablation.py` | ตัด LLM rerank ได้ไหม (ผล: เก็บไว้ — จำเป็นกับเคส "ไม่เคยคุย") |
+| `bench_memory_e2e.py` | วัดความจำผ่าน `chat.ask_ollama` จริง + แยก latency ทีละขั้น |
 
 > `bench_*.py` อ่านความจำผู้ใช้จริงเป็นข้อมูลตั้งต้น — default หยิบไฟล์ที่ใหญ่ที่สุดใน `memory/`
 > เจาะจงได้ด้วย `BENCH_MEMORY_UID=<discord_user_id>` (ดู `tools/_bench_target.py`)
@@ -227,6 +235,62 @@ description เป็นตัว `x` ล้วนก็ทำให้พัง
 เปิด `ALWAYS_OFFER_SEARCH_WEB` เมื่อเจอคำถามข้อมูลสดที่ `TOOL_HINTS` ครอบไม่ถึง (เช่น
 "ใครชนะเลือกตั้ง") แล้วรอสเต้เดาคำตอบแทนการค้น — วัดแล้วว่าเปิดไม่ทำให้ด้านอื่นแย่ลง แค่ขนาดโตขึ้น
 เป็น ~1,057c ซึ่งยังห่างเกณฑ์มาก
+
+## 🧠 ระบบความจำแยกเจ้าของ
+
+รอสเต้จำได้ว่า **เรื่องไหนของผู้ใช้ เรื่องไหนของตัวเอง** — ไม่ปนกัน
+
+### ปัญหาที่แก้
+
+summary เดิมเก็บแค่หัวข้อ ไม่เก็บเนื้อหา และเขียนรวมกันเป็นประโยคเดียว:
+```
+"23 ก.ค.: คุยเรื่องความแตกต่างระหว่างเจลาโต้และไอศกรีม"
+```
+ผู้ใช้ถาม "ผมชอบของหวานอะไร" → ตอบไม่ได้ เพราะ summary ไม่ได้เก็บว่าใครชอบอะไร
+
+แย่กว่านั้น เมื่อ summary มีทั้งความชอบของผู้ใช้และของรอสเต้ปนกัน โมเดล**จำสลับเจ้าของ 29%**
+(1 ใน 3 ครั้ง) — รอสเต้เชื่อว่าผู้ใช้ชอบสิ่งที่ตัวเองชอบ ซึ่งแย่กว่าการจำไม่ได้
+
+### วิธีแก้ — ติดป้ายเจ้าของตั้งแต่ตอนบันทึก
+
+```
+"1 ส.ค.: คุยแนวนิยาย | user_pref:ชอบนิยายสืบสวน me_pref:ชอบแนวแฟนตาซี"
+                       └── ของผู้ใช้ ──┘  └── ของรอสเต้ ──┘
+```
+
+| tag | เก็บอะไร |
+|-----|----------|
+| `user_pref:` | สิ่งที่ผู้ใช้ชอบ/ไม่ชอบ |
+| `user_fact:` | ข้อเท็จจริงของผู้ใช้ |
+| `me_pref:` | สิ่งที่รอสเต้เองชอบ/ไม่ชอบ |
+| `me_fact:` | สิ่งที่รอสเต้ทำหรือเป็น |
+
+แล้วตอนตอบ **กรองเหลือเฉพาะฝั่งที่ถูกถามก่อนส่งเข้า context**:
+```
+ถาม "ผมชอบอะไร"     → ส่งแค่ "— ผู้ใช้: ชอบนิยายสืบสวน"
+ถาม "รอสเต้ชอบอะไร"  → ส่งแค่ "— รอสเต้: ชอบแนวแฟนตาซี"
+```
+
+### ผลที่วัดได้
+
+| | เดิม | หลังแก้ |
+|---|---|---|
+| จำสลับเจ้าของ | 29% | **0%** |
+| เก็บรายละเอียดผู้ใช้ | 0% | **100%** |
+| ค้นเจอ (ชุดทดสอบ 17 เคส) | 5/17 | **17/17** |
+| ผ่าน `ask_ollama` จริง | — | **89%** (n=100) |
+
+### สิ่งที่ต้องรู้ถ้าจะแก้ต่อ
+
+- **3 ส่วนต้องทำงานร่วมกัน** — บันทึก (tag) → ค้น (กรองฝั่ง) → ส่ง (กรองอีกชั้น)
+  แก้อย่างเดียวไม่ได้ผล
+- **summary เก่าที่ไม่มี tag ยังใช้ได้** — มีทางถอย: ถ้าไม่มี tag เลยจะไม่กรอง
+  (ไม่งั้นผู้ใช้เดิมจะเจอบอทลืมทุกอย่างทันทีที่อัปเดต)
+- **`vector search` ค้นแม่นกว่า keyword ในเคสคำพ้อง** (30/30 vs 21/30) เพราะ keyword
+  ต้องมีคำตรง — "เลี้ยงสัตว์" ไม่แมตช์ "เลี้ยงแมว"
+
+รายละเอียดการทดลองทั้งหมด (พร้อมตัวเลขทุกตัวและ bench script) อยู่ที่
+**[docs/MEMORY_EXPERIMENTS.md](docs/MEMORY_EXPERIMENTS.md)**
 
 ## 🧪 ทดสอบ
 
