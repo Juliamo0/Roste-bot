@@ -494,3 +494,145 @@ class TestThaiKeywordRecall:
             tk, "word_tokenize",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert memory._keywords("อยู่ ชุมพร") != []
+
+
+# ── แยกความทรงจำตามเจ้าของ (วิธี F + P3) ──────────────────────────────────────
+
+class TestOwnerSeparatedMemory:
+    """summary เก็บ tag บอกว่าเรื่องไหนของใคร แล้ว recall กรองเหลือเฉพาะฝั่งที่ถูกถาม
+
+    ทำไมสำคัญ: วัดได้ว่าการยัด summary ทั้งบรรทัด (มีทั้ง user_pref และ me_pref) ทำให้
+    โมเดลจำสลับเจ้าของ 29% — รอสเต้เชื่อว่าผู้ใช้ชอบสิ่งที่ตัวเองชอบ ซึ่งแย่กว่าจำไม่ได้
+    พอกรองฝั่งก่อนส่ง เหลือ 0% (ดู docs/MEMORY_EXPERIMENTS.md)
+    """
+
+    SUMMARIES = [
+        {"date": "2026-08-01",
+         "text": "1 ส.ค.: คุยแนวนิยาย | user_pref:ชอบนิยายสืบสวน me_pref:ชอบแนวแฟนตาซี"},
+        {"date": "2026-07-31",
+         "text": "31 ก.ค.: คุยเรื่องอาหาร | user_fact:กินเผ็ดไม่ได้ me_pref:ไม่ชอบของหวาน"},
+        {"date": "2026-07-30",
+         "text": "30 ก.ค.: คุยเรื่องที่ทำงาน | user_fact:ทำงานสายไอที"},
+    ]
+
+    # ── split_owner_tags ──
+    def test_splits_tags_by_owner(self):
+        parts = memory.split_owner_tags(
+            "คุยแนวนิยาย | user_pref:ชอบสืบสวน me_pref:ชอบแฟนตาซี")
+        assert parts["summary"] == "คุยแนวนิยาย"
+        assert parts["user"] == ["ชอบสืบสวน"]
+        assert parts["me"] == ["ชอบแฟนตาซี"]
+
+    def test_old_format_without_tags(self):
+        """summary แบบเก่าไม่มี tag — ต้องไม่ crash และคืน user/me ว่าง"""
+        parts = memory.split_owner_tags("23 ก.ค.: คุยเรื่องเจลาโต้")
+        assert parts["summary"] == "23 ก.ค.: คุยเรื่องเจลาโต้"
+        assert parts["user"] == [] and parts["me"] == []
+
+    # ── guess_owner ──
+    @pytest.mark.parametrize("question,expect", [
+        ("จำได้ไหมว่าผมชอบอ่านนิยายแนวไหน", "user"),
+        ("รอสเต้ชอบอ่านแนวไหนเหรอ", "me"),
+        ("ผมทำอาชีพอะไร", "user"),
+        ("รอสเต้ทำงานอะไร", "me"),
+        ("เราสองคนชอบกินอะไรต่างกัน", "any"),
+        ("เคยคุยอะไรกันบ้าง", "any"),
+    ])
+    def test_guess_owner(self, question, expect):
+        assert memory.guess_owner(question) == expect
+
+    def test_guess_owner_matches_subject_not_verb(self):
+        """จับที่ประธานอย่างเดียว ไม่จับคู่กับกริยา
+
+        รุ่นแรกจับ '<ประธาน> + <กริยา>' แล้วพังทันทีที่เจอกริยานอกลิสต์ ('ทำงาน'/'อ่าน')
+        การไล่เติมกริยาเป็น whack-a-mole — กริยาไม่มีวันครบ ประธานนับได้
+        """
+        for q in ("ผมอ่านหนังสือแนวไหน", "ผมทำอาชีพอะไร", "ผมเลี้ยงสัตว์อะไร"):
+            assert memory.guess_owner(q) == "user", q
+        for q in ("รอสเต้ทำงานอะไร", "รอสเต้ประดิษฐ์อะไร", "รอสเต้ดื่มอะไร"):
+            assert memory.guess_owner(q) == "me", q
+
+    def test_ask_both_beats_single_side(self):
+        """ถามเทียบสองฝ่ายต้องได้ทั้งคู่ ไม่ใช่ตัดฝั่งใดทิ้ง"""
+        assert memory.guess_owner("เราสองคนชอบกินอะไรต่างกันบ้าง") == "any"
+
+    # ── filter_by_owner ──
+    def test_filter_keeps_only_asked_side(self):
+        got = memory.filter_by_owner(
+            [s["text"] for s in self.SUMMARIES], "user")
+        joined = " ".join(got)
+        assert "สืบสวน" in joined
+        assert "แฟนตาซี" not in joined, "ของรอสเต้ต้องไม่ปนมาตอนถามเรื่องผู้ใช้"
+
+    def test_filter_drops_lines_without_that_side(self):
+        """บรรทัดที่ไม่มีฝั่งที่ถามต้องถูกตัด — ตอบว่าจำไม่ได้ดีกว่าเอาของอีกฝั่งมาตอบ"""
+        got = memory.filter_by_owner(
+            ["30 ก.ค.: คุยเรื่องที่ทำงาน | user_fact:ทำงานสายไอที"], "me")
+        assert got == []
+
+    def test_filter_any_returns_all(self):
+        texts = [s["text"] for s in self.SUMMARIES]
+        assert memory.filter_by_owner(texts, "any") == texts
+
+    # ── recall_summaries แบบครบวงจร ──
+    @pytest.mark.parametrize("question,must,forbid", [
+        ("จำได้ไหมว่าผมชอบอ่านนิยายแนวไหน", "สืบสวน", "แฟนตาซี"),
+        ("รอสเต้ชอบอ่านแนวไหนเหรอ จำได้ไหม", "แฟนตาซี", "สืบสวน"),
+        ("ผมกินเผ็ดได้ไหม", "เผ็ด", "หวาน"),
+        ("รอสเต้ไม่ชอบกินอะไร", "หวาน", "เผ็ด"),
+    ])
+    def test_recall_does_not_swap_owner(self, question, must, forbid):
+        got = " ".join(memory.recall_summaries({"summaries": self.SUMMARIES}, question))
+        assert must in got, f"ไม่เจอ {must!r} ใน {got!r}"
+        assert forbid not in got, f"ของอีกฝั่ง ({forbid!r}) ปนมาใน {got!r}"
+
+    def test_recall_without_past_hint_still_works(self):
+        """คำถามที่ไม่มีคำใบ้อดีต ('ผมชอบอ่านอะไร') ต้องยังค้นได้
+
+        ด่านเดิมเช็ค PAST_HINTS ก่อน ทำให้คำถามแบบนี้คืน [] ทันทีทั้งที่ข้อมูลอยู่ครบ
+        """
+        got = memory.recall_summaries({"summaries": self.SUMMARIES}, "ผมชอบอ่านอะไร")
+        assert any("สืบสวน" in s for s in got)
+
+    @pytest.mark.parametrize("question", [
+        "วันนี้อากาศเป็นไง", "ราคาน้ำมันวันนี้", "พรุ่งนี้ฝนตกไหม", "ตอนนี้กี่โมง",
+    ])
+    def test_live_data_questions_do_not_inject(self, question):
+        """คำถามข้อมูลสดต้องไม่ดึง summary มาเปลือง context
+
+        เอาด่าน PAST_HINTS ออกแล้วต้องมีอะไรกันแทน ไม่งั้น inject ทุกครั้งที่พูดถึง
+        หัวข้อที่เคยคุย (ขนาดใน context มีราคาจริง: >3,700c ทำให้โมเดลลืม summary)
+        """
+        assert memory.recall_summaries({"summaries": self.SUMMARIES}, question) == []
+
+    def test_past_hint_beats_live_signal(self):
+        """'เมื่อวานคุยเรื่องอากาศไหม' = ถามบทสนทนาเก่า ไม่ใช่ถามพยากรณ์"""
+        mem = {"summaries": [{"date": "x", "text": "1 ส.ค.: คุยเรื่องอากาศ | user_pref:ชอบหน้าหนาว"}]}
+        assert memory.recall_summaries(mem, "เคยคุยเรื่องอากาศกันไหม") != []
+
+    def test_old_summaries_still_recalled(self):
+        """⚠️ ทางถอย: ถ้าไม่มี summary ไหนมี tag เลย ต้องไม่กรองจนหายหมด
+
+        ผู้ใช้ที่มีความจำแบบเก่าอยู่จะเจอบอทลืมทุกอย่างทันทีที่ deploy ถ้าไม่มีข้อนี้
+        (เจอจริงตอนรันเทสเดิม: คำถามที่มีคำว่า 'รอสเต้' ถูกเดาเป็น me แล้วกรองทิ้งหมด)
+        """
+        old = [{"date": "2026-07-22", "text": "22 ก.ค.: คุยเรื่องนิยายและหนังสือลึกลับ"}]
+        got = memory.recall_summaries({"summaries": old}, "รอสเต้จำได้ไหมว่าคุยเรื่องนิยาย")
+        assert got != [], "summary แบบเก่าต้องยังถูก recall ได้"
+
+    # ── parse_summary_json ──
+    def test_parse_json_with_tags(self):
+        out = memory.parse_summary_json(
+            '{"summary": "คุยแนวนิยาย", "tags": ["user_pref:ชอบสืบสวน"]}')
+        assert out == "คุยแนวนิยาย | user_pref:ชอบสืบสวน"
+
+    def test_parse_json_ignores_surrounding_text(self):
+        """qwen3:8b ชอบพูดนำหน้า/ตามหลัง JSON — ต้องตัดเอาเฉพาะช่วง {...}"""
+        out = memory.parse_summary_json(
+            'นี่คือสรุปครับ {"summary": "ก", "tags": []} หวังว่าจะช่วยได้')
+        assert out == "ก"
+
+    def test_parse_non_json_returns_empty(self):
+        """parse ไม่ได้ = ทิ้งรอบนั้น ไม่เก็บข้อความดิบที่กรองฝั่งไม่ได้"""
+        assert memory.parse_summary_json("สรุปเป็นข้อความธรรมดา") == ""
+        assert memory.parse_summary_json("") == ""

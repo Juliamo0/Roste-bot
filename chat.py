@@ -424,8 +424,11 @@ async def summarize_and_verify(user_id: int, pairs: list):
         data = await _get_json_post(payload, timeout=120)
         raw = data.get("message", {}).get("content", "") or ""
         raw = _strip_think(raw)
-        summary_text = raw.strip().splitlines()[0].strip()
+        # build_summary_prompt คืน JSON {"summary","tags"} → แปลงเป็นบรรทัดเดียวก่อนเก็บ
+        # parse ไม่ได้ = ทิ้งรอบนั้น (fail-conservative) ดีกว่าเก็บข้อความดิบที่มีคำนำปนมา
+        summary_text = memory.parse_summary_json(raw)
         if not summary_text:
+            logger.info("   🗑️ สรุปบทไม่เป็น JSON ที่อ่านได้ — ข้ามรอบนี้")
             return
 
         # ─ ขั้นที่ 2: ตรวจ hallucinate — ถ้าสรุปแต่งรายละเอียด แก้หรือทิ้ง ─
@@ -446,6 +449,12 @@ async def summarize_and_verify(user_id: int, pairs: list):
         if up.startswith("FIX:"):
             fixed = first_line[4:].strip()
             if not fixed:
+                return
+            # ⚠️ verify pass เขียนข้อความอิสระกลับมา ไม่รู้จักรูปแบบ tag (user_pref:/me_pref:)
+            # ถ้ารับมาทั้งดุ้นจะได้สรุปที่ *ไม่มี tag* ซึ่งกรองฝั่งเจ้าของไม่ได้เลย = เสียประโยชน์
+            # ทั้งหมดของวิธี F — ยอมทิ้งรอบนั้นดีกว่าเก็บของที่กรองไม่ได้
+            if not memory._OWNER_TAG_RE.search(fixed):
+                logger.info("   🗑️ verify แก้สรุปจนไม่เหลือ tag เจ้าของ — ทิ้งรอบนี้")
                 return
             final_text = fixed
             # เนื้อหาสรุปที่แก้จริง (PII) แยกไป DEBUG
@@ -597,8 +606,15 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
 
         # 🔎 semantic recall — เสริม recall_summaries (keyword) ด้วยการค้นความหมายผ่าน vector memory
         #    ค้นทุกครั้ง (ไม่ต้องมีคำใบ้ PAST_HINTS) แต่กรองด้วยระยะห่างความหมาย กันดึงเรื่องไม่เกี่ยวข้อง
+        #
+        #    vector ครอบเคสที่ keyword พลาดเพราะใช้คำต่างกัน ("เลี้ยงสัตว์" vs "เลี้ยงแมว")
+        #    วัดแล้วชนะ keyword ชัดในชุดคำพ้อง (30/30 vs 21/30) แลกกับ ~1.2s ต่อครั้ง
         with stats.stage("semantic_recall"):
             vec_recalled = await vectormemory.query_conversation_memory(user_id, user_message)
+        # ⚠️ ต้องกรองฝั่งเจ้าของเหมือน recall_summaries — vector ไม่รู้จัก tag เลย คืนทั้งบรรทัด
+        #    เสมอ ถ้าไม่กรองจะได้ของอีกฝั่งปนมา (วัดได้: vector ดิบ 7/17 → กรองแล้ว 17/17)
+        vec_recalled = memory.filter_by_owner(
+            vec_recalled, memory.guess_owner(user_message))
         vec_recalled = [s for s in vec_recalled if s not in recalled]  # กันซ้ำกับที่ดึงมาแล้ว
         if vec_recalled:
             system_text += (
