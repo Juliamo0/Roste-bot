@@ -216,8 +216,9 @@ class TestSummarizeAndVerify:
         user_id = 21
         _init_mem(tmp_path, user_id)
         pairs = [{"role": "user", "content": "คุยเรื่องอาหาร"}]
-        with patch("aiohttp.ClientSession",
-                   make_aiohttp_mock_sequence("สรุปเรื่องอาหาร", "OK")):
+        # build_summary_prompt ขอ JSON {"summary","tags"} — mock ต้องตอบตามสัญญาใหม่
+        with patch("aiohttp.ClientSession", make_aiohttp_mock_sequence(
+                '{"summary": "สรุปเรื่องอาหาร", "tags": ["user_pref:ชอบอาหารไทย"]}', "OK")):
             asyncio.run(chat.summarize_and_verify(user_id, pairs))
         saved = _load_saved(tmp_path, user_id)
         assert len(saved["summaries"]) == 1
@@ -225,18 +226,51 @@ class TestSummarizeAndVerify:
         assert isinstance(entry, dict)
         assert "date" in entry and "text" in entry
         assert "อาหาร" in entry["text"]
+        assert "user_pref:" in entry["text"], "ต้องเก็บ tag เจ้าของไว้ ไม่งั้นกรองฝั่งไม่ได้"
+
+    def test_non_json_summary_is_discarded(self, tmp_path, monkeypatch):
+        """โมเดลตอบข้อความดิบแทน JSON → ทิ้งรอบนั้น (fail-conservative)
+
+        ดีกว่าเก็บข้อความที่ไม่มี tag เพราะกรองฝั่งเจ้าของไม่ได้ = เสียประโยชน์ของวิธี F
+        """
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        user_id = 210
+        _init_mem(tmp_path, user_id)
+        pairs = [{"role": "user", "content": "คุยเรื่องอาหาร"}]
+        with patch("aiohttp.ClientSession",
+                   make_aiohttp_mock_sequence("สรุปเป็นข้อความธรรมดาไม่ใช่ JSON", "OK")):
+            asyncio.run(chat.summarize_and_verify(user_id, pairs))
+        assert _load_saved(tmp_path, user_id)["summaries"] == []
 
     def test_verify_fix_saves_corrected_summary(self, tmp_path, monkeypatch):
         monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
         user_id = 22
         _init_mem(tmp_path, user_id)
         pairs = [{"role": "user", "content": "คุยเรื่องอาหาร"}]
-        with patch("aiohttp.ClientSession",
-                   make_aiohttp_mock_sequence("สรุปแต่งรายละเอียดมั่ว", "FIX: สรุปที่ถูกต้อง")):
+        # FIX ต้องคืนสรุปที่ยังมี tag — verify pass ที่ลบ tag ทิ้งจะถูกปฏิเสธ (ดูเทสถัดไป)
+        with patch("aiohttp.ClientSession", make_aiohttp_mock_sequence(
+                '{"summary": "สรุปแต่งมั่ว", "tags": ["user_pref:xxx"]}',
+                "FIX: สรุปที่ถูกต้อง | user_pref:ชอบอาหารไทย")):
             asyncio.run(chat.summarize_and_verify(user_id, pairs))
         saved = _load_saved(tmp_path, user_id)
         assert len(saved["summaries"]) == 1
         assert "สรุปที่ถูกต้อง" in saved["summaries"][0]["text"]
+
+    def test_verify_fix_without_owner_tag_is_discarded(self, tmp_path, monkeypatch):
+        """verify แก้จนไม่เหลือ tag → ทิ้ง ไม่เก็บของที่กรองฝั่งไม่ได้
+
+        verify pass เขียนข้อความอิสระกลับมา ไม่รู้จักรูปแบบ tag ถ้ารับมาทั้งดุ้นจะได้สรุป
+        ที่กรองเจ้าของไม่ได้ ซึ่งเป็นสาเหตุที่ทำให้จำสลับเจ้าของ 29% ตั้งแต่แรก
+        """
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        user_id = 211
+        _init_mem(tmp_path, user_id)
+        pairs = [{"role": "user", "content": "คุยเรื่องอาหาร"}]
+        with patch("aiohttp.ClientSession", make_aiohttp_mock_sequence(
+                '{"summary": "สรุปแต่งมั่ว", "tags": ["user_pref:xxx"]}',
+                "FIX: สรุปที่ถูกต้องแต่ไม่มีแท็ก")):
+            asyncio.run(chat.summarize_and_verify(user_id, pairs))
+        assert _load_saved(tmp_path, user_id)["summaries"] == []
 
     def test_verify_discard_saves_nothing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
@@ -253,8 +287,8 @@ class TestSummarizeAndVerify:
         user_id = 24
         _init_mem(tmp_path, user_id)
         pairs = [{"role": "user", "content": "ทดสอบ"}]
-        with patch("aiohttp.ClientSession",
-                   make_aiohttp_mock_sequence("<think>กำลังคิด</think>\nสรุปถูกต้อง", "OK")):
+        with patch("aiohttp.ClientSession", make_aiohttp_mock_sequence(
+                '<think>กำลังคิด</think>\n{"summary": "สรุปถูกต้อง", "tags": []}', "OK")):
             asyncio.run(chat.summarize_and_verify(user_id, pairs))
         saved = _load_saved(tmp_path, user_id)
         assert saved["summaries"][0]["text"].endswith("สรุปถูกต้อง")
@@ -292,7 +326,8 @@ class TestSummarizeAndVerify:
                     for i in range(memory.MAX_SUMMARIES)]
         _init_mem(tmp_path, user_id, summaries=existing)
         pairs = [{"role": "user", "content": "ทดสอบ"}]
-        with patch("aiohttp.ClientSession", make_aiohttp_mock_sequence("บทใหม่", "OK")):
+        with patch("aiohttp.ClientSession", make_aiohttp_mock_sequence(
+                '{"summary": "บทใหม่", "tags": []}', "OK")):
             asyncio.run(chat.summarize_and_verify(user_id, pairs))
         saved = _load_saved(tmp_path, user_id)
         assert len(saved["summaries"]) == memory.MAX_SUMMARIES

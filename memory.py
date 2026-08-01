@@ -349,21 +349,75 @@ def parse_extracted_facts(model_output: str) -> list:
 
 
 def build_summary_prompt(pairs: list) -> str:
-    """สร้าง prompt ให้โมเดลสรุปบทสนทนาเป็น 1 บรรทัด — เน้นกัน hallucinate"""
+    """สร้าง prompt ให้โมเดลสรุปบทสนทนา — เก็บ *เนื้อหา* พร้อม tag บอกว่าเรื่องไหนของใคร
+
+    รูปแบบที่ได้ (เรียกว่า "วิธี F" ใน docs/MEMORY_EXPERIMENTS.md):
+        คุยเรื่องแนวนิยาย | user_pref:ชอบนิยายสืบสวน me_pref:ชอบแนวแฟนตาซี
+
+    ⚠️ เดิม prompt นี้สั่งว่า "สั้นที่สุดเท่าที่จะบอกหัวข้อได้" + "ห้ามเติมรายละเอียด"
+    ซึ่งกันการแต่งข้อมูลได้จริง แต่เหวี่ยงเกินจนห้ามทั้งของแต่งขึ้น *และ* ของที่ผู้ใช้พูดจริง
+    ผลคือ summary บอกได้แค่ว่า "คุยเรื่องอะไร" แต่บอกไม่ได้ว่า "ใครชอบอะไร" —
+    วัดได้ว่าเก็บรายละเอียดของผู้ใช้ 0% (10 รอบ ไม่ผ่านสักครั้ง)
+
+    ทำไมต้องมี tag แยกเจ้าของ: ถ้าเขียนรวมกันเป็นประโยคเดียว ตอน recall กลับมาโมเดลแยก
+    ไม่ออกว่าอันไหนของผู้ใช้ อันไหนของรอสเต้ — วัดได้ว่าจำสลับเจ้าของ 29% (1 ใน 3 ครั้ง)
+    ซึ่งแย่กว่าการจำไม่ได้ เพราะรอสเต้จะเชื่อว่าผู้ใช้ชอบสิ่งที่ตัวเองชอบ
+    การมี tag ทำให้ chat.py กรองเหลือเฉพาะฝั่งที่ถูกถามได้ก่อนส่งเข้า context (สลับ → 0%)
+
+    เทียบ 6 วิธีแล้ว (ดู tools/bench_summary_compare.py) วิธีนี้เป็นวิธีเดียวที่รอสเต้
+    "จำเรื่องของตัวเองได้" — อีก 5 วิธีได้ 0% เพราะไม่มีที่ให้เก็บฝั่งรอสเต้เลย
+    """
     convo = "\n".join(
         f"{'ผู้ใช้' if m['role'] == 'user' else 'รอสเต้'}: {m.get('content', '')}"
         for m in pairs
     )
     return (
-        "สรุปบทสนทนาต่อไปนี้เป็น 1 บรรทัดสั้นๆ ภาษาไทย ว่าคุยเรื่องอะไร\n"
-        "กฎเข้มงวด:\n"
-        "- เขียนเฉพาะสิ่งที่ปรากฏในบทสนทนาข้างล่างเท่านั้น\n"
-        "- ห้ามเติมชื่อหนังสือ/สถานที่/ตัวเลข/รายละเอียดที่ผู้ใช้ไม่ได้พูดถึง\n"
-        "- ถ้าไม่แน่ใจว่ามีในบทจริง ไม่ต้องใส่\n"
-        "- สั้นที่สุดเท่าที่จะบอกหัวข้อได้ (1 บรรทัด ไม่มีคำอธิบายเพิ่ม)\n"
-        "ตอบมาแค่ประโยคสรุปเดียวเท่านั้น ห้ามมีคำนำหรือคำอธิบายเพิ่มเติม:\n\n"
+        "สรุปบทสนทนาต่อไปนี้ ตอบเป็น JSON เท่านั้น\n"
+        "คุณคือรอสเต้ กำลังบันทึกความทรงจำของตัวเอง — ต้องแยกให้ชัดว่าเรื่องไหนของใคร\n"
+        '{"summary": "<หัวข้อที่คุย 1 บรรทัดสั้นๆ>", "tags": [...]}\n'
+        "ชนิดของ tag (เลือกใช้เท่าที่มีจริงในบท):\n"
+        '- "user_pref:<สิ่งที่ผู้ใช้ชอบ/ไม่ชอบ>"   เช่น user_pref:ชอบนิยายสืบสวน\n'
+        '- "user_fact:<ข้อเท็จจริงของผู้ใช้>"      เช่น user_fact:กินเผ็ดไม่ได้\n'
+        '- "me_pref:<สิ่งที่รอสเต้เองชอบ/ไม่ชอบ>"  เช่น me_pref:ชอบหนังสือเก่า\n'
+        '- "me_fact:<สิ่งที่รอสเต้ทำหรือเป็น>"     เช่น me_fact:แนะนำร้านให้\n'
+        "กฎ:\n"
+        "- รอสเต้จำความชอบของตัวเองได้ ให้ใส่ me_pref: ถ้ารอสเต้บอกว่าชอบ/ไม่ชอบอะไรในบท\n"
+        "- ห้ามสลับเจ้าของ: สิ่งที่ผู้ใช้พูดต้องเป็น user_* สิ่งที่รอสเต้พูดต้องเป็น me_*\n"
+        "- ห้ามบันทึกข้อมูลสดที่หมดอายุ (ราคาน้ำมัน พยากรณ์อากาศ เวลา)\n"
+        "- ห้ามแต่งชื่อเฉพาะ/ตัวเลขที่ไม่ได้อยู่ในบท\n"
+        "- ไม่เกิน 4 tags ถ้าไม่มีอะไรน่าจำใส่ [] ได้\n"
+        "ตอบ JSON อย่างเดียว:\n\n"
         + convo
     )
+
+
+# ── แปลงผล JSON จาก build_summary_prompt เป็นบรรทัดเดียวสำหรับเก็บ ──────────────
+
+def parse_summary_json(raw: str) -> str:
+    """แปลง {"summary":..., "tags":[...]} → "หัวข้อ | tag1 tag2"
+
+    คืน "" ถ้า parse ไม่ได้เลย — ผู้เรียกต้องถือว่าสรุปรอบนั้นใช้ไม่ได้ (fail-conservative
+    แบบเดียวกับ DISCARD ใน verify pass) ดีกว่าเก็บข้อความดิบที่อาจมีคำนำของโมเดลปนมา
+
+    รองรับกรณีโมเดลพูดนำหน้า/ตามหลัง JSON (เจอบ่อยกับ qwen3:8b) โดยตัดเอาเฉพาะช่วง {...}
+    """
+    import json as _json
+    txt = (raw or "").strip()
+    start, end = txt.find("{"), txt.rfind("}")
+    if start < 0 or end <= start:
+        return ""
+    try:
+        d = _json.loads(txt[start:end + 1])
+    except Exception:
+        return ""
+    head = str(d.get("summary") or "").strip()
+    tags = d.get("tags") or []
+    if not isinstance(tags, list):
+        tags = []
+    clean = [str(t).strip() for t in tags if str(t).strip()]
+    if not head and not clean:
+        return ""
+    return f"{head} | {' '.join(clean)}" if clean else head
 
 
 def build_verify_prompt(pairs: list, summary: str) -> str:
@@ -383,6 +437,77 @@ def build_verify_prompt(pairs: list, summary: str) -> str:
         "ถ้าแก้ไม่ได้หรือสรุปผิดพลาดมาก ตอบ: DISCARD\n"
         "ตอบสั้นๆ ตรงประเด็น ไม่มีคำอธิบายเพิ่ม"
     )
+
+
+# ── กรองความทรงจำตามเจ้าของ (ใช้คู่กับ tag จาก build_summary_prompt) ───────────
+#
+# ทำไมต้องกรอง: summary รูปแบบ F เก็บทั้งฝั่งผู้ใช้และฝั่งรอสเต้ไว้ในบรรทัดเดียว
+#     "คุยแนวนิยาย | user_pref:ชอบสืบสวน me_pref:ชอบแฟนตาซี"
+# ถ้ายัดทั้งบรรทัดเข้า context โมเดลเห็นสองฝั่งพร้อมกันแล้วแยกไม่ออก — วัดได้ว่าจำสลับ
+# เจ้าของ 29% พอกรองเหลือเฉพาะฝั่งที่ถูกถามก่อนส่ง เหลือ 0% (ดู docs/MEMORY_EXPERIMENTS.md)
+
+_OWNER_TAG_RE = re.compile(r"(user_pref|user_fact|me_pref|me_fact)\s*:")
+
+# ⚠️ จับที่ *ตัวประธาน* อย่างเดียว ไม่จับคู่กับกริยา — รุ่นแรกเขียนเป็น "<ประธาน> + <กริยา>"
+# (รอสเต้ + ชอบ/สนใจ/ถนัด) แล้วพังทันทีที่เจอกริยานอกลิสต์ ("รอสเต้ทำงานอะไร" → เดาไม่ออก
+# → คืน fact ของผู้ใช้มาแทน) การไล่เติมกริยาทีละคำเป็น whack-a-mole แบบเดียวกับที่
+# _TOOL_REASONING_LEAK_RE เคยติดกับดัก — ประธานมีจำกัดและนับได้ ส่วนกริยาไม่มีวันครบ
+_ASK_ABOUT_ROSTE_RE = re.compile(r"รอสเต้|เธอ|น้อง")
+_ASK_ABOUT_USER_RE = re.compile(r"ผม|ฉัน|หนู|ข้าพเจ้า|ตัวเรา")
+# ถามถึงทั้งสองฝ่ายพร้อมกัน — ต้องคืนทั้งคู่ ไม่ใช่เลือกฝั่งใดฝั่งหนึ่ง
+_ASK_BOTH_RE = re.compile(r"เราสองคน|ทั้งสอง|ต่างกัน|เหมือนกัน|คนละ")
+
+
+def split_owner_tags(text: str) -> dict:
+    """แยก summary รูปแบบ F เป็น {"summary","user","me"}
+
+    summary แบบเก่า (ไม่มี tag) จะได้ user/me ว่าง — ผู้เรียกต้องรับมือได้
+    """
+    head = text.split("|", 1)[0].strip()
+    marks = list(_OWNER_TAG_RE.finditer(text))
+    user, me = [], []
+    for i, mk in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        seg = text[mk.end():end].strip(" |,")
+        if seg:
+            (me if mk.group(1).startswith("me") else user).append(seg)
+    return {"summary": head, "user": user, "me": me}
+
+
+def guess_owner(question: str) -> str:
+    """เดาว่าคำถามถามถึงความทรงจำของใคร — 'user' / 'me' / 'any'
+
+    ลำดับสำคัญ: ถามทั้งสองฝ่ายต้องมาก่อน ("เราสองคนชอบอะไรต่างกัน" ไม่ควรถูกตัดฝั่ง)
+    แล้วตรวจรอสเต้ก่อนผู้ใช้ เพราะ "เราเคยคุยเรื่องที่รอสเต้ชอบไหม" มีคำชี้ทั้งคู่
+    แต่เจตนาคือถามรอสเต้
+    """
+    if _ASK_BOTH_RE.search(question):
+        return "any"
+    if _ASK_ABOUT_ROSTE_RE.search(question):
+        return "me"
+    if _ASK_ABOUT_USER_RE.search(question):
+        return "user"
+    return "any"
+
+
+def filter_by_owner(texts, whose: str) -> list:
+    """กรองรายการ summary ให้เหลือเฉพาะฝั่งที่ถาม แล้วเขียนใหม่ให้อ่านง่าย
+
+    whose='any' → คืนตามเดิมทั้งหมด
+    บรรทัดที่ไม่มี tag ฝั่งที่ถาม จะถูกตัดทิ้ง — รวมถึง summary แบบเก่าที่ไม่มี tag เลย
+    (ตั้งใจ: ถามเจาะจงฝั่งแล้วไม่มีข้อมูลฝั่งนั้น ควรตอบว่าจำไม่ได้ ดีกว่าเอาของอีกฝั่งมาตอบ)
+    """
+    if whose not in ("user", "me"):
+        return list(texts)
+    label = "ผู้ใช้" if whose == "user" else "รอสเต้"
+    out = []
+    for t in texts:
+        parts = split_owner_tags(t)
+        own = parts[whose]
+        if not own:
+            continue
+        out.append(f"{parts['summary']} — {label}: {', '.join(own)}")
+    return out
 
 
 # คำบ่งชี้ว่าผู้ใช้ถามถึงอดีต — trigger ให้ดึง summaries ขึ้นมา
@@ -410,38 +535,70 @@ _LIVE_DATA_SIGNALS = (
 
 
 def recall_summaries(mem, user_message: str) -> list:
-    """คืน summaries ที่เกี่ยวข้อง เฉพาะเมื่อข้อความมีสัญญาณถามถึงอดีต
-    ปกติคืน [] เพื่อไม่ inject ทุกครั้ง (ประหยัด context)
-    เมื่อถามอดีต: keyword match กับ summaries → คืนสูงสุด 5 อัน เป็น string พร้อม inject"""
+    """คืน summaries ที่เกี่ยวข้อง — กรองเหลือเฉพาะฝั่งเจ้าของที่ถูกถามแล้ว
+
+    ⚠️ เดิมด่านแรกเช็คว่า "มีคำใน PAST_HINTS ไหม ไม่มีก็คืน [] ทันที" — วัดแล้วพบว่าด่านนี้
+    ตัดคำถามที่คนถามบ่อยที่สุดทิ้ง: "ผมชอบอ่านอะไร" / "รอสเต้ชอบทำอะไรยามว่าง" ไม่มีคำว่า
+    "จำได้ไหม" หรือ "เคยคุย" เลย จึงไม่ค้นอะไรทั้งที่ข้อมูลอยู่ครบ
+    (ระบบเดิมได้ 5/17 บนชุดทดสอบ — ดู tools/bench_memory_read.py)
+
+    แต่จะลบด่านทิ้งเฉยๆ ก็ไม่ได้ — ทดสอบแล้วทำให้ inject มั่ว 3/9 ในคำถามข้อมูลสด
+    ("วันนี้อากาศเป็นไง" ไปดึง summary เรื่องอากาศเก่ามาด้วย) ซึ่งเปลือง context ที่วัดแล้ว
+    ว่ามีราคาจริง (>3,700c ทำให้โมเดลลืม)
+
+    ต้นเหตุคือด่านเดิม *ใช้เกณฑ์ผิดด้าน* — ถามว่า "มีคำใบ้อดีตไหม" ทั้งที่ควรถามว่า
+    "เป็นคำถามข้อมูลสดหรือเปล่า" กลับด้านเป็นกันเฉพาะข้อมูลสดจึงได้ทั้งสองอย่าง:
+        "ผมชอบอ่านอะไร"      ไม่มีคำใบ้อดีต แต่ไม่ใช่ข้อมูลสด → ค้น ✅
+        "วันนี้อากาศเป็นไง"   มีสัญญาณข้อมูลสดชัด            → ไม่ค้น ✅
+
+    คุมเพิ่มอีก 2 ชั้น:
+      1. ต้องมีคำตรงกับ summary จริงถึงจะคืน (คะแนน > 0) — ไม่ inject สุ่ม
+      2. กรองฝั่งเจ้าของก่อนคืน — ถามเรื่องผู้ใช้ก็ได้แต่ของผู้ใช้ (จำสลับ 29% → 0%)
+
+    summary แบบเก่าที่ไม่มี tag จะถูกกรองทิ้งเมื่อถามเจาะจงฝั่ง ซึ่งตั้งใจ — ตอบว่าจำไม่ได้
+    ดีกว่าเอาของอีกฝั่งมาตอบ
+    """
     summaries = mem.get("summaries", [])
     if not summaries:
         return []
-    has_clear_hint = any(h in user_message for h in PAST_HINTS)
-    # คำกำกวม ("เมื่อวาน") ถือเป็นสัญญาณถามอดีตด้วย เว้นแต่ประโยคเดียวกันมีคำถามข้อมูลสด
-    # (อากาศ/น้ำมัน/ไฟดับ) ปนอยู่ — กรณีนั้นน่าจะหมายถึง "เมื่อวานเทียบกับวันนี้" ไม่ใช่ถามบทสนทนาเก่า
-    has_ambiguous_hint = (
-        any(h in user_message for h in AMBIGUOUS_PAST_HINTS)
-        and not any(s in user_message for s in _LIVE_DATA_SIGNALS)
-    )
-    if not (has_clear_hint or has_ambiguous_hint):
+
+    # กันคำถามข้อมูลสด — เว้นแต่มีคำใบ้อดีตชัดเจนปนอยู่ด้วย ("เมื่อวานคุยเรื่องอากาศไหม"
+    # = ถามบทสนทนาเก่าจริง ไม่ใช่ถามพยากรณ์) ให้คำใบ้อดีตชนะสัญญาณข้อมูลสดเสมอ
+    if (any(s in user_message for s in _LIVE_DATA_SIGNALS)
+            and not any(h in user_message for h in PAST_HINTS)):
         return []
 
     # ตัดคำไทยจริง + ขยายคำพ้อง — split() ตามช่องว่างใช้กับภาษาไทยไม่ได้ (ดู _keywords)
     words = _keywords(user_message)
+    whose = guess_owner(user_message)
+
+    texts = [e["text"] if isinstance(e, dict) else e for e in summaries]
+
+    # ⚠️ ทางถอยสำหรับ summary รูปแบบเก่า (ไม่มี tag เจ้าของ)
+    # ถ้าไม่มี summary อันไหนมี tag เลย การกรองฝั่งจะตัดทุกอันทิ้ง = ความจำหายทั้งหมด
+    # เจอจริงตอนรันเทสเดิม: คำถามที่มีคำว่า "รอสเต้" ปนอยู่ (พบบ่อยมากเพราะผู้ใช้เรียกชื่อบอท)
+    # ถูกเดาเป็น whose='me' แล้วกรอง summary เก่าทิ้งหมด — ผู้ใช้ที่มีความจำแบบเก่าอยู่จะ
+    # เจอบอทลืมทุกอย่างทันทีที่ deploy ถอยไปโหมด 'any' เมื่อไม่มี tag ให้กรองจริงๆ
+    if whose in ("user", "me") and not any(_OWNER_TAG_RE.search(t) for t in texts):
+        whose = "any"
 
     scored = []
-    for entry in summaries:
-        text = entry["text"] if isinstance(entry, dict) else entry
-        score = sum(1 for w in words if w in text)
+    for text in texts:
+        parts = split_owner_tags(text)
+        # ถามเจาะจงฝั่ง แต่บรรทัดนี้ไม่มีฝั่งนั้น → ข้าม (กันตอบผิดเจ้าของ)
+        if whose in ("user", "me") and not parts[whose]:
+            continue
+        hay = (parts["summary"] + " " + " ".join(parts[whose])
+               if whose in ("user", "me") else text)
+        score = sum(1 for w in words if w in hay)
         if score > 0:
             scored.append((score, text))
 
-    # ถ้าถามอดีตแต่ไม่มีคำตรงกับ summary ไหน คืน [] (ไม่ inject สุ่ม)
     if not scored:
         return []
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [text for _, text in scored[:5]]
+    return filter_by_owner([t for _, t in scored[:5]], whose)
 
 
 # จับประโยค "ฉันชื่อ X" / "ผมชื่อ X" / "หนูชื่อ X" ที่บ่งบอกชื่อที่ผู้ใช้อยากให้เรียก
