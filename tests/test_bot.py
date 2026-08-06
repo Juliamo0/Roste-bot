@@ -1299,6 +1299,231 @@ class TestFixPersonaSlips:
         assert persona.fix_persona_slips("สวัสดีค่ะ") == "สวัสดีค่ะ"
 
 
+# ── สรรพนามทางการ — บุคลิกต้องกันเองเสมอ ไม่เปลี่ยนตามโทนผู้ใช้ ────────────────
+
+class TestFormalPronouns:
+    """รอสเต้ต้องแทนตัวเองว่า "ฉัน" อย่างเดียว ไม่ว่าผู้ใช้จะพิมพ์มาเป็นทางการแค่ไหน
+
+    ที่มา: วัดจริงผ่าน ask_ollama (tools/bench_pronoun_rate.py) — คำถามโทนทางการหลุด
+    28% (21/75, ช่วง 95% 19-39%) ส่วนคุยเล่นปกติ 0% (0/60) ช่วงไม่ซ้อนกัน = แยกออกจริง
+    ไม่ใช่ noise ของโมเดล คำที่หลุดคือ "ข้าพเจ้า" 19 ครั้ง "ดิฉัน" 2 ครั้ง
+    """
+
+    @pytest.mark.parametrize("formal,expected", [
+        ("ข้าพเจ้าคือรอสเต้", "ฉันคือรอสเต้"),
+        ("ดิฉันคิดว่าน่าจะฝนตกนะคะ", "ฉันคิดว่าน่าจะฝนตกนะคะ"),
+        ("หนูว่าอากาศดีนะคะ", "ฉันว่าอากาศดีนะคะ"),
+        ("ผมไม่ได้มีข้อมูลนั้น", "ฉันไม่ได้มีข้อมูลนั้น"),
+        ("ข้าน้อยไม่ทราบค่ะ", "ฉันไม่ทราบค่ะ"),
+        ("กระหม่อมขอกราบทูล", "ฉันขอกราบทูล"),
+        ("อาตมาไม่ทราบ", "ฉันไม่ทราบ"),
+    ])
+    def test_formal_pronoun_replaced(self, formal, expected):
+        import persona
+        assert persona.fix_persona_slips(formal) == expected
+
+    @pytest.mark.parametrize("text,expected", [
+        # กลางประโยค ไม่ใช่แค่ต้นประโยค
+        ("เรื่องนี้ข้าพเจ้าไม่ทราบจริงๆ ค่ะ", "เรื่องนี้ฉันไม่ทราบจริงๆ ค่ะ"),
+        ("ถ้าถามว่าชอบไหม หนูก็ว่าชอบนะคะ", "ถ้าถามว่าชอบไหม ฉันก็ว่าชอบนะคะ"),
+        # หลายตัวในข้อความเดียว ต้องแก้ครบทุกตัว
+        ("ข้าพเจ้าคิดว่าดิฉันควรไปนะคะ", "ฉันคิดว่าฉันควรไปนะคะ"),
+        # ติดวรรคตอน/วงเล็บ
+        ("(ดิฉัน) คิดแบบนั้นค่ะ", "(ฉัน) คิดแบบนั้นค่ะ"),
+        ("หนู! ทำได้แล้วนะคะ", "ฉัน! ทำได้แล้วนะคะ"),
+    ])
+    def test_pronoun_position_and_multiplicity(self, text, expected):
+        """ต้องแก้ได้ทุกตำแหน่ง ไม่ใช่เฉพาะต้นประโยค และแก้ครบเมื่อมีหลายตัว"""
+        import persona
+        assert persona.fix_persona_slips(text) == expected
+
+    def test_kraphom_not_mangled_into_nonword(self):
+        """"กระผม" ต้องกลายเป็น "ฉัน" ไม่ใช่ "กระฉัน"
+
+        บั๊กเดิม: กฎ "ผม"→"ฉัน" เป็น regex ระดับตัวอักษร เลยไปกินคำว่า "ผม" ที่อยู่
+        *กลางคำ* จนได้คำที่ไม่มีในภาษาไทย"""
+        import persona
+        assert persona.fix_persona_slips("กระผมยินดีช่วยเหลือ") == "ฉันยินดีช่วยเหลือ"
+
+    @pytest.mark.parametrize("hair_text", [
+        # กริยา + ผม (คำข้างหน้าบอกบริบท)
+        "แชมพูสระผม",
+        "โกนผม",
+        "ร้านทำผม",
+        "เจลแต่งผม",
+        "มัดผมให้หน่อย",
+        "ถักผมให้หน่อยค่ะ",
+        "ซอยผมสั้นลงหน่อย",
+        "ไปยืดผมมาค่ะ",
+        # ผม + คำขยาย (คำข้างหลังบอกบริบท)
+        "ผมทอง",
+        "ผมหน้าม้า",
+        "เธอมีผมยาวสวยมากเลยค่ะ",
+        "ผมเสียมากเลย",
+        "ผมยุ่งมาก",
+        "ผมหยักศก",
+        "ผมร่วงเยอะจัง",
+        "ผมสลวยมาก",
+        # คำข้างหน้าเป็นคำนามเกี่ยวกับหัว/ผิว
+        "หนังศีรษะและผม",
+        "ทรงผมนี้น่ารักนะคะ",
+        # "ผมของ<คน>" = ผมของคนอื่น ไม่ใช่สรรพนาม
+        "ผมของเธอสวยจังเลยค่ะ",
+    ])
+    def test_hair_noun_never_touched(self, hair_text):
+        """"ผม" ที่แปลว่าเส้นผม ห้ามโดนแก้เป็น "ฉัน"
+
+        บั๊กเดิม: blacklist ระดับตัวอักษรครอบได้แค่คำที่นึกออก วัดแล้วพัง 9/12 คำ
+        ("สระผม"→"สระฉัน", "โกนผม"→"โกนฉัน") = false positive ที่ทำข้อความผู้ใช้เสีย
+        ซึ่งแย่กว่าปล่อยหลุด แก้โดยตัดคำด้วย newmm แล้วดูคำข้างเคียงระดับโทเคน
+
+        หมายเหตุ: ลองใช้ POS tagger แทนลิสต์แล้วไม่ได้ผล — `pythainlp.tag.pos_tag`
+        แท็ก "ผม" เป็น PPRS (สรรพนาม) ทุกกรณีรวมทั้งตอนแปลว่าเส้นผม"""
+        import persona
+        assert persona.fix_persona_slips(hair_text) == hair_text
+
+    @pytest.mark.parametrize("text,expected", [
+        # เส้นผม + สรรพนาม อยู่ในประโยคเดียวกัน — ต้องแยกถูกทั้งคู่
+        ("ผมของเธอสวยจัง แต่ข้าพเจ้าตัดไม่เป็นค่ะ",
+         "ผมของเธอสวยจัง แต่ฉันตัดไม่เป็นค่ะ"),
+        ("เธอไปสระผมมาเหรอคะ ผมว่าสวยดีนะ",
+         "เธอไปสระผมมาเหรอคะ ฉันว่าสวยดีนะ"),
+        ("ฉันชอบทรงผมนี้ แต่ผมไม่ค่อยรู้เรื่องแฟชั่น",
+         "ฉันชอบทรงผมนี้ แต่ฉันไม่ค่อยรู้เรื่องแฟชั่น"),
+    ])
+    def test_hair_and_pronoun_in_same_sentence(self, text, expected):
+        """ประโยคเดียวมีทั้ง "ผม"=เส้นผม และสรรพนามผิด — ต้องแยกถูกทีละตำแหน่ง
+        (เคสนี้พังง่ายที่สุดถ้าตัดสินจากทั้งข้อความแทนที่จะดูทีละโทเคน)"""
+        import persona
+        assert persona.fix_persona_slips(text) == expected
+
+    def test_formal_pronoun_with_ai_claim_caught(self):
+        """"ข้าพเจ้าไม่มีความทรงจำ" ต้องถูกจับว่าเป็น AI-claim
+        เดิมรอดเพราะลิสต์ประธานใน _SELF_NO_MEMORY_RE ไม่มีสรรพนามทางการ"""
+        import persona
+        assert persona.reply_claims_to_be_ai("ข้าพเจ้าไม่มีความทรงจำ") is True
+
+    @pytest.mark.parametrize("text,expected", [
+        ("ขอบคุณค่ะ/ค่ะ", "ขอบคุณค่ะ"),
+        ("ขอบคุณครับ/ค่ะ", "ขอบคุณค่ะ"),
+        ("ขอบคุณนะคะ/นะคะ", "ขอบคุณนะคะ"),
+        ("ขอบคุณค่ะ / ค่ะ", "ขอบคุณค่ะ"),          # มีช่องว่างคั่น
+        ("สวัสดีครับ/ค่ะ ยินดีครับ/ค่ะ", "สวัสดีค่ะ ยินดีค่ะ"),   # หลายที่ในข้อความเดียว
+    ])
+    def test_duplicated_kha_slash_collapsed(self, text, expected):
+        """"ค่ะ/ค่ะ" ต้องเหลือ "ค่ะ" เดียว
+
+        เจอจริงตอนขอ "คำกล่าวขอบคุณอย่างเป็นทางการ": โมเดลพิมพ์ฟอร์มราชการ "ครับ/ค่ะ"
+        (เขียนเผื่อทั้งสองเพศ) พอกฎ "ครับ"→"ค่ะ" ทำงานก็เหลือ "ค่ะ/ค่ะ" ซ้ำติดกัน"""
+        import persona
+        assert persona.fix_persona_slips(text) == expected
+
+    def test_slash_in_normal_text_untouched(self):
+        """slash ปกติ (A/B, หน่วย, URL) ต้องไม่โดนยุบ — กฎยุบต้องเจาะจงแค่ "ค่ะ/ค่ะ" """
+        import persona
+        for keep in ["ความเร็ว 10 กม./ชม. ค่ะ", "เลือก A/B ได้เลยค่ะ", "ดูที่ example.com/page ค่ะ"]:
+            assert persona.fix_persona_slips(keep) == keep
+
+    @pytest.mark.parametrize("text", ["", "ค่ะ", "😊", "   ", "123"])
+    def test_degenerate_input_no_crash(self, text):
+        """ข้อความว่าง/สั้น/ไม่มีอักษรไทย ต้องไม่พังและไม่ถูกแก้มั่ว
+        (_fix_pronouns เรียก word_tokenize ทุกครั้ง — ต้องทนอินพุตแปลกๆ ได้)"""
+        import persona
+        assert persona.fix_persona_slips(text) == text.strip()
+
+    def test_pronoun_fix_is_idempotent(self):
+        """รันซ้ำต้องได้ผลเดิม — guard ถูกเรียกได้หลายรอบใน path ที่ต่างกัน
+        ถ้าไม่ idempotent จะเกิดการแก้ทับซ้อนจนข้อความเพี้ยน"""
+        import persona
+        for text in ["ข้าพเจ้าคือรอสเต้", "แชมพูสระผม", "ขอบคุณครับ/ค่ะ",
+                     "ผมของเธอสวยจัง แต่ข้าพเจ้าตัดไม่เป็นค่ะ"]:
+            once = persona.fix_persona_slips(text)
+            assert persona.fix_persona_slips(once) == once
+
+    def test_correct_pronoun_never_altered(self):
+        """"ฉัน" (ที่ถูกอยู่แล้ว) และคำที่มี "ฉัน" ประกอบ ต้องไม่โดนแตะ"""
+        import persona
+        for clean in ["ฉันคือรอสเต้ค่ะ", "ฉันว่าดีนะคะ", "เดี๋ยวฉันช่วยดูให้ค่ะ"]:
+            assert persona.fix_persona_slips(clean) == clean
+
+    def test_cjk_removal_still_works_with_pronoun_fix(self):
+        """กฎลบอักษรจีนกับกฎแก้สรรพนามต้องทำงานร่วมกันได้ (เคยเป็น regex คนละตัว)"""
+        import persona
+        out = persona.fix_persona_slips("ข้าพเจ้าคิดว่า职场นี้ดีค่ะ")
+        assert "职场" not in out
+        assert "ข้าพเจ้า" not in out
+        assert out.startswith("ฉัน")
+
+    def test_krap_rule_still_works_after_refactor(self):
+        """กฎเดิม "ครับ"→"ค่ะ" ต้องไม่ถดถอยจากการเปลี่ยนมาใช้ tokenizer"""
+        import persona
+        assert persona.fix_persona_slips("สวัสดีครับ") == "สวัสดีค่ะ"
+        assert persona.fix_persona_slips("ขอบคุณนะครับ") == "ขอบคุณนะคะ"
+        assert persona.fix_persona_slips("ได้เลยครับผม") == "ได้เลยค่ะ"
+
+    @pytest.mark.parametrize("claim", [
+        "ข้าพเจ้าไม่มีความทรงจำ",
+        "ดิฉันไม่มีความทรงจำ",
+        "กระผมไม่มีประสบการณ์ส่วนตัว",
+        "หนูไม่มีตัวตน",
+    ])
+    def test_formal_pronoun_with_ai_claim_caught(self, claim):
+        """AI-claim ที่ใช้สรรพนามทางการเป็นประธาน ต้องถูกจับ
+        เดิมรอดเพราะลิสต์ประธานใน _SELF_NO_MEMORY_RE มีแค่ "ฉัน|ดิฉัน|เรา|รอสเต้|ผม" """
+        import persona
+        assert persona.reply_claims_to_be_ai(claim) is True
+
+    def test_ordinary_forgetting_not_flagged_as_ai(self):
+        """"จำไม่ได้" ธรรมดา = คนพูดปกติ ห้ามนับเป็น AI-claim (กัน false positive)"""
+        import persona
+        assert persona.reply_claims_to_be_ai("ฉันจำไม่ได้แล้วอ่ะ") is False
+        assert persona.reply_claims_to_be_ai("จำไม่ค่อยได้เลยค่ะ") is False
+
+
+class TestCasualToneInstructions:
+    """ชั้น prompt — ตัวที่ทำให้อัตราหลุดลดจาก 28% เหลือ 1.3% (guard เป็นแค่ตาข่ายรอง)
+
+    เทสว่าคำสั่งยังอยู่ครบ เพราะถ้ามีใครลบทิ้งตอน refactor prompt เทส guard จะยังเขียว
+    (guard แก้สรรพนามได้อยู่) แต่ "วลีทางการ" จะกลับมาทันทีโดยไม่มีอะไรเตือน"""
+
+    def test_system_prompt_forbids_tone_mirroring(self):
+        import persona
+        assert "คุยกันเองเสมอ" in persona.SYSTEM_PROMPT
+
+    @pytest.mark.parametrize("pronoun", ["ข้าพเจ้า", "ดิฉัน", "กระผม", "หนู"])
+    def test_system_prompt_lists_banned_pronouns(self, pronoun):
+        import persona
+        assert pronoun in persona.SYSTEM_PROMPT
+
+    @pytest.mark.parametrize("phrase", ["ขอกราบขอบพระคุณ", "ด้วยความเคารพอย่างสูง"])
+    def test_system_prompt_lists_banned_formal_phrases(self, phrase):
+        import persona
+        assert phrase in persona.SYSTEM_PROMPT
+
+    def test_author_note_repeats_casual_rule(self):
+        """author note อยู่ใกล้คำตอบที่สุด — ต้องย้ำกฎนี้ด้วย ไม่ใช่มีแค่ใน SYSTEM_PROMPT"""
+        import persona
+        note = persona.build_author_note()
+        assert "คุยกันเอง" in note
+        assert "ข้าพเจ้า" in note
+
+    def test_fewshot_has_formal_in_casual_out_pair(self):
+        """ต้องมีตัวอย่าง "ผู้ใช้ขอทางการ → รอสเต้ตอบกันเอง" อย่างน้อยหนึ่งคู่
+
+        few-shot เดิมเป็น คุยเล่น→คุยเล่น ทั้งหมด ซึ่งสอนเรื่องนี้ไม่ได้เลย"""
+        import persona
+        msgs = persona.FEWSHOT_EXAMPLES
+        idx = [i for i, m in enumerate(msgs)
+               if m["role"] == "user" and "เป็นทางการ" in m["content"]]
+        assert idx, "ไม่มี few-shot ที่ผู้ใช้ขอให้ตอบแบบเป็นทางการ"
+        for i in idx:
+            reply = msgs[i + 1]
+            assert reply["role"] == "assistant"
+            # คำตอบตัวอย่างต้องไม่ใช้สรรพนาม/คำทางการเสียเอง
+            for bad in ["ข้าพเจ้า", "ดิฉัน", "กระผม", "ขอกราบขอบพระคุณ", "ด้วยความเคารพอย่างสูง"]:
+                assert bad not in reply["content"], f"few-shot ใช้คำทางการเสียเอง: {bad}"
+
+
 # ── rate limiting — cooldown ต่อ user + guild allowlist + SerpApi daily quota ──
 
 class TestCooldown:

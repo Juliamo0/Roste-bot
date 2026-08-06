@@ -59,7 +59,7 @@
 
 | ไฟล์ | ประเภท | จำนวน tests |
 |------|--------|-------------|
-| `test_bot.py` | pytest | 196 — lock, summarize (JSON + tag เจ้าของ), memory overflow, tool calling dispatch/validation/grounding, **dynamic tool selection**, persona-slip filter, AI-claim guard, rate limiting, karaoke outro |
+| `test_bot.py` | pytest | 260 — lock, summarize (JSON + tag เจ้าของ), memory overflow, tool calling dispatch/validation/grounding, **dynamic tool selection**, persona-slip filter, AI-claim guard, **บุคลิกกันเองเสมอ/สรรพนามทางการ**, rate limiting, karaoke outro |
 | `test_memory.py` | pytest | 95 — facts, recall (ตัดคำไทย/คำพ้อง), **แยกความทรงจำตามเจ้าของ**, parse, summaries, supersede/consolidation |
 | `test_realtime.py` | pytest | 55 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
 | `test_voice.py` | pytest | 55 — streaming segment order/fail-safe, ตัวซอยข้อความไทย, f5_preprocess, worker hang timeout |
@@ -72,7 +72,7 @@
 | `test_tts_stream.py` | pytest | 8 — prefetch ไม่บล็อก, ลำดับ segment, เก็บกวาดไฟล์ตอนหยุดกลางคัน |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
-**รวม 495 unit tests** — รันทั้งหมดด้วย `pytest` (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว)
+**รวม 559 unit tests** — รันทั้งหมดด้วย `pytest` (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว)
 ไม่ต้องเปิด Ollama หรือต่อเน็ต (mock ล้วน) ยกเว้น `test_all_systems.py` ที่ยิง HTTP จริง
 
 ### tools/ — สคริปต์เสริม (ไม่ใช่ regression test)
@@ -97,6 +97,7 @@
 | `bench_memory_search.py` | เทียบ keyword vs vector + วัด latency |
 | `bench_rerank_ablation.py` | ตัด LLM rerank ได้ไหม (ผล: เก็บไว้ — จำเป็นกับเคส "ไม่เคยคุย") |
 | `bench_memory_e2e.py` | วัดความจำผ่าน `chat.ask_ollama` จริง + แยก latency ทีละขั้น |
+| `bench_pronoun_rate.py` | วัดว่ารอสเต้เปลี่ยนเป็นโทนทางการบ่อยแค่ไหน (สรรพนาม + วลีทางการ) — ตัดส่วนที่ยกมาเป็นตัวอย่างออกก่อนนับ |
 
 > `bench_*.py` อ่านความจำผู้ใช้จริงเป็นข้อมูลตั้งต้น — default หยิบไฟล์ที่ใหญ่ที่สุดใน `memory/`
 > เจาะจงได้ด้วย `BENCH_MEMORY_UID=<discord_user_id>` (ดู `tools/_bench_target.py`)
