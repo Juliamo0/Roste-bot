@@ -767,3 +767,112 @@ class TestSplitLinesForTTS:
         for seg in f5.calls:
             assert not seg.rstrip().endswith(("หนึ่ง.", "สอง.", "สาม.")), \
                 f"เลขข้อค้างท้าย segment ที่ส่งเข้า F5 จริง: {seg!r}"
+
+
+# ============================================================
+#  _pitch_shift — ปรับ pitch เสียง F5 ก่อนเข้า RVC (F5_PITCH_RATIO)
+#
+#  ผู้ใช้เลือก 108% จากการลองใน WavePad — ทำเป็นขั้นแยกก่อน RVC เพราะ
+#  RVC รับ f0_up_key เป็น semitone จำนวนเต็มเท่านั้น (ปรับ 1.08 ตรงๆ ไม่ได้)
+# ============================================================
+class TestPitchShift:
+    def test_ratio_one_returns_input_untouched(self, tmp_path):
+        """ratio=1.0 ต้องคืนไฟล์เดิม ไม่เรียก ffmpeg (กันเสียเวลาแปลงเปล่าๆ)"""
+        src = str(tmp_path / "in.wav")
+        _write_dummy_wav(src)
+        out = str(tmp_path / "out.wav")
+
+        assert voice._pitch_shift(src, out, ratio=1.0) == src
+        assert not os.path.exists(out), "ratio=1.0 ไม่ควรสร้างไฟล์ใหม่"
+
+    def test_ffmpeg_failure_falls_back_to_input(self, tmp_path, monkeypatch):
+        """ffmpeg พัง → คืนไฟล์เดิม ไม่ raise
+
+        เสียง pitch ไม่ตรงยังดีกว่าไม่มีเสียง — ห้ามทำให้ทั้ง segment หายไป
+        """
+        src = str(tmp_path / "in.wav")
+        _write_dummy_wav(src)
+        out = str(tmp_path / "out.wav")
+
+        class _Fail:
+            returncode = 1
+            stderr = b"boom"
+
+        monkeypatch.setattr(voice.subprocess, "run", lambda *a, **k: _Fail())
+        assert voice._pitch_shift(src, out, ratio=1.08) == src
+
+    def test_shift_preserves_duration(self, tmp_path):
+        """เปลี่ยน pitch แล้วความยาวต้องเท่าเดิม (atempo ชดเชย asetrate)
+
+        ถ้า atempo หลุด เสียงจะสั้นลง/ยาวขึ้นตามสัดส่วน pitch ซึ่งคือบั๊กที่
+        เคยทำให้เสียง "ทุ้มยืด" มาแล้ว — ล็อกไว้ไม่ให้ย้อนกลับมา
+        """
+        pytest.importorskip("soundfile")
+        src = str(tmp_path / "in.wav")
+        sf.write(src, np.zeros(SR), SR)          # 1.0s
+        out = str(tmp_path / "out.wav")
+
+        res = voice._pitch_shift(src, out, ratio=1.08)
+        if res == src:
+            pytest.skip("ffmpeg ไม่พร้อมใช้ในเครื่องนี้")
+        assert abs(sf.info(res).duration - 1.0) < 0.05, "ความยาวเพี้ยนเกิน 50ms"
+
+    def test_configured_ratio_is_sane(self):
+        """ค่าที่ตั้งไว้ต้องอยู่ในช่วงที่สมเหตุสมผล — กันพิมพ์ผิดเป็น 108 (=10800%)"""
+        assert 0.5 <= voice.F5_PITCH_RATIO <= 2.0
+
+
+# ============================================================
+#  _concat_wavs — ต่อ segment ที่อาจมี sample rate ต่างกัน
+#
+#  เกิดได้จริงเมื่อ VoxCPM2 (48kHz) พังกลางคำตอบแล้ว fallback ไป F5/edge-tts
+#  ซึ่งออกคนละ rate — เดิมโค้ดใช้ rate ของไฟล์ *สุดท้าย* stamp ทั้งก้อน
+#  ทำให้ segment ก่อนหน้าเล่นช้า/ทุ้มผิด (บั๊กแบบเดียวกับตอน sample rate ผิด)
+# ============================================================
+class TestConcatMixedSampleRate:
+    def test_same_rate_unchanged(self, tmp_path):
+        """rate เท่ากันหมด → ความยาวรวมต้องตรง ไม่มีการ resample"""
+        paths = []
+        for i in range(3):
+            p = str(tmp_path / f"s{i}.wav")
+            sf.write(p, np.zeros(24000), 24000)      # 1.0s @ 24k
+            paths.append(p)
+        out = str(tmp_path / "out.wav")
+        voice._concat_wavs(paths, out, silence_ms=0)
+
+        info = sf.info(out)
+        assert info.samplerate == 24000
+        assert abs(info.duration - 3.0) < 0.01
+
+    def test_mixed_rate_preserves_wall_clock_duration(self, tmp_path):
+        """rate ต่างกัน → ต้อง resample ให้ตรง ความยาวจริงต้องไม่เพี้ยน
+
+        ถ้าไม่ resample: ไฟล์ 48k ถูก stamp เป็น 24k จะเล่นยาว 2 เท่าและทุ้มลง
+        1 อ็อกเทฟ — เทสนี้จับตรงนั้น
+        """
+        a = str(tmp_path / "a.wav")
+        b = str(tmp_path / "b.wav")
+        sf.write(a, np.zeros(48000), 48000)          # 1.0s @ 48k (VoxCPM2)
+        sf.write(b, np.zeros(24000), 24000)          # 1.0s @ 24k (F5 fallback)
+        out = str(tmp_path / "out.wav")
+
+        voice._concat_wavs([a, b], out, silence_ms=0)
+
+        info = sf.info(out)
+        assert info.samplerate == 48000, "ต้องยึด rate ของ segment แรก"
+        assert abs(info.duration - 2.0) < 0.05, \
+            f"ความยาวเพี้ยน ({info.duration:.2f}s ควรเป็น 2.0s) — resample ไม่ทำงาน"
+
+    def test_mixed_rate_reverse_order(self, tmp_path):
+        """สลับลำดับ (24k มาก่อน 48k) ก็ต้องได้ความยาวถูกเหมือนกัน"""
+        a = str(tmp_path / "a.wav")
+        b = str(tmp_path / "b.wav")
+        sf.write(a, np.zeros(24000), 24000)
+        sf.write(b, np.zeros(48000), 48000)
+        out = str(tmp_path / "out.wav")
+
+        voice._concat_wavs([a, b], out, silence_ms=0)
+
+        info = sf.info(out)
+        assert info.samplerate == 24000
+        assert abs(info.duration - 2.0) < 0.05

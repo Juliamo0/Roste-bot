@@ -101,6 +101,7 @@ import monitor  # 📈 เว็บเฝ้าดูสถานะบอท (/
 # state ระบบเสียง
 _voice_worker: voice.RvcWorker | None = None  # RVC warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
 _f5_worker: voice.F5Worker | None = None      # F5 warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
+_voxcpm_worker: "voice.VoxCpmWorker | None" = None  # VoxCPM2 warm worker (TTS หลัก; F5 เป็น fallback)
 _ready_once = False  # on_ready ไม่การันตีว่าเรียกครั้งเดียว (fire ใหม่ได้ตอน gateway
                       # re-IDENTIFY หลัง session ขาด) — guard กันสร้าง worker/monitor server ซ้อน
 _tts_lock = asyncio.Lock()                    # serialize TTS — กัน 2 user ยิง convert() พร้อมกัน
@@ -262,6 +263,9 @@ class RosteClient(discord.Client):
             if _f5_worker is not None:
                 _f5_worker.stop()
                 logger.info("   🎙️ F5 worker ปิดแล้ว")
+            if _voxcpm_worker is not None:
+                _voxcpm_worker.stop()
+                logger.info("   🎙️ VoxCPM2 worker ปิดแล้ว")
             await _monitor_server.stop()
             await super().close()
 
@@ -290,6 +294,7 @@ def _get_bot_status() -> dict:
         "discord_connected": not client.is_closed(),
         "rvc_worker": _worker_status(_voice_worker),
         "f5_worker": _worker_status(_f5_worker),
+        "voxcpm_worker": _worker_status(_voxcpm_worker),
         "bg_queue_size": chat._bg_queue.qsize(),
         "is_speaking_or_singing": music.voice_lock.locked(),
         "is_printing": printing.print_lock.locked(),
@@ -322,10 +327,34 @@ async def _start_f5_worker() -> None:
         _f5_worker = None
 
 
+async def _start_voxcpm_worker() -> None:
+    """โหลด VoxCPM2 worker ใน thread แยก (~60-75s boot — ช้ากว่า F5 มาก)
+
+    ระหว่างที่ยังโหลดไม่เสร็จ บอทตอบด้วย F5 ไปก่อนได้ตามปกติ (fail-safe chain
+    เลือก engine ตอน generate ไม่ใช่ตอน startup) จึงไม่ต้องรอตัวนี้
+    """
+    global _voxcpm_worker
+    if not voice.VOXCPM_ENABLED:
+        logger.info("🎙️ VoxCPM2 ปิดใช้งาน (VOXCPM_ENABLED=False) — ใช้ F5")
+        _voxcpm_worker = None
+        return
+    try:
+        await asyncio.to_thread(_voxcpm_worker.start)
+        logger.info(f"🎙️ VoxCPM2 worker พร้อม — โหลดเสร็จใน {_voxcpm_worker.load_time:.1f}s")
+    except Exception as e:
+        logger.warning(f"⚠️ VoxCPM2 worker เริ่มไม่ได้ ({type(e).__name__}: {e}) — ใช้ F5 แทน")
+        _voxcpm_worker = None
+
+
 async def _generate_tts(text: str, uid: int) -> str | None:
     """สร้างไฟล์เสียง TTS ใน thread แยก — คืน path .wav หรือ None ถ้า skip/error"""
     # worker.load_time > 0 = start() เสร็จแล้ว (ready)
-    if _voice_worker is None or _voice_worker.load_time == 0.0 or not _voice_worker.alive:
+    # VoxCPM2 ไม่ต้องพึ่ง RVC (ref เป็นเสียงรอสเต้อยู่แล้ว) — ถ้ามันพร้อม ปล่อยผ่าน
+    # แม้ RVC ยังโหลดไม่เสร็จ ไม่งั้นจะเสียเสียงไปเปล่าๆ ช่วงแรกหลัง startup
+    _vox_ready = _voxcpm_worker is not None and _voxcpm_worker.alive
+    if not _vox_ready and (
+        _voice_worker is None or _voice_worker.load_time == 0.0 or not _voice_worker.alive
+    ):
         if _voice_worker is not None and _voice_worker.load_time == 0.0:
             logger.info("   🎙️ TTS skip — worker ยังโหลดอยู่")
         return None
@@ -337,6 +366,7 @@ async def _generate_tts(text: str, uid: int) -> str | None:
                 text,
                 worker=_voice_worker,
                 f5_worker=_f5_worker,
+                voxcpm_worker=_voxcpm_worker,
                 out_dir=str(voice._OUT_DIR / "bot"),
             )
         elapsed = time.perf_counter() - t0
@@ -351,7 +381,12 @@ async def _generate_tts_stream(text: str, uid: int):
     """AsyncIterator[str] — yield path .wav ทีละ segment ทันทีที่ segment เสร็จ
     producer (thread เดียว sequential ถือ _tts_lock ครอบทั้งคำตอบ) ผลิตต่อเนื่อง
     ระหว่างที่ consumer เล่น segment ก่อนหน้า — ลำดับรักษาผ่าน Queue ตัวเดียว"""
-    if _voice_worker is None or _voice_worker.load_time == 0.0 or not _voice_worker.alive:
+    # VoxCPM2 ไม่ต้องพึ่ง RVC (ref เป็นเสียงรอสเต้อยู่แล้ว) — ถ้ามันพร้อม ปล่อยผ่าน
+    # แม้ RVC ยังโหลดไม่เสร็จ ไม่งั้นจะเสียเสียงไปเปล่าๆ ช่วงแรกหลัง startup
+    _vox_ready = _voxcpm_worker is not None and _voxcpm_worker.alive
+    if not _vox_ready and (
+        _voice_worker is None or _voice_worker.load_time == 0.0 or not _voice_worker.alive
+    ):
         if _voice_worker is not None and _voice_worker.load_time == 0.0:
             logger.info("   🎙️ TTS skip — worker ยังโหลดอยู่")
         return
@@ -366,6 +401,7 @@ async def _generate_tts_stream(text: str, uid: int):
                     text,
                     worker=_voice_worker,
                     f5_worker=_f5_worker,
+                    voxcpm_worker=_voxcpm_worker,
                     out_dir=str(voice._OUT_DIR / "bot")):
                 loop.call_soon_threadsafe(queue.put_nowait, wav)
         finally:
@@ -638,7 +674,7 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
 
 @client.event
 async def on_ready():
-    global _voice_worker, _f5_worker, _ready_once
+    global _voice_worker, _f5_worker, _voxcpm_worker, _ready_once
     logger.info(f"✅ ล็อกอินสำเร็จในชื่อ: {client.user}")
     chat._ensure_bg_worker()   # เริ่ม background queue worker (idempotent อยู่แล้ว — เรียกซ้ำได้)
 
@@ -652,11 +688,13 @@ async def on_ready():
 
     _voice_worker = voice.RvcWorker()
     _f5_worker = voice.F5Worker()
+    _voxcpm_worker = voice.VoxCpmWorker()
     asyncio.create_task(_start_voice_worker())   # โหลด RVC เบื้องหลัง ไม่บล็อก startup
     asyncio.create_task(_start_f5_worker())      # โหลด F5 เบื้องหลัง ไม่บล็อก startup
+    asyncio.create_task(_start_voxcpm_worker())  # โหลด VoxCPM2 เบื้องหลัง (ช้าสุด ~60-75s)
     await _monitor_server.start()
     logger.info(f"🖨️ ระบบพิมพ์: {'โหมดจริง' if printing.PRINT_REAL_MODE else 'โหมดจำลอง (ยังไม่สั่งเครื่องจริง)'}")
-    logger.info("🎙️ RVC+F5 workers กำลังโหลดในเบื้องหลัง (RVC ~8s, F5 ~14s)...")
+    logger.info("🎙️ workers กำลังโหลดในเบื้องหลัง (RVC ~8s, F5 ~14s, VoxCPM2 ~60-75s)...")
     logger.info("บอทพร้อมทำงานแล้ว! ลอง @ ชื่อบอทในเซิร์ฟเวอร์ หรือทักผ่าน DM ได้เลย")
 
 

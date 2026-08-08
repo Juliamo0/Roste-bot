@@ -64,10 +64,43 @@ PROTECT     = 0.33
 F0_UP_KEY   = 0
 F0_METHOD   = "rmvpe"
 
+# ── pitch ของเสียง F5 ก่อนเข้า RVC ────────────────────────────────────────────
+# ผู้ใช้ปรับใน WavePad แล้วเลือก 108% (จาก 100% เดิม) = ×1.08 = +1.33 semitone
+# ทำเป็นขั้นแยกก่อน RVC เพราะ RVC รับ f0_up_key เป็น semitone *จำนวนเต็ม* เท่านั้น
+# (+1 = 105.9% ต่ำไป, +2 = 112.2% สูงไป) ปรับ 1.08 ตรงๆ ผ่าน f0_up_key ไม่ได้
+# ตั้ง 1.0 เพื่อปิดขั้นตอนนี้ (ข้าม ffmpeg ไปเลย ไม่เสียเวลา)
+F5_PITCH_RATIO = 1.08
+
+# ── VoxCPM2 (TTS หลักตัวใหม่) ─────────────────────────────────────────────────
+# เลือกแทน F5 เพราะเสียงเป็นธรรมชาติกว่า แลกกับช้ากว่า ~6s/segment
+#   VoxCPM2 steps=10 ~12.9s  vs  F5+RVC ~6.8s  (ผู้ใช้ทดสอบแล้วยอมรับ)
+#   steps=6 เร็วกว่า (8.5s) แต่ผู้ใช้ฟังแล้วว่า "มีเสียงตะกุกแปลกๆ ไม่ใสเหมือน 10"
+#
+# ref เป็นเสียง *รอสเต้เอง* (F5 + pitch108 ที่ผู้ใช้คัดแล้ว) ไม่ใช่เสียงคนต้นฉบับ
+# → ได้เสียงรอสเต้ตั้งแต่ VoxCPM2 เลย ไม่ต้องผ่าน RVC ซ้ำ
+# ใช้ reference_wav_path (โคลนเสียงล้วน) ไม่ใช่ prompt_wav_path (continuation ที่
+# เลียนจังหวะ ref มาด้วย) — ผู้ใช้ฟังเทียบแล้วยืนยันว่า ref ดีกว่า prompt ชัดเจน
+VOXCPM_ENABLED = True
+VOXCPM_STEPS = 10
+VOXCPM_CFG = 2.0
+# ผ่าน RVC ต่อท้ายไหม — ปกติไม่ต้อง เพราะ ref เป็นเสียงรอสเต้อยู่แล้ว
+# (RVC ยังจำเป็นสำหรับ "ร้องเพลง" ซึ่งเป็นคนละเส้นทาง ไม่เกี่ยวกับ TTS)
+VOXCPM_THEN_RVC = False
+# VOXCPM_REF_AUDIO ประกาศหลัง _ROOT (ดูหมวด VoxCPM2 constants ด้านล่าง)
+
 _ROOT        = Path(__file__).parent
 _RVC_VENV_PY = _ROOT / "rvc_venv" / "Scripts" / "python.exe"
 _WORKER_PY   = _ROOT / "voice_rvc_worker.py"
 _OUT_DIR     = _ROOT / "rvc_out"
+
+# ── VoxCPM2 constants ──────────────────────────────────────────────────────────
+_VOXCPM_VENV_PY   = _ROOT / "voxcpm_venv" / "Scripts" / "python.exe"
+_VOXCPM_WORKER_PY = _ROOT / "voxcpm_worker.py"
+# ref = เสียงรอสเต้เอง (F5 + pitch108 ที่ผู้ใช้คัด) ไม่ใช่เสียงคนต้นฉบับ
+# หมายเหตุ: start() ตรวจแค่ venv กับตัว worker script — *ไม่* ตรวจไฟล์ ref
+# ถ้า ref หาย worker จะ start ผ่านแล้วไปพังตอน generate() job แรก ซึ่ง fail-safe
+# chain จะสลับไป F5 ให้ (เสียงไม่หาย แต่จะเงียบๆ ใช้ engine เดิมตลอดโดยไม่มีใครรู้)
+VOXCPM_REF_AUDIO  = str(_ROOT / "ref_audio" / "roste_v2" / "roste_pitch108_long.wav")
 
 # ── F5-TTS constants ───────────────────────────────────────────────────────────
 _F5_VENV_PY   = _ROOT / "f5_venv" / "Scripts" / "python.exe"
@@ -183,6 +216,43 @@ def _ffmpeg_adjust(in_wav: str, out_wav: str, src_sr: int) -> None:
 def _adjust(in_wav: str, out_wav: str) -> None:
     src_sr = sf.info(in_wav).samplerate
     _ffmpeg_adjust(in_wav, out_wav, src_sr)
+
+
+def _pitch_shift(in_wav: str, out_wav: str, ratio: float = F5_PITCH_RATIO) -> str:
+    """เปลี่ยน pitch โดย *รักษาความยาวเดิม* แล้วคืน path ของไฟล์ที่ควรใช้ต่อ
+
+    asetrate เปลี่ยน pitch พร้อมความเร็วไปด้วย (เหมือนเร่งเทป) จึงต้อง atempo=1/ratio
+    ชดเชยให้ความยาวเท่าเดิม — วิธีเดียวกับ _ffmpeg_adjust ที่ใช้กับ edge-tts อยู่แล้ว
+
+    ratio=1.0 → ไม่ทำอะไร คืน in_wav (ผู้เรียกจึงส่งต่อไฟล์เดิมได้เลย ไม่เสียเวลา)
+    ถ้า ffmpeg พัง → คืน in_wav เหมือนกัน เพราะเสียง pitch ไม่ตรงยังดีกว่าไม่มีเสียง
+    """
+    if abs(ratio - 1.0) < 1e-9:
+        return in_wav
+    src_sr = sf.info(in_wav).samplerate
+    filters = [
+        f"asetrate={int(src_sr * ratio)}",
+        f"aresample={src_sr}",
+        *_atempo_chain(1.0 / ratio),
+    ]
+    r = subprocess.run(
+        [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", in_wav,
+            "-af", ",".join(filters),
+            "-ar", str(src_sr), "-ac", "1",
+            out_wav,
+        ],
+        capture_output=True,
+        creationflags=_NO_WINDOW,
+    )
+    if r.returncode != 0 or not os.path.exists(out_wav):
+        logger.warning(
+            f"   ⚠️ pitch shift ล้มเหลว ({r.stderr.decode(errors='replace')[:120]}) "
+            f"— ใช้เสียง pitch เดิมต่อ"
+        )
+        return in_wav
+    return out_wav
 
 
 _WORKER_READ_TIMEOUT_SEC = 60   # กัน worker subprocess ค้าง (GPU stall/driver hang) ทำ voice_lock/_tts_lock ค้างตลอดไป
@@ -482,6 +552,132 @@ class F5Worker:
         self.stop()
 
 
+class VoxCpmWorker:
+    """
+    VoxCPM2 subprocess — โครงเดียวกับ F5Worker (โหลดโมเดลครั้งเดียว รับ job ทาง stdin)
+
+    cold load ~75s (ช้ากว่า F5 ~18s มาก) จึงต้อง warm ตอน startup เหมือนตัวอื่น
+    warm inference ~12.9s/segment ที่ steps=10
+
+    Protocol: stdin JSON → stdout "OK:<path>|time=Xs|dur=Ys" หรือ "ERR:<msg>"
+    """
+
+    def __init__(self):
+        self._proc: subprocess.Popen | None = None
+        self.load_time: float = 0.0
+        self._stderr_ring: deque[str] = deque(maxlen=_STDERR_RING_SIZE)
+
+    @property
+    def alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def start(self) -> None:
+        if self.alive:
+            return
+        if not _VOXCPM_VENV_PY.exists():
+            raise RuntimeError(f"ไม่พบ voxcpm_venv: {_VOXCPM_VENV_PY}")
+        if not _VOXCPM_WORKER_PY.exists():
+            raise RuntimeError(f"ไม่พบ voxcpm_worker.py: {_VOXCPM_WORKER_PY}")
+        # ตรวจ ref ตั้งแต่ start() — ไม่งั้นจะ start ผ่านแล้วไปพังทุก job เงียบๆ
+        # (fail-safe สลับไป F5 ให้ ผู้ใช้เลยไม่มีทางรู้ว่า VoxCPM2 ไม่เคยทำงานเลย)
+        if not os.path.exists(VOXCPM_REF_AUDIO):
+            raise RuntimeError(f"ไม่พบ ref audio ของ VoxCPM2: {VOXCPM_REF_AUDIO}")
+
+        t0 = time.perf_counter()
+        self._proc = subprocess.Popen(
+            [str(_VOXCPM_VENV_PY), str(_VOXCPM_WORKER_PY)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=_NO_WINDOW,
+        )
+        threading.Thread(target=_drain_stderr, args=(self._proc, self._stderr_ring),
+                         daemon=True).start()
+        while True:
+            line = self._proc.stdout.readline()
+            if not line:
+                time.sleep(0.2)   # ให้ drain thread เก็บบรรทัดท้ายๆ ให้ครบก่อน
+                err = "\n".join(self._stderr_ring)
+                raise RuntimeError(f"VoxCPM worker died before ready.\nstderr:\n{err}")
+            if line.strip().startswith("VOXCPM_WORKER_READY"):
+                break
+        self.load_time = time.perf_counter() - t0
+
+    def generate(
+        self,
+        text: str,
+        out_path: str,
+        ref_audio: str = VOXCPM_REF_AUDIO,
+        steps: int = VOXCPM_STEPS,
+        cfg: float = VOXCPM_CFG,
+        timeout: float = _WORKER_READ_TIMEOUT_SEC,
+    ) -> float:
+        """สร้างเสียง คืน duration seconds"""
+        if not self.alive:
+            raise RuntimeError("VoxCpmWorker not running (call start() first)")
+        job = json.dumps({
+            "text":      text,
+            "ref_audio": ref_audio,
+            "out_path":  out_path,
+            "steps":     steps,
+            "cfg":       cfg,
+        }, ensure_ascii=False)
+        self._proc.stdin.write(job + "\n")
+        self._proc.stdin.flush()
+        while True:
+            line = _readline_with_timeout(self._proc, timeout)
+            if line is None:
+                self._kill()
+                raise RuntimeError(f"VoxCPM worker ไม่ตอบสนองเกิน {timeout:.0f}s (killed)")
+            if not line:
+                raise RuntimeError("VoxCPM worker closed unexpectedly")
+            line = line.strip()
+            if line.startswith("OK:") or line.startswith("ERR:"):
+                break
+        if line.startswith("ERR:"):
+            raise RuntimeError(f"VoxCPM error: {line[4:]}")
+        dur = 0.0
+        for part in line[3:].split("|"):
+            if part.startswith("dur="):
+                try:
+                    dur = float(part[4:].rstrip("s"))
+                except ValueError:
+                    pass
+        return dur
+
+    def _kill(self) -> None:
+        if self._proc is not None:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+            self._proc = None
+
+    def stop(self) -> None:
+        if self._proc:
+            try:
+                self._proc.stdin.write("EXIT\n")
+                self._proc.stdin.flush()
+                self._proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                self._proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            self._proc = None
+
+    def __enter__(self) -> "VoxCpmWorker":
+        self.start()
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.stop()
+
+
 # ── RVC one-shot (cold fallback) ───────────────────────────────────────────────
 
 def _find_model_files() -> tuple[str | None, str | None]:
@@ -518,6 +714,18 @@ def _rvc_oneshot(in_wav: str, out_wav: str) -> None:
     inline = f"""
 import sys, json, os
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+# torch>=2.6 flipped torch.load default to weights_only=True, which rejects
+# fairseq's hubert_base.pt and makes RVC fail with a downstream
+# "'tuple' object has no attribute 'dtype'". Same patch as voice_rvc_worker.py —
+# this cold-fallback path was missed when the worker was fixed.
+import torch as _torch
+_orig_load = _torch.load
+def _load_compat(*a, **kw):
+    kw.setdefault("weights_only", False)
+    return _orig_load(*a, **kw)
+_torch.load = _load_compat
+
 from rvc_python.infer import RVCInference
 with open({repr(tmp_cfg)}, encoding='utf-8') as f:
     c = json.load(f)
@@ -661,10 +869,31 @@ def _split_thai_text(text: str, max_chars: int = 300,
 def _concat_wavs(paths: list[str], out_path: str, silence_ms: int = 150) -> None:
     """ต่อ wav หลายไฟล์ + เว้น silence ระหว่าง segment"""
     import numpy as np
+    # ⚠️ segment อาจมี sample rate ต่างกันได้จริง: VoxCPM2 ออก 48kHz ส่วนเส้น
+    # F5/edge-tts→RVC ออกคนละค่า ถ้า VoxCPM2 พังกลางคำตอบแล้ว fallback ไป F5
+    # จะได้ไฟล์คละ rate — เดิมโค้ดนี้ `sr = file_sr` ทับทุกรอบแล้วใช้ค่าของไฟล์
+    # *สุดท้าย* stamp ทั้งก้อน ทำให้ segment ก่อนหน้าเล่นช้า/ทุ้มผิด (บั๊กแบบเดียว
+    # กับที่เคยเจอตอน sample rate ผิด) → resample ให้ตรงกันก่อนต่อ
     arrays, sr = [], None
     for i, p in enumerate(paths):
         data, file_sr = sf.read(p)
-        sr = file_sr
+        if sr is None:
+            sr = file_sr                      # ยึด rate ของ segment แรก
+        elif file_sr != sr:
+            logger.warning(
+                f"   ⚠️ segment {i} sample rate ไม่ตรง ({file_sr} vs {sr}) — resample ให้ตรง"
+            )
+            import math
+            n_out = int(round(len(data) * sr / file_sr))
+            src_x = np.linspace(0.0, 1.0, num=len(data), endpoint=False)
+            dst_x = np.linspace(0.0, 1.0, num=n_out, endpoint=False)
+            if data.ndim == 1:
+                data = np.interp(dst_x, src_x, data).astype(data.dtype)
+            else:
+                data = np.stack(
+                    [np.interp(dst_x, src_x, data[:, c]) for c in range(data.shape[1])],
+                    axis=1,
+                ).astype(data.dtype)
         arrays.append(data)
         if i < len(paths) - 1:
             arrays.append(np.zeros(int(sr * silence_ms / 1000), dtype=data.dtype))
@@ -686,17 +915,38 @@ def _gen_one_segment(
     out_path: str,
     *,
     worker: RvcWorker | None,
-    f5_worker: F5Worker,
+    f5_worker: F5Worker | None,
     tmp_dir: str,
+    voxcpm_worker: "VoxCpmWorker | None" = None,
 ) -> str | None:
     """Generate เสียงหนึ่ง segment ตาม fail-safe chain (ต่อ segment ไม่ใช่ทั้งก้อน):
-      1. F5 → RVC (retry F5 อีก 1 ครั้ง — ความพังมักเป็น transient)
+      0. VoxCPM2 (ถ้าเปิดใช้และ worker พร้อม) — ref เป็นเสียงรอสเต้อยู่แล้ว
+         จึงไม่ต้องผ่าน RVC ซ้ำ (เว้นแต่ตั้ง VOXCPM_THEN_RVC)
+      1. F5 → pitch → RVC (retry F5 อีก 1 ครั้ง — ความพังมักเป็น transient)
       2. edge-tts → adjust → RVC (เนื้อหาครบ ยังผ่าน RVC จึงยังเป็น timbre รอสเต้)
       3. ข้าม segment (คืน None) — ผู้ใช้ยังอ่านข้อความเต็มใน Discord ได้
+
+    VoxCPM2 อยู่ชั้นบนสุดแทนที่จะแทน F5 ไปเลย เพราะ cold load ~75s และช้ากว่า
+    F5 ~2 เท่า — ถ้ามันพัง/ยังไม่ warm ต้องมี F5 รับช่วงได้ทันทีโดยเสียงไม่หาย
     """
+    if voxcpm_worker is not None and voxcpm_worker.alive:
+        try:
+            vox_wav = (out_path if not VOXCPM_THEN_RVC
+                       else os.path.join(tmp_dir, f"{label}_vox.wav"))
+            voxcpm_worker.generate(text=seg, out_path=vox_wav)
+            # เชื่อบรรทัด OK: อย่างเดียวไม่พอ — ถ้าไฟล์เขียนไม่ครบ/ว่าง จะหลุด
+            # fail-safe chain ไปพังทีหลังตอนเล่นหรือตอน _concat_wavs แทน
+            if not os.path.exists(vox_wav) or os.path.getsize(vox_wav) == 0:
+                raise RuntimeError(f"VoxCPM คืน OK แต่ไฟล์ว่าง/ไม่มีจริง: {vox_wav}")
+            if VOXCPM_THEN_RVC:
+                _rvc_convert(vox_wav, out_path, worker)
+            return out_path
+        except Exception as e:
+            logger.warning(f"   ⚠️ VoxCPM segment {label} พัง ({e}) — ใช้ F5 แทน")
+
     f5_wav = os.path.join(tmp_dir, f"{label}_f5.wav")
     for attempt in (1, 2):
-        if not f5_worker.alive:
+        if f5_worker is None or not f5_worker.alive:
             break  # worker ตายแล้ว retry ไปก็พังเหมือนเดิม — ข้ามไป edge-tts เลย
         try:
             f5_worker.generate(
@@ -707,7 +957,9 @@ def _gen_one_segment(
                 speed=F5_SPEED,
                 steps=F5_STEPS,
             )
-            _rvc_convert(f5_wav, out_path, worker)
+            # ปรับ pitch ก่อนเข้า RVC (คืน f5_wav เองถ้า ratio=1.0 หรือ ffmpeg พัง)
+            pitched = _pitch_shift(f5_wav, os.path.join(tmp_dir, f"{label}_pitch.wav"))
+            _rvc_convert(pitched, out_path, worker)
             return out_path
         except Exception as e:
             logger.warning(f"   ⚠️ F5 segment {label} พัง (ครั้งที่ {attempt}): {e}")
@@ -747,6 +999,7 @@ def text_to_roste_voice_segments(
     out_dir: str | None = None,
     filename: str | None = None,
     prefetch: int = _TTS_PREFETCH_DEFAULT,
+    voxcpm_worker: "VoxCpmWorker | None" = None,
 ):
     """ข้อความ → yield path .wav ทีละ segment ทันทีที่เสร็จ (ลำดับตาม text เสมอ)
     — ให้ caller เริ่มเล่น segment แรกได้โดยไม่รอทั้งก้อน
@@ -776,7 +1029,10 @@ def text_to_roste_voice_segments(
     stop = threading.Event()
 
     try:
-        if f5_worker and f5_worker.alive:
+        # เข้าโหมด streaming ถ้ามี worker ตัวใดตัวหนึ่งพร้อม — VoxCPM2 ใช้ได้เดี่ยวๆ
+        # โดยไม่ต้องมี F5 (แต่ถ้ามีทั้งคู่ F5 จะเป็น fallback ให้อัตโนมัติ)
+        _vox_ready = voxcpm_worker is not None and voxcpm_worker.alive
+        if (f5_worker and f5_worker.alive) or _vox_ready:
             from f5_preprocess import preprocess_for_f5, split_lines_for_tts
             # preprocess ทีละบรรทัด แล้วซอยแยกกัน — ขอบเขตบรรทัดคือจุดตัดที่เชื่อถือได้ที่สุด
             # (คนเขียน/โมเดลขึ้นบรรทัดใหม่ = ตั้งใจให้เป็นคนละประโยค) ถ้า preprocess ทั้งก้อน
@@ -801,7 +1057,8 @@ def text_to_roste_voice_segments(
                     out_path = os.path.join(out_dir, f"{uid}_{i}_rvc.wav")
                     got = _gen_one_segment(
                         seg, f"{uid}_{i}", out_path,
-                        worker=worker, f5_worker=f5_worker, tmp_dir=tmp_dir)
+                        worker=worker, f5_worker=f5_worker, tmp_dir=tmp_dir,
+                        voxcpm_worker=voxcpm_worker)
                     if got:
                         yield got
                 return
@@ -819,7 +1076,8 @@ def text_to_roste_voice_segments(
                         out_path = os.path.join(out_dir, f"{uid}_{i}_rvc.wav")
                         got = _gen_one_segment(
                             seg, f"{uid}_{i}", out_path,
-                            worker=worker, f5_worker=f5_worker, tmp_dir=tmp_dir)
+                            worker=worker, f5_worker=f5_worker, tmp_dir=tmp_dir,
+                        voxcpm_worker=voxcpm_worker)
                         if not got:
                             continue
                         # วน put แบบมี timeout แทน put() เปล่า — คิวเต็มแล้ว caller เลิกฟัง
@@ -909,6 +1167,7 @@ def text_to_roste_voice(
     f5_worker: F5Worker | None = None,
     out_dir: str | None = None,
     filename: str | None = None,
+    voxcpm_worker: "VoxCpmWorker | None" = None,
 ) -> str:
     """
     ข้อความ → ไฟล์ .wav เสียงรอสเต้ (ไฟล์เดียว รอทุก segment เสร็จแล้ว concat)
@@ -929,7 +1188,7 @@ def text_to_roste_voice(
     uid = filename or uuid.uuid4().hex[:8]
 
     seg_wavs = list(text_to_roste_voice_segments(
-        text, worker=worker, f5_worker=f5_worker,
+        text, worker=worker, f5_worker=f5_worker, voxcpm_worker=voxcpm_worker,
         out_dir=out_dir, filename=f"{uid}_seg"))
     if not seg_wavs:
         raise RuntimeError("ทุก segment ล้มเหลว — ไม่มีเสียงออก")
