@@ -876,3 +876,84 @@ class TestConcatMixedSampleRate:
         info = sf.info(out)
         assert info.samplerate == 24000
         assert abs(info.duration - 2.0) < 0.05
+
+
+# ============================================================
+#  ลด latency + เสียงต่อเนื่อง: รวม segment เมื่อใช้ VoxCPM2
+#
+#  VoxCPM2 มี overhead คงที่ ~4.6s/segment และ RTF ~1.67 (เจนช้ากว่าเสียง)
+#  → ซอยย่อยแล้วเสียทั้งเวลา (overhead คูณจำนวนก้อน) และความต่อเนื่อง
+#  (แต่ละก้อนเจนแยกกันไม่รู้บริบทก้อนก่อน → โทนไม่สม่ำเสมอ + มีช่องว่าง)
+#  ต่างจาก F5 ที่ RTF 0.65 เจนทันเล่น prefetch กลบช่องว่างได้
+# ============================================================
+class TestVoxCpmSegmentMerge:
+    LONG = ("วันนี้อากาศร้อนมากเลยค่ะ อุณหภูมิประมาณ 35 องศา อย่าลืมดื่มน้ำเยอะๆ นะคะ "
+            "แล้วก็อย่าออกไปข้างนอกตอนกลางวันถ้าไม่จำเป็น เดี๋ยวจะไม่สบายเอา "
+            "ถ้าต้องออกไปจริงๆ ก็พกร่มกับน้ำไปด้วยนะคะ")
+
+    class FakeVoxCpm:
+        """VoxCpmWorker ปลอม — signature ต่างจาก F5 (text= ไม่ใช่ gen_text=)"""
+
+        def __init__(self):
+            self.calls = []
+            self.alive = True
+
+        def generate(self, *, text, out_path, ref_audio=None, steps=None, cfg=None):
+            self.calls.append(text)
+            _write_dummy_wav(out_path)
+            return 0.1
+
+    def _segments(self, text, vox: bool, tmp_path):
+        f5 = FakeF5()
+        vw = self.FakeVoxCpm() if vox else None
+        list(voice.text_to_roste_voice_segments(
+            text, worker=FakeRvc(), f5_worker=f5, voxcpm_worker=vw,
+            out_dir=str(tmp_path), prefetch=0))
+        return (vw.calls if vox else f5.calls)
+
+    def test_voxcpm_uses_fewer_segments(self, tmp_path):
+        """เปิด VoxCPM2 → ต้องได้ segment *น้อยกว่า* ตอนใช้ F5
+
+        overhead คงที่ 4.6s/segment + RTF>1 ทำให้การซอยย่อยแพงทั้งเวลาและ
+        ความต่อเนื่องของเสียง — ต้องรวม ไม่ใช่ซอย
+        """
+        with_vox = self._segments(self.LONG, True, tmp_path)
+        without = self._segments(self.LONG, False, tmp_path)
+
+        assert with_vox and without
+        assert len(with_vox) < len(without), \
+            f"VoxCPM2 ควรได้ segment น้อยกว่า (ได้ {len(with_vox)} vs F5 {len(without)})"
+
+    def test_merged_segment_respects_limit(self, tmp_path):
+        """ก้อนที่รวมแล้วต้องไม่เกิน VOXCPM_MERGE_CHARS (ไม่งั้นรอเสียงแรกนานเกิน)"""
+        got = self._segments(self.LONG, True, tmp_path)
+        for s in got:
+            assert len(s) <= voice.VOXCPM_MERGE_CHARS, \
+                f"segment ยาว {len(s)}c เกินเพดาน {voice.VOXCPM_MERGE_CHARS}c"
+
+    def test_content_preserved_after_split(self, tmp_path):
+        """ซอยแล้วเนื้อหาต้องครบเท่าเดิม ไม่หายไปสักตัว"""
+        def squashed(segs):
+            return "".join("".join(segs).split())   # ตัดช่องว่างออกให้เทียบได้
+
+        with_vox = self._segments(self.LONG, True, tmp_path)
+        without = self._segments(self.LONG, False, tmp_path)
+        assert squashed(with_vox) == squashed(without), "เนื้อหาเปลี่ยนหลังซอย"
+
+    def test_short_answer_stays_one_segment(self, tmp_path):
+        """คำตอบสั้น → ก้อนเดียวเหมือนเดิม ไม่มีอะไรต้องรวม"""
+        got = self._segments("สวัสดีค่ะ", True, tmp_path)
+        assert len(got) == 1, f"คำตอบสั้นควรเป็นก้อนเดียว (ได้ {len(got)})"
+
+    def test_merge_helper_preserves_order_and_content(self):
+        """ตัวรวมต้องรักษาลำดับ+เนื้อหา และไม่แก้ลิสต์ต้นฉบับ"""
+        src = ["aaa", "bbb", "ccc", "ddd"]
+        snapshot = list(src)
+        got = voice._merge_segments_for_voxcpm(src, limit=8)
+
+        assert src == snapshot, "ต้องไม่แก้ลิสต์ที่รับเข้ามา"
+        assert " ".join(got).split() == snapshot, "ลำดับ/เนื้อหาเปลี่ยน"
+        assert all(len(s) <= 8 for s in got)
+
+    def test_merge_helper_empty(self):
+        assert voice._merge_segments_for_voxcpm([]) == []
