@@ -83,6 +83,30 @@ F5_PITCH_RATIO = 1.08
 VOXCPM_ENABLED = True
 VOXCPM_STEPS = 10
 VOXCPM_CFG = 2.0
+
+# ── ลด latency + เสียงต่อเนื่อง: รวม segment ให้ใหญ่ขึ้นสำหรับ VoxCPM2 ─────────
+# วัดแล้ว: gen ≈ 0.067 × chars + 4.6s  → overhead คงที่ ~4.6s ต่อ segment
+# (ข้อความ 20 ตัวอักษรยังใช้ 11.5s — ค่าคงที่ครอบงำ ไม่ใช่ความยาวข้อความ)
+#
+# ผลคือยิ่งซอยย่อย ยิ่งแย่ 2 ทาง:
+#   1. overhead คูณจำนวนก้อน (3 ก้อน = 13.8s หายไปเปล่าๆ)
+#   2. RTF ~1.67 เจนไม่ทันเล่น → ช่องว่างระหว่างก้อน + โทนเสียงไม่ต่อเนื่อง
+#      เพราะแต่ละก้อนเจนแยกกันโดยไม่รู้บริบทของก้อนก่อนหน้า
+#
+# ตราบใดที่ RTF > 1 จะต้องแลกกันเสมอระหว่าง "รอเสียงแรกนาน" กับ "เสียงต่อเนื่อง"
+# กวาดค่าจริงกับคำตอบยาว 178c (segment ดิบ 54/107/23c):
+#   limit   ก้อน  เสียงแรก  รวม     รอยต่อ
+#   0(ปิด)   3     8.2s     26.1s   2
+#   140      2     8.2s     21.6s   1   ← เลือกอันนี้: รอยต่อลด + เร็วขึ้น 4.5s
+#   170      2    15.5s     21.6s   1      โดยเสียงแรกไม่ช้าลงเลย
+#   200      1    17.1s     17.1s   0      (ต่อเนื่องสุด แต่รอนานเท่าตัว)
+#
+# 140 คือจุดที่ยุบก้อนท้ายๆ เข้าด้วยกันได้โดยไม่แตะก้อนแรก — ก้อนแรกจึงยังสั้น
+# เท่าเดิม ผู้ใช้ได้ยินเสียงเร็วเท่าเดิม แต่ท่อนหลังต่อเนื่องขึ้นและจบเร็วขึ้น
+#
+# ตั้งสูงมาก = รวมเป็นก้อนเดียว (ต่อเนื่องสุด รอนานสุด)
+# ตั้ง 0 = ปิดการรวม (กลับไปใช้ segment ตามที่ตัวซอยแบ่งไว้)
+VOXCPM_MERGE_CHARS = 140
 # ผ่าน RVC ต่อท้ายไหม — ปกติไม่ต้อง เพราะ ref เป็นเสียงรอสเต้อยู่แล้ว
 # (RVC ยังจำเป็นสำหรับ "ร้องเพลง" ซึ่งเป็นคนละเส้นทาง ไม่เกี่ยวกับ TTS)
 VOXCPM_THEN_RVC = False
@@ -866,6 +890,29 @@ def _split_thai_text(text: str, max_chars: int = 300,
     return [s for s in (seg.strip() for seg in merged) if s]
 
 
+def _merge_segments_for_voxcpm(segments: list[str],
+                               limit: int = VOXCPM_MERGE_CHARS) -> list[str]:
+    """รวม segment ให้ก้อนใหญ่ขึ้นสำหรับ VoxCPM2 — คืนลิสต์ใหม่ (ไม่แก้ของเดิม)
+
+    ทำไมต้องรวม (ตรงข้ามกับที่ F5 ต้องการ):
+      * overhead คงที่ ~4.6s ต่อ segment — 3 ก้อนเสีย 13.8s ไปกับ overhead ล้วนๆ
+      * RTF ~1.67 (เจนช้ากว่าเสียงที่ได้) → prefetch ตามไม่ทัน เกิดช่องว่างระหว่างก้อน
+      * แต่ละก้อนเจนแยกจาก ref เดียวกัน ไม่รู้บริบทก้อนก่อน → โทน/จังหวะไม่ต่อเนื่อง
+
+    ไม่รวมเป็นก้อนเดียวรวดเพราะยังต้องการให้ "เสียงแรก" มาถึงผู้ใช้ก่อนคำตอบจบ
+    limit จึงเป็นจุดสมดุล: ใหญ่พอให้ overhead คุ้ม แต่ไม่ใหญ่จนรอนานกว่าจะได้ยินอะไร
+    """
+    if not segments:
+        return []
+    merged: list[str] = [segments[0]]
+    for seg in segments[1:]:
+        if len(merged[-1]) + len(seg) + 1 <= limit:
+            merged[-1] = f"{merged[-1]} {seg}"
+        else:
+            merged.append(seg)
+    return merged
+
+
 def _concat_wavs(paths: list[str], out_path: str, silence_ms: int = 150) -> None:
     """ต่อ wav หลายไฟล์ + เว้น silence ระหว่าง segment"""
     import numpy as np
@@ -1047,6 +1094,25 @@ def text_to_roste_voice_segments(
                 parts.append(pre_line)
                 segments.extend(_split_thai_text(pre_line, max_chars=300))
             preprocessed = " ".join(parts)
+
+            # ซอย segment แรกให้สั้นลง เพื่อให้ "เสียงแรก" มาถึงผู้ใช้เร็วขึ้น
+            # (เฉพาะตอนใช้ VoxCPM2 ซึ่งมี overhead คงที่สูง — F5 เร็วพออยู่แล้ว)
+            # ทำหลังซอยเสร็จทั้งหมด เพื่อไม่ไปยุ่งกับ logic ยุบ segment สั้นข้างใน
+            # VoxCPM2 มี overhead คงที่ ~4.6s ต่อ segment (วัดแล้ว: gen ≈ 0.067×chars + 4.6)
+            # และแต่ละ segment เจนแยกกันจาก ref เดียวกันโดยไม่รู้ว่าก้อนก่อนหน้าพูด
+            # โทน/ความเร็วไหน → ยิ่งซอยมาก ยิ่งมีทั้งช่องว่างและรอยต่อเสียงไม่สม่ำเสมอ
+            #
+            # ต่างจาก F5 (RTF 0.65 เจนทันเล่น prefetch กลบช่องว่างได้) — VoxCPM2
+            # RTF ~1.67 เจนไม่ทันเสียงที่กำลังเล่น ช่องว่างจึงโผล่มาเสมอ
+            # ทางแก้ที่ถูกคือ *ลดจำนวน segment* ไม่ใช่เพิ่ม
+            if _vox_ready and len(segments) > 1 and VOXCPM_MERGE_CHARS > 0:
+                before = len(segments)
+                segments = _merge_segments_for_voxcpm(segments)
+                if len(segments) < before:
+                    logger.info(
+                        f"   ⚡ รวม segment {before} → {len(segments)} ก้อน "
+                        f"(ลด overhead ~{(before - len(segments)) * 4.6:.0f}s + เสียงต่อเนื่องขึ้น)"
+                    )
             # เนื้อหาข้อความจริง (มาจากบทสนทนา) แยกไป DEBUG — INFO เห็นแค่จำนวนตัวอักษร/segment
             logger.info(f"   🔤 F5 gen_text ({len(preprocessed)}c, {len(segments)} ส่วน)")
             logger.debug(f"   🔤 F5 gen_text เนื้อหา: {preprocessed!r}")
