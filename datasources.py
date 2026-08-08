@@ -185,7 +185,7 @@ async def get_weather_tmd_hourly_today(province_th: str):
     if not rainy_hours:
         return ""
 
-    # รวมชั่วโมงที่ติดกันเป็นช่วง เช่น [16,17,18,19] -> "16:00-19:00 น."
+    # รวมชั่วโมงที่ติดกันเป็นช่วง เช่น [16,17,18,19] -> "16 ถึง 19 นาฬิกา"
     rainy_hours.sort()
     ranges = []
     start = prev = rainy_hours[0]
@@ -197,9 +197,13 @@ async def get_weather_tmd_hourly_today(province_th: str):
             start = prev = h
     ranges.append((start, prev))
 
+    # เขียนเป็น "16 ถึง 19 นาฬิกา" แทน "16:00-19:00 น." เพราะข้อความนี้ถูกส่งเข้า
+    # TTS ด้วย — F5/VoxCPM อ่าน ":" ไม่ออก เดิมได้ยินเป็น "สิบหก:ศูนย์" (บั๊กเดียว
+    # กับ "บาท/ลิตร" ที่ผู้ใช้เจอ) แก้ที่ต้นทางจุดนี้ ไม่แตะ f5_preprocess ซึ่ง
+    # ใช้ร่วมกับข้อความทุกประเภท (เสี่ยงไปโดน URL/วันที่/เวลาในบริบทอื่น)
     parts = []
     for a, b in ranges:
-        parts.append(f"{a:02d}:00 น." if a == b else f"{a:02d}:00-{b:02d}:00 น.")
+        parts.append(f"{a} นาฬิกา" if a == b else f"{a} ถึง {b} นาฬิกา")
     return " และ ".join(parts)
 
 
@@ -393,7 +397,11 @@ def parse_oil_html(html: str, only_brand: str = "ptt") -> str:
 
     lines = [date or "ราคาน้ำมันวันนี้", f"\n[{OIL_BRANDS.get(code, code)}]"]
     for fuel, price in rows:
-        lines.append(f"  {fuel}: {price} บาท/ลิตร")
+        # ใช้ "ต่อลิตร" ไม่ใช่ "บาท/ลิตร" และเว้นวรรคแทน ":" เพราะข้อความนี้ถูกส่ง
+        # เข้า TTS ด้วย — F5/VoxCPM อ่าน "/" กับ ":" ไม่ออก (ผู้ใช้ได้ยินเสียงขาด
+        # ตรงนั้นจริง) แก้ที่ต้นทางตรงนี้จุดเดียว ไม่ต้องไปเพิ่มกฎใน f5_preprocess
+        # ซึ่งใช้ร่วมกับข้อความทุกประเภท (เสี่ยงไปโดน URL/วันที่/เวลา)
+        lines.append(f"  {fuel} {price} บาทต่อลิตร")
     lines.append("\n(ที่มา: Kapook อ้างอิงสำนักงานนโยบายและแผนพลังงาน กระทรวงพลังงาน)")
     return "\n".join(lines)
 
@@ -403,6 +411,40 @@ def parse_oil_html(html: str, only_brand: str = "ptt") -> str:
 # ============================================================
 HOME_PROVINCE_ID = 69          # ชุมพร (เปลี่ยนเป็นจังหวัดอื่นได้)
 HOME_PROVINCE_NAME = "ชุมพร"
+
+
+_THAI_MONTHS = ("มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม")
+
+
+def _speakable_time(s: str) -> str:
+    """'09:00' → '9 นาฬิกา', '09:30' → '9 นาฬิกา 30 นาที'
+
+    ข้อความจาก tool ถูกส่งเข้า TTS ด้วย และ F5/VoxCPM อ่าน ':' ไม่ออก
+    (เดิมได้ยินเป็น 'เก้า:ศูนย์') จึงต้องแปลงเป็นคำตั้งแต่ต้นทาง
+    """
+    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", s or "")
+    if not m:
+        return (s or "").strip()
+    h, mi = int(m.group(1)), int(m.group(2))
+    hour_word = "เที่ยงคืน" if h == 0 else ("เที่ยง" if h == 12 else f"{h} นาฬิกา")
+    return hour_word if mi == 0 else f"{hour_word} {mi} นาที"
+
+
+def _speakable_datetime(s: str) -> str:
+    """'12/05/2569 09:00' → '12 พฤษภาคม 2569 9 นาฬิกา'
+
+    แปลงทั้ง '/' ในวันที่ และ ':' ในเวลา — ทั้งคู่ F5/VoxCPM อ่านไม่ออก
+    ถ้ารูปแบบไม่ตรงที่คาด คืนค่าเดิม (ดีกว่าทำข้อมูลเพี้ยน)
+    """
+    s = (s or "").strip()
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(\d{1,2}:\d{2}))?", s)
+    if not m:
+        return s
+    day, mon, year, time_part = m.group(1), int(m.group(2)), m.group(3), m.group(4)
+    mon_th = _THAI_MONTHS[mon - 1] if 1 <= mon <= 12 else str(mon)
+    out = f"{int(day)} {mon_th} {year}"
+    return f"{out} {_speakable_time(time_part)}" if time_part else out
 
 
 def _parse_pea_date(s):
@@ -472,5 +514,6 @@ async def get_power_outage(province_id=HOME_PROVINCE_ID, province_name=HOME_PROV
         end = x.get("END_DATE_DISPLAY", "?")
         # END_DATE_DISPLAY มักเป็น 'dd/mm/yyyy hh:mm' เอาเฉพาะเวลาท้าย
         end_time = end.split(" ")[-1] if " " in end else end
-        out.append(f"- {start} ถึง {end_time} | บริเวณ {area}")
+        out.append(f"- {_speakable_datetime(start)} ถึง {_speakable_time(end_time)} "
+                   f"บริเวณ {area}")
     return "\n".join(out)

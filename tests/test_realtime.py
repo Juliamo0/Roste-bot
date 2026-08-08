@@ -332,8 +332,11 @@ class TestGetWeatherTmdHourlyToday:
         with patch.object(datasources, "TMD_TOKEN", "real_token"), \
              patch("aiohttp.ClientSession", mock):
             result = asyncio.run(datasources.get_weather_tmd_hourly_today("ชุมพร"))
-        assert "10:00-11:00 น." in result
-        assert "16:00 น." in result
+        # รูปแบบเปลี่ยนจาก "10:00-11:00 น." เป็น "10 ถึง 11 นาฬิกา" เพราะข้อความนี้
+        # ถูกส่งเข้า TTS ด้วย และ F5/VoxCPM อ่าน ":" ไม่ออก (ผู้ใช้เจอจริง)
+        assert "10 ถึง 11 นาฬิกา" in result
+        assert "16 นาฬิกา" in result
+        assert ":" not in result
 
     def test_below_threshold_rain_not_shown(self):
         today = datetime.now().strftime("%Y-%m-%d")
@@ -573,3 +576,71 @@ class TestSearchWeb:
              patch.dict("sys.modules", {"ddgs": mock_ddgs_module}):
             result = websearch.search_web("ข่าว")
         assert "DDG fallback" in result
+
+
+# ============================================================
+#  ข้อความจาก tool ต้อง "อ่านออกเสียงได้"
+#
+#  ผลลัพธ์ tool ถูกส่งเข้า TTS ด้วย — F5/VoxCPM อ่าน "/" ":" "|" ไม่ออก
+#  ผู้ใช้เจอจริง: "แก๊สโซฮอล์ 95: 35.99 บาท/ลิตร" อ่าน / ไม่ได้
+#  แก้ที่ต้นทาง (datasources) แทนการเพิ่มกฎใน f5_preprocess ซึ่งใช้ร่วมกับ
+#  ข้อความทุกประเภท (เสี่ยงไปโดน URL/path/วันที่ในบริบทอื่น)
+# ============================================================
+class TestSpeakableToolOutput:
+    UNREADABLE = "/:|"
+
+    def test_oil_price_has_no_unreadable_chars(self):
+        out = datasources.parse_oil_html(_FAKE_OIL_HTML, only_brand="ptt")
+        body = "\n".join(l for l in out.splitlines() if "ที่มา" not in l)
+        assert "บาทต่อลิตร" in body
+        for ch in self.UNREADABLE:
+            assert ch not in body, f"เหลือ {ch!r} ที่ TTS อ่านไม่ออก: {body!r}"
+
+    def test_speakable_time_basic(self):
+        assert datasources._speakable_time("09:00") == "9 นาฬิกา"
+        assert datasources._speakable_time("13:30") == "13 นาฬิกา 30 นาที"
+
+    def test_speakable_time_midnight_and_noon(self):
+        """0/12 นาฬิกา ฟังแล้วไม่เป็นธรรมชาติ — ใช้คำเรียกปกติแทน"""
+        assert datasources._speakable_time("00:00") == "เที่ยงคืน"
+        assert datasources._speakable_time("12:00") == "เที่ยง"
+
+    def test_speakable_time_passthrough_on_bad_input(self):
+        """รูปแบบไม่ตรง → คืนค่าเดิม ดีกว่าทำข้อมูลเพี้ยน"""
+        assert datasources._speakable_time("ไม่ใช่เวลา") == "ไม่ใช่เวลา"
+        assert datasources._speakable_time("") == ""
+        assert datasources._speakable_time(None) == ""
+
+    def test_speakable_datetime_full(self):
+        got = datasources._speakable_datetime("12/05/2569 09:00")
+        assert got == "12 พฤษภาคม 2569 9 นาฬิกา"
+        for ch in self.UNREADABLE:
+            assert ch not in got
+
+    def test_speakable_datetime_date_only(self):
+        assert datasources._speakable_datetime("01/12/2569") == "1 ธันวาคม 2569"
+
+    def test_speakable_datetime_passthrough(self):
+        assert datasources._speakable_datetime("รูปแบบแปลก") == "รูปแบบแปลก"
+
+    def test_rain_hours_readable(self):
+        """ช่วงเวลาฝนตกต้องไม่มี ':' (เดิมเป็น '16:00-19:00 น.')
+
+        ยิงผ่านฟังก์ชันจริงด้วย mock ข้อมูลรายชั่วโมง แทนการอ่าน source
+        เพื่อให้เทสจับพฤติกรรม ไม่ใช่รูปแบบการเขียนโค้ด
+        """
+        today = datetime.now().strftime("%Y-%m-%d")   # ฟังก์ชันกรองเฉพาะวันนี้
+        payload = {"WeatherForecasts": [{"forecasts": [
+            {"time": f"{today}T{h:02d}:00:00+07:00", "data": {"rain": rain}}
+            for h, rain in [(14, 0.0), (16, 2.0), (17, 3.0), (18, 1.0), (20, 0.0)]
+        ]}]}
+        # _make_session_mock คืน "factory" อยู่แล้ว — patch ทับ ClientSession ตรงๆ
+        session_factory = _make_session_mock(json_data=payload)
+        with patch.object(datasources.aiohttp, "ClientSession", session_factory), \
+             patch.object(datasources, "TMD_TOKEN", "fake-token"):
+            got = asyncio.run(datasources.get_weather_tmd_hourly_today("ชุมพร"))
+
+        assert got, "ควรได้ช่วงเวลาฝนตกกลับมา (16-18 น. ฝน >= 0.5)"
+        for ch in self.UNREADABLE:
+            assert ch not in got, f"เหลือ {ch!r} ที่ TTS อ่านไม่ออก: {got!r}"
+        assert "นาฬิกา" in got
