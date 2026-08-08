@@ -108,6 +108,7 @@ def test_skips_when_worker_not_ready(monkeypatch, tmp_path):
     """worker ยังโหลดไม่เสร็จ (load_time=0) → ไม่ผลิตอะไรเลย ไม่ throw"""
     monkeypatch.setattr(bot, "_voice_worker", FakeWorker(alive=True, load_time=0.0))
     monkeypatch.setattr(bot, "_f5_worker", FakeWorker())
+    monkeypatch.setattr(bot, "_voxcpm_worker", None)   # ไม่มี VoxCPM2 → RVC เป็นเงื่อนไขเดียว
     called = []
     monkeypatch.setattr(
         bot.voice, "text_to_roste_voice_segments",
@@ -121,6 +122,34 @@ def test_skips_when_worker_not_ready(monkeypatch, tmp_path):
 
 def test_skips_when_worker_absent(monkeypatch):
     monkeypatch.setattr(bot, "_voice_worker", None)
+    monkeypatch.setattr(bot, "_voxcpm_worker", None)
+    got = asyncio.run(_drain(bot._generate_tts_stream("ข้อความ", 1)))
+    assert got == []
+
+
+def test_voxcpm_ready_bypasses_rvc_gate(monkeypatch, tmp_path):
+    """VoxCPM2 พร้อม → ผลิตเสียงได้แม้ RVC ยังโหลดไม่เสร็จ
+
+    VoxCPM2 ใช้ ref ที่เป็นเสียงรอสเต้อยู่แล้ว จึงไม่ต้องผ่าน RVC — ถ้ายังบล็อก
+    ตาม RVC จะเสียเสียงไปเปล่าๆ ช่วงแรกหลัง startup (RVC ~8s, VoxCPM2 ~60-75s
+    แต่ผู้ใช้อาจทักตอน RVC ยังไม่เสร็จ)
+    """
+    monkeypatch.setattr(bot, "_voice_worker", FakeWorker(alive=True, load_time=0.0))
+    monkeypatch.setattr(bot, "_f5_worker", None)
+    monkeypatch.setattr(bot, "_voxcpm_worker", FakeWorker(alive=True, load_time=60.0))
+    monkeypatch.setattr(
+        bot.voice, "text_to_roste_voice_segments",
+        _fake_segments(["v0.wav", "v1.wav"]))
+
+    got = asyncio.run(_drain(bot._generate_tts_stream("ข้อความ", 1)))
+
+    assert [os.path.basename(p) for p in got] == ["v0.wav", "v1.wav"]
+
+
+def test_voxcpm_dead_still_gated_by_rvc(monkeypatch):
+    """VoxCPM2 ตาย + RVC ไม่พร้อม → skip ตามเดิม (ไม่ใช่ปล่อยผ่านทุกกรณี)"""
+    monkeypatch.setattr(bot, "_voice_worker", None)
+    monkeypatch.setattr(bot, "_voxcpm_worker", FakeWorker(alive=False, load_time=60.0))
     got = asyncio.run(_drain(bot._generate_tts_stream("ข้อความ", 1)))
     assert got == []
 

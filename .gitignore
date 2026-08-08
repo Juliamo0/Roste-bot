@@ -42,8 +42,19 @@ Thumbs.db
 test*.mp3
 *.mp3
 *.wav
+# ยกเว้น ref ของ VoxCPM2 — ไม่ใช่เสียงคนจริง แต่เป็นเสียงรอสเต้ที่ TTS สร้างเอง
+# (F5 + pitch108) และ VOXCPM_REF_AUDIO ชี้มาที่ไฟล์นี้ ถ้าไม่ commit ไปด้วย
+# clone ใหม่จะรัน VoxCPM2 ไม่ได้เลย — fallback ไป F5 เงียบๆ โดยไม่มีใครรู้
+!ref_audio/roste_v2/*.wav
 # ไฟล์ reference audio สำหรับ F5 (ใหญ่ + อาจมีลิขสิทธิ์)
 1_Lai_ref*
+# transcript ของ ref audio — เป็นคำพูดคนจริงเล่าเรื่องส่วนตัว (ข้อมูลส่วนบุคคล)
+# กฎ *.wav/*.mp3 ด้านบนกันเฉพาะไฟล์เสียง แต่ transcript รั่วเนื้อหาเดียวกันได้
+ref_audio/candidates/
+ref_audio/**/*.json
+ref_audio/**/*.txt
+# ยกเว้น transcript ของ roste_v2 — เป็นประโยคที่เราแต่งเอง ไม่ใช่คำพูดคนจริง
+!ref_audio/roste_v2/*.txt
 # โฟลเดอร์ voice model (edge-tts ONNX ขนาดใหญ่)
 voices/
 
@@ -57,6 +68,9 @@ rvc_out/
 # ===== F5-TTS (venv + output แยกต่างหาก) =====
 f5_venv/
 f5_out/
+
+# ===== VoxCPM2 (venv แยก — torch 2.11+cu128 + deps ชุดใหญ่ ~37k ไฟล์) =====
+voxcpm_venv/
 # ไฟล์เสียง TTS ดิบ (ใหญ่ + สร้างใหม่ได้)
 tts_raw/
 
