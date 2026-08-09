@@ -291,17 +291,25 @@ def _pitch_shift(in_wav: str, out_wav: str, ratio: float = F5_PITCH_RATIO) -> st
         f"aresample={src_sr}",
         *_atempo_chain(1.0 / ratio),
     ]
-    r = subprocess.run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-i", in_wav,
-            "-af", ",".join(filters),
-            "-ar", str(src_sr), "-ac", "1",
-            out_wav,
-        ],
-        capture_output=True,
-        creationflags=_NO_WINDOW,
-    )
+    try:
+        r = subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", in_wav,
+                "-af", ",".join(filters),
+                "-ar", str(src_sr), "-ac", "1",
+                out_wav,
+            ],
+            capture_output=True,
+            creationflags=_NO_WINDOW,
+        )
+    except (FileNotFoundError, OSError) as e:
+        # ไม่มี ffmpeg บนเครื่องเลย (เช่น CI runner) — subprocess.run โยน FileNotFoundError
+        # *ก่อน* คืน returncode ทำให้ guard ข้างล่างไม่ถูกเรียก ถ้าไม่ดักตรงนี้ exception จะ
+        # หลุดขึ้นไปทำให้ทั้ง segment พัง แล้ว fail-safe chain ไป retry/edge-tts ซ้ำโดยไม่จำเป็น
+        # (สำคัญขึ้นมากตั้งแต่ F5_THEN_RVC=False เพราะ pitch shift กลายเป็นขั้นบังคับของทุก segment)
+        logger.warning(f"   ⚠️ เรียก ffmpeg ไม่ได้ ({e}) — ใช้เสียง pitch เดิมต่อ")
+        return in_wav
     if r.returncode != 0 or not os.path.exists(out_wav):
         logger.warning(
             f"   ⚠️ pitch shift ล้มเหลว ({r.stderr.decode(errors='replace')[:120]}) "

@@ -18,6 +18,12 @@ jobs:
         with:
           python-version: "3.13"
 
+      # pipeline เสียงเรียก ffmpeg จริง (pitch shift / edge-tts adjust) — runner ไม่มีมาให้
+      # ตั้งแต่ F5_THEN_RVC=False ขั้น _pitch_shift กลายเป็นขั้น *บังคับ* ของทุก segment
+      # ถ้าไม่มี ffmpeg เทสจะวิ่งเข้า fallback path แทนพฤติกรรมจริงที่ตั้งใจทดสอบ
+      - name: Install ffmpeg
+        run: choco install ffmpeg -y --no-progress
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
