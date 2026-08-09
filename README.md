@@ -50,9 +50,10 @@
 - 🖨️ **สั่งพิมพ์ PDF** — แนบไฟล์ใน Discord แล้วให้รอสเต้สั่งเครื่องพิมพ์จริง
 - 🎵 **เล่นเพลง** — เล่นไฟล์ mp3 ในห้อง voice ตามที่ขอ
 - 🎤 **ร้องเพลง karaoke** — ร้องเพลง cover ด้วยเสียง RVC (ส่วนตัว ไม่แจกจ่ายโมเดล) จากโฟลเดอร์ `karaoke/`, ขอเพลงเจาะจงหรือสุ่มได้, TTS เกริ่นก่อนเล่น
-- 🎙️ **รอสเต้พูดได้** — join ห้อง voice, ทักทายเมื่อเข้า, ตอบด้วยเสียง RVC จริง, ออกอัตโนมัติเมื่อห้องว่าง 15 วินาที
+- 🎙️ **รอสเต้พูดได้** — join ห้อง voice, ทักทายเมื่อเข้า, ตอบด้วยเสียงสังเคราะห์ (F5-TTS-THAI
+  โคลนจาก ref audio), ออกอัตโนมัติเมื่อห้องว่าง 15 วินาที
   - **Sentence streaming** — แบ่งคำตอบเป็นประโยค (crfcut) เล่นทีละ segment ทันทีที่เจนเสร็จ
-    ไม่ต้องรอทั้งคำตอบ (latency ประโยคแรก ~6.7s แทน ~15-20s) พร้อม per-segment fail-safe
+    ไม่ต้องรอทั้งคำตอบ (latency ประโยคแรก ~3s แทน ~15-20s) พร้อม per-segment fail-safe
     (F5 พังกลาง stream → segment ที่เหลือสลับไป edge-tts อัตโนมัติ ไม่เงียบ ไม่เล่นซ้ำจากต้น)
 
 ## 🗂️ โครงสร้างไฟล์
@@ -91,7 +92,7 @@
 | `test_tts_stream.py` | pytest | 8 — prefetch ไม่บล็อก, ลำดับ segment, เก็บกวาดไฟล์ตอนหยุดกลางคัน |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
-**รวม 559 unit tests** — รันทั้งหมดด้วย `pytest` (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว)
+**รวม 582 unit tests** — รันทั้งหมดด้วย `pytest` (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว)
 ไม่ต้องเปิด Ollama หรือต่อเน็ต (mock ล้วน) ยกเว้น `test_all_systems.py` ที่ยิง HTTP จริง
 
 ### tools/ — สคริปต์เสริม (ไม่ใช่ regression test)
@@ -369,13 +370,21 @@ F5 + pitch 108% ล้วน ลดขั้นตอน/latency ลงหนึ
 > แยกกันจาก ref เดียวโดยไม่รู้บริบทก้อนก่อนหน้า — เป็นข้อจำกัดของสถาปัตยกรรม ไม่ใช่ของ fade
 
 **Sentence streaming:** `text_to_roste_voice_segments()` เป็น generator yield ไฟล์ `.wav` ทีละ segment
-ทันทีที่เจนเสร็จ (ไม่รอทั้งคำตอบ) — `bot.py` เล่นไฟล์แรกได้เร็วขึ้น (~6.7s แทน ~15-20s สำหรับคำตอบยาว)
+ทันทีที่เจนเสร็จ (ไม่รอทั้งคำตอบ) — `bot.py` เล่นไฟล์แรกได้เร็วขึ้น (~3s แทน ~15-20s สำหรับคำตอบยาว
+วัดจาก log จริง: segment ทยอยออกทุก ~3-4 วินาทีสม่ำเสมอตลอดคำตอบ 15 segment)
 **per-segment fail-safe:** แต่ละ segment มี chain ของตัวเอง — F5 (retry 1 ครั้ง) → edge-tts→adjust→RVC
 (เฉพาะ segment ที่พัง) → ข้าม segment (เนื้อหาหายแต่เสียงไม่สะดุด) กันปัญหากรณี F5 worker ตายกลางคำตอบยาว
 ที่ segment แรกๆ เล่นไปแล้วด้วยเสียง F5 — fallback ทั้งก้อนแบบเดิมใช้ไม่ได้เพราะจะทำให้เสียงเปลี่ยนกลางคันแล้วเล่นซ้ำจากต้น
 
 F5-TTS-THAI และ RVC ทำงานใน subprocess แยก (`f5_venv`, `rvc_venv`) เพื่อไม่ให้ dependency ชนกับบอทหลัก
-cold load: F5 ~18s / RVC ~9s — หลังจากนั้น inference ~3–5s/ประโยค (F5+RVC รวม)
+cold load (วัดจาก log จริง หลายรอบ): **F5 ~13–36s / RVC ~5–18s** — แกว่งตาม disk cache
+ว่าอุ่นหรือเย็น (รีสตาร์ทติดๆ กันจะเร็วกว่ารอบแรกหลังเปิดเครื่องมาก)
+
+หลัง warm แล้ว F5 เจนเร็วกว่าเวลาเล่นจริง (RTF ~0.65) — prefetch จึงกลบช่องว่างระหว่าง
+segment ได้หมด เสียงออกต่อเนื่องไม่สะดุด
+
+> RVC ยังโหลดค้างไว้ (~1GB VRAM) แม้ TTS ปกติจะไม่ผ่าน RVC แล้ว เพราะ **karaoke ยังใช้อยู่**
+> — ถ้าไม่โหลดล่วงหน้า สั่งร้องเพลงครั้งแรกจะต้องรอ cold load
 
 **Worker hang timeout:** ถ้า RVC/F5 subprocess ค้าง (GPU stall/driver hang) `RvcWorker.convert()`/
 `F5Worker.generate()` จะ timeout ใน 60 วิ (`_WORKER_READ_TIMEOUT_SEC`) แล้ว kill process ทันที ให้
@@ -387,11 +396,12 @@ cold load: F5 ~18s / RVC ~9s — หลังจากนั้น inference ~3�
 `f5_venv/` และ `f5_out/` อยู่ใน `.gitignore` — ต้องสร้างใหม่หลัง clone
 
 ```bash
-# สร้าง venv (Python 3.11 ขึ้นไป)
-py -3.11 -m venv f5_venv
+# สร้าง venv — ใช้ Python 3.10 (เวอร์ชันเดียวกับ venv หลักและ rvc_venv)
+py -3.10 -m venv f5_venv
 
-# ติดตั้ง torch CUDA (RTX 30xx — CUDA 12.1)
-f5_venv\Scripts\pip install torch==2.4.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+# ติดตั้ง torch CUDA — เวอร์ชันที่ใช้จริงบนเครื่อง dev คือ torch 2.11.0+cu128
+# เลือก index-url ให้ตรงกับ CUDA ของการ์ดตัวเอง (cu128 = CUDA 12.8)
+f5_venv\Scripts\pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # ติดตั้ง F5-TTS-THAI
 f5_venv\Scripts\pip install f5-tts-th
@@ -420,8 +430,8 @@ F5 โคลนเสียงจากไฟล์ต้นแบบ ซึ่�
 # สร้าง venv Python 3.10
 py -3.10 -m venv rvc_venv
 
-# ติดตั้ง torch CUDA (RTX 30xx — CUDA 12.1)
-rvc_venv\Scripts\pip install torch==2.1.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+# ติดตั้ง torch CUDA — เวอร์ชันที่ใช้จริงบนเครื่อง dev คือ torch 2.11.0+cu128
+rvc_venv\Scripts\pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 # ติดตั้ง RVC
 rvc_venv\Scripts\pip install rvc-python==0.1.5
