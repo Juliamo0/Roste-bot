@@ -331,8 +331,19 @@ python tools/simulate_recall.py      # ดู fact + recall หลัง auto-re
 
 ```
 ข้อความ → crfcut (ตัดเป็นประโยค) → f5_preprocess.py (ตัวเลข/ปี/°C/หน่วย/fuel codes → ไทย)
-        → F5-TTS-THAI v2 (ref audio ต้นแบบ, local) → RVC (โมเดลเสียงส่วนตัว) → .wav ทีละ segment
+        → F5-TTS-THAI v2 (ref audio ต้นแบบ, local) → pitch shift 108% → edge fade → .wav ทีละ segment
 ```
+
+**ไม่ผ่าน RVC แล้วสำหรับ TTS ปกติ** (`F5_THEN_RVC = False` ใน `voice.py`) — ผู้ใช้ฟังเทียบแล้วเลือก
+F5 + pitch 108% ล้วน ลดขั้นตอน/latency ลงหนึ่งขั้น RVC ยังเก็บโค้ด+worker ไว้ครบเพราะ **karaoke ยังใช้อยู่**
+
+**รอยต่อระหว่าง segment:** เส้น streaming เล่นทีละไฟล์ผ่าน Discord จึง crossfade แท้ไม่ได้ (คลื่นสองก้อน
+ไม่เคยเล่นซ้อนกัน) — ใช้ fade หัว/ท้าย 15ms ต่อ segment แทน (`SEG_EDGE_FADE_MS`) แก้เสียงคลิก/ป๊อปที่เกิด
+จากคลื่นถูกตัดกลางคัน ส่วนเส้นไฟล์เดียว (`text_to_roste_voice` → `_concat_wavs`) รวมเป็น array เดียวได้
+จึง crossfade แท้ 150ms (`SEG_CROSSFADE_MS`) ตั้ง 0 ทั้งคู่เพื่อกลับพฤติกรรมเดิม
+
+> ⚠️ fade แก้ได้แค่เสียงคลิกตรงรอยต่อ **ไม่ได้แก้โทน/จังหวะที่กระโดด** ซึ่งมาจากการที่แต่ละ segment เจน
+> แยกกันจาก ref เดียวโดยไม่รู้บริบทก้อนก่อนหน้า — เป็นข้อจำกัดของสถาปัตยกรรม ไม่ใช่ของ fade
 
 **Sentence streaming:** `text_to_roste_voice_segments()` เป็น generator yield ไฟล์ `.wav` ทีละ segment
 ทันทีที่เจนเสร็จ (ไม่รอทั้งคำตอบ) — `bot.py` เล่นไฟล์แรกได้เร็วขึ้น (~6.7s แทน ~15-20s สำหรับคำตอบยาว)
