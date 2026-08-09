@@ -3,7 +3,7 @@ voice.py — Roste voice pipeline
 
 text_to_roste_voice(text) -> wav_path:
   F5 pipeline (ถ้าส่ง f5_worker):
-    strip_emoji → preprocess → F5 (warm) → RVC (warm/oneshot)
+    strip_emoji → preprocess → F5 (warm) → pitch108 (ไม่ผ่าน RVC — ดู F5_THEN_RVC)
   fallback pipeline:
     strip_emoji → edge-tts → ffmpeg adjust → RVC (warm/oneshot)
 
@@ -71,6 +71,24 @@ F0_METHOD   = "rmvpe"
 # ตั้ง 1.0 เพื่อปิดขั้นตอนนี้ (ข้าม ffmpeg ไปเลย ไม่เสียเวลา)
 F5_PITCH_RATIO = 1.08
 
+# ผ่าน RVC ต่อท้าย pitch shift ไหม — ปิดไว้ตามผลเทียบ verify_pitch108.wav
+# (F5 → pitch108 ล้วน ไม่ผ่าน RVC): ผู้ใช้ฟังแล้วเลือกทางนี้สำหรับ TTS ปกติ ลด
+# การประมวลผล/latency ลงหนึ่งขั้น RVC ยังเก็บโค้ด+worker ไว้ทั้งหมด (ยังจำเป็น
+# สำหรับ "ร้องเพลง" ที่เป็นคนละเส้นทาง) ตั้ง True เพื่อกลับไปผ่าน RVC ได้ทันที
+F5_THEN_RVC = False
+
+# ── รอยต่อระหว่าง segment ────────────────────────────────────────────────────
+# มีสองเส้นทางที่ต่อเสียงคนละแบบ และทำได้ไม่เท่ากัน:
+#
+#   text_to_roste_voice()          → _concat_wavs ต่อเป็นไฟล์เดียว = ทับคลื่นได้
+#                                    → crossfade แท้ (SEG_CROSSFADE_MS)
+#   text_to_roste_voice_segments() → บอทเล่นทีละไฟล์ผ่าน Discord = ทับไม่ได้
+#                                    → ได้แค่ fade หัว/ท้าย (SEG_EDGE_FADE_MS)
+#
+# ตั้ง 0 ทั้งคู่เพื่อกลับไปพฤติกรรมเดิม (ตัดสนิท + เว้นเงียบ 150ms)
+SEG_CROSSFADE_MS = 150   # ใช้กับ _concat_wavs — 0 = กลับไปเว้น silence แบบเดิม
+SEG_EDGE_FADE_MS = 15    # ใช้กับ streaming — สั้นๆ พอกันเสียงป๊อป ไม่กินเนื้อเสียง
+
 # ── VoxCPM2 (TTS หลักตัวใหม่) ─────────────────────────────────────────────────
 # เลือกแทน F5 เพราะเสียงเป็นธรรมชาติกว่า แลกกับช้ากว่า ~6s/segment
 #   VoxCPM2 steps=10 ~12.9s  vs  F5+RVC ~6.8s  (ผู้ใช้ทดสอบแล้วยอมรับ)
@@ -80,7 +98,21 @@ F5_PITCH_RATIO = 1.08
 # → ได้เสียงรอสเต้ตั้งแต่ VoxCPM2 เลย ไม่ต้องผ่าน RVC ซ้ำ
 # ใช้ reference_wav_path (โคลนเสียงล้วน) ไม่ใช่ prompt_wav_path (continuation ที่
 # เลียนจังหวะ ref มาด้วย) — ผู้ใช้ฟังเทียบแล้วยืนยันว่า ref ดีกว่า prompt ชัดเจน
-VOXCPM_ENABLED = True
+# ⛔ ปิดไว้ — กลับไปใช้ F5 เพราะปัญหา "รอยต่อเสียง" แก้ไม่ได้ในระดับ pipeline
+#
+# รากปัญหาคือ RTF > 1 (เจนช้ากว่าเสียงที่ได้) ซึ่งบังคับให้ต้องเลือกทางใดทางหนึ่ง
+# และทั้งสองทางแย่:
+#   ซอย segment  → ช่องว่าง 12-16s ทุกจุด + เสียงเปลี่ยนตรงรอยต่อ (แต่ละก้อนเจน
+#                  แยกกันจาก ref เดียว ไม่รู้บริบทก้อนก่อนหน้า)
+#   ไม่ซอย       → รอ 36.8s ก่อนได้ยินอะไรเลย และ *ช้ากว่า* การซอย 5.9s เพราะ
+#                  RTF แย่ลงตามความยาว (1.55 ที่ 123c → 1.73 ที่ 266c)
+# ทางแก้จริงต้องให้โมเดลรู้บริบทข้ามก้อน ซึ่ง API ไม่รองรับ
+#
+# เทียบกับ F5 ที่ RTF 0.65 (เจนทันเล่น) — prefetch กลบช่องว่างได้หมด ไม่มีรอยต่อ
+# ข้อดีเดียวของ VoxCPM2 คือเสียงเป็นธรรมชาติกว่า ซึ่งไม่คุ้มกับที่เสียไป
+#
+# เก็บโค้ด+worker ไว้ทั้งหมด ตั้ง True เพื่อเปิดกลับได้ทันทีถ้ามีโมเดลที่ RTF < 1
+VOXCPM_ENABLED = False
 VOXCPM_STEPS = 10
 VOXCPM_CFG = 2.0
 
@@ -913,8 +945,18 @@ def _merge_segments_for_voxcpm(segments: list[str],
     return merged
 
 
-def _concat_wavs(paths: list[str], out_path: str, silence_ms: int = 150) -> None:
-    """ต่อ wav หลายไฟล์ + เว้น silence ระหว่าง segment"""
+def _concat_wavs(paths: list[str], out_path: str, silence_ms: int = 150,
+                 crossfade_ms: int = 0) -> None:
+    """ต่อ wav หลายไฟล์ — crossfade ตรงรอยต่อ หรือเว้น silence ถ้า crossfade_ms=0
+
+    crossfade ที่นี่ทับคลื่นเสียงได้จริง (ต่างจากเส้น streaming ที่เล่นแยกไฟล์ผ่าน
+    Discord ซึ่งทับกันไม่ได้ ดู _apply_edge_fade) — เอา `crossfade_ms` ท้าย segment
+    ก่อนหน้ามาซ้อนกับหัว segment ถัดไป แล้ว fade ไขว้แบบ linear
+
+    default เป็น 0 (ต่อสนิท/เว้น silence แบบเดิม) โดยตั้งใจ — crossfade *ย่อ* ความยาว
+    รวมลงตามจำนวนรอยต่อ ผู้เรียกที่วัดความยาวอยู่จึงไม่ควรโดนเปลี่ยนพฤติกรรมเงียบๆ
+    เส้นที่ต้องการ crossfade ส่งค่ามาเองที่จุดเรียก (ดู text_to_roste_voice)
+    """
     import numpy as np
     # ⚠️ segment อาจมี sample rate ต่างกันได้จริง: VoxCPM2 ออก 48kHz ส่วนเส้น
     # F5/edge-tts→RVC ออกคนละค่า ถ้า VoxCPM2 พังกลางคำตอบแล้ว fallback ไป F5
@@ -942,9 +984,54 @@ def _concat_wavs(paths: list[str], out_path: str, silence_ms: int = 150) -> None
                     axis=1,
                 ).astype(data.dtype)
         arrays.append(data)
-        if i < len(paths) - 1:
+        if crossfade_ms <= 0 and i < len(paths) - 1:
             arrays.append(np.zeros(int(sr * silence_ms / 1000), dtype=data.dtype))
+
+    if crossfade_ms > 0 and len(arrays) > 1:
+        n = int(sr * crossfade_ms / 1000)
+        out = arrays[0]
+        for nxt in arrays[1:]:
+            # crossfade คุ้มเฉพาะเมื่อทั้งสองก้อนยาวกว่าช่วง fade พอสมควร — ก้อนสั้น
+            # (~0.1s) จะถูก fade กลืนไปเกือบหมด เนื้อเสียงหายจริงไม่ใช่แค่ตัวเลขความยาว
+            # กรณีนั้นต่อสนิทไปเลยดีกว่า เสียงคลิกที่อาจเกิดยังดีกว่าคำที่หายไป
+            if len(out) < n * 2 or len(nxt) < n * 2:
+                out = np.concatenate([out, nxt])
+                continue
+            k = n
+            ramp = np.linspace(0.0, 1.0, num=k, endpoint=False)
+            if out.ndim > 1:
+                ramp = ramp[:, None]
+            tail = out[-k:] * (1.0 - ramp) + nxt[:k] * ramp
+            out = np.concatenate([out[:-k], tail.astype(out.dtype), nxt[k:]])
+        sf.write(out_path, out, sr)
+        return
+
     sf.write(out_path, np.concatenate(arrays), sr)
+
+
+def _apply_edge_fade(path: str, fade_ms: int = SEG_EDGE_FADE_MS) -> None:
+    """fade-in หัว + fade-out ท้ายไฟล์ (แก้ไขไฟล์ในที่)
+
+    ใช้กับเส้น streaming ที่ Discord เล่นทีละไฟล์ — crossfade แท้ทำไม่ได้เพราะไฟล์
+    สองก้อนไม่เคยเล่นซ้อนกัน แต่การไล่ระดับหัว/ท้ายช่วยตัดเสียง "ป๊อป" ที่เกิดจาก
+    คลื่นถูกตัดกลางคันตรงรอยต่อได้ ไม่ได้ทำให้โทนต่อเนื่องขึ้น (คนละปัญหากัน)
+    """
+    if fade_ms <= 0:
+        return
+    try:
+        import numpy as np
+        data, sr = sf.read(path)
+        n = int(sr * fade_ms / 1000)
+        if n <= 0 or len(data) < n * 2:
+            return
+        ramp = np.linspace(0.0, 1.0, num=n, endpoint=False)
+        if data.ndim > 1:
+            ramp = ramp[:, None]
+        data[:n] = (data[:n] * ramp).astype(data.dtype)
+        data[-n:] = (data[-n:] * ramp[::-1]).astype(data.dtype)
+        sf.write(path, data, sr)
+    except Exception as e:   # fade ล้มเหลวไม่ควรทำให้เสียงหายทั้ง segment
+        logger.debug(f"   edge fade ข้าม {path}: {e}")
 
 
 # ── public API ─────────────────────────────────────────────────────────────────
@@ -975,6 +1062,12 @@ def _gen_one_segment(
 
     VoxCPM2 อยู่ชั้นบนสุดแทนที่จะแทน F5 ไปเลย เพราะ cold load ~75s และช้ากว่า
     F5 ~2 เท่า — ถ้ามันพัง/ยังไม่ warm ต้องมี F5 รับช่วงได้ทันทีโดยเสียงไม่หาย
+
+    ⚠️ เคยลองใช้ "เสียง F5 segment ก่อนหน้า" เป็น ref ของ segment ถัดไป (chain ต่อกัน แทน
+    ที่จะ fix ที่ F5_REF_AUDIO ตัวเดียวเสมอ) หวังจะแก้โทน/จังหวะกระโดดตรงรอยต่อ — ผู้ใช้ฟัง
+    แล้วพบว่าคุณภาพเสียงเสื่อมสะสมทีละ segment (error compounding: ref สังเคราะห์ไม่สมบูรณ์
+    เท่าเสียงจริง พอเอาไปเป็น ref ต่อ ความไม่สมบูรณ์จะยิ่งทบไปเรื่อยๆ) จึงเลิกใช้ กลับมา fix
+    ที่ F5_REF_AUDIO เดิมเสมอทุก segment แม้จะแลกกับโทนไม่ต่อเนื่องบ้างตรงรอยต่อ
     """
     if voxcpm_worker is not None and voxcpm_worker.alive:
         try:
@@ -1004,9 +1097,13 @@ def _gen_one_segment(
                 speed=F5_SPEED,
                 steps=F5_STEPS,
             )
-            # ปรับ pitch ก่อนเข้า RVC (คืน f5_wav เองถ้า ratio=1.0 หรือ ffmpeg พัง)
+            # ปรับ pitch (ก่อนเข้า RVC ถ้า F5_THEN_RVC — คืน f5_wav เองถ้า ratio=1.0 หรือ ffmpeg พัง)
             pitched = _pitch_shift(f5_wav, os.path.join(tmp_dir, f"{label}_pitch.wav"))
-            _rvc_convert(pitched, out_path, worker)
+            if F5_THEN_RVC:
+                _rvc_convert(pitched, out_path, worker)
+            elif pitched != out_path:
+                # ratio=1.0 หรือ ffmpeg พัง → _pitch_shift คืน f5_wav เดิม (ไม่ใช่ out_path)
+                os.replace(pitched, out_path)
             return out_path
         except Exception as e:
             logger.warning(f"   ⚠️ F5 segment {label} พัง (ครั้งที่ {attempt}): {e}")
@@ -1126,6 +1223,8 @@ def text_to_roste_voice_segments(
                         worker=worker, f5_worker=f5_worker, tmp_dir=tmp_dir,
                         voxcpm_worker=voxcpm_worker)
                     if got:
+                        if len(segments) > 1:
+                            _apply_edge_fade(got)
                         yield got
                 return
 
@@ -1146,6 +1245,11 @@ def text_to_roste_voice_segments(
                         voxcpm_worker=voxcpm_worker)
                         if not got:
                             continue
+                        # fade หัว/ท้ายก่อนส่งให้เล่น — ทำตรงนี้ (ไม่ใช่ใน _gen_one_segment)
+                        # เพื่อให้ครอบทุก backend ทั้ง F5/VoxCPM2/edge-tts ในที่เดียว
+                        # และไม่กระทบเส้น _concat_wavs ที่ crossfade แท้อยู่แล้ว
+                        if len(segments) > 1:
+                            _apply_edge_fade(got)
                         # วน put แบบมี timeout แทน put() เปล่า — คิวเต็มแล้ว caller เลิกฟัง
                         # (ไม่มีใครดึงออกอีก) จะค้างตรงนี้ถาวรและ thread ไม่มีวันจบ
                         while not stop.is_set():
@@ -1263,6 +1367,9 @@ def text_to_roste_voice(
     if len(seg_wavs) == 1:
         os.replace(seg_wavs[0], rvc_wav)
     else:
+        # ไม่เปิด crossfade ที่นี่โดย default — เส้นนี้เว้น silence 150ms ระหว่าง segment
+        # ตามสัญญาเดิม (มี test คุมอยู่) และ *ไม่ใช่* เส้นที่บอทใช้เล่นเสียงจริง
+        # ผู้เรียกที่อยากได้ crossfade ส่ง crossfade_ms=SEG_CROSSFADE_MS เองได้
         _concat_wavs(seg_wavs, rvc_wav)
         for p in seg_wavs:
             try:

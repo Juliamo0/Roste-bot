@@ -6,6 +6,7 @@ import re
 
 try:
     from pythainlp.tokenize import word_tokenize as _word_tokenize
+    from pythainlp.tokenize import syllable_tokenize as _syllable_tokenize
     _HAS_PYTHAINLP = True
 except ImportError:
     _HAS_PYTHAINLP = False
@@ -103,17 +104,24 @@ def expand_mai_yamok(text: str) -> str:
         for tok in tokens:
             if tok == 'ๆ':
                 # standalone ๆ — หา sub-word สุดท้ายของ compound token ก่อนหน้า
+                # ใช้ syllable_tokenize ไม่ใช่ word_tokenize: คำผสมที่ dictionary รู้จักเป็น
+                # ก้อนเดียว (เช่น "ห้องเย็น", "น้ำเย็น") word_tokenize ซ้ำจะไม่แตกอีก ทำให้
+                # ซ้ำทั้งคำผสมแทนคำท้ายที่ตั้งใจซ้ำจริง (ห้องเย็นๆ → ห้องเย็นห้องเย็น ที่ผิด)
+                # syllable_tokenize แยกตามพยางค์แทน จึงตัด "ห้องเย็น" → "ห้อง"+"เย็น" ได้ ขณะที่
+                # คำเดี่ยวแท้ (จริง/ใกล้/ค่อย) ยังคงเป็นก้อนเดียวเหมือนเดิม ไม่กระทบ
                 for j in range(len(result) - 1, -1, -1):
                     if result[j].strip():
                         prev = result[j].strip()
-                        sub = [t for t in _word_tokenize(prev) if t.strip()]
+                        sub = [t for t in _syllable_tokenize(prev) if t.strip()]
                         repeat = sub[-1] if len(sub) > 1 else prev
                         result.append(repeat)
                         break
             elif 'ๆ' in tok:
-                # pythainlp รวม "wordๆ" เป็น token เดียว — ซ้ำทั้ง word_part
+                # pythainlp รวม "wordๆ" เป็น token เดียว — ซ้ำแค่พยางค์ท้ายของ word_part
                 word_part = tok.replace('ๆ', '')
-                result.append(word_part * 2)
+                sub = [t for t in _syllable_tokenize(word_part) if t.strip()]
+                repeat = sub[-1] if len(sub) > 1 else word_part
+                result.append(word_part + repeat)
             else:
                 result.append(tok)
         return ''.join(result)
