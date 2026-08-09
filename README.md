@@ -1,10 +1,29 @@
 # 🌙 รอสเต้ (Roste) — Discord AI Bot
 
-บอท Discord ที่มีบุคลิกเป็นตัวละคร "รอสเต้" เด็กสาวดูแลห้องสมุดเวทมนตร์
-ขับเคลื่อนด้วย LLM ที่รันในเครื่องตัวเอง (ผ่าน Ollama) — คุยภาษาไทย มีความจำ
-ดึงข้อมูลจริงได้ สั่งพิมพ์ PDF ได้ และร้องเพลง cover ด้วยเสียงตัวเองในห้อง voice ได้
+![version](https://img.shields.io/badge/version-0.1.0--alpha-orange)
+![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+
+บอท Discord ที่มีบุคลิกเป็นตัวละคร ขับเคลื่อนด้วย LLM ที่รันในเครื่องตัวเอง
+(ผ่าน Ollama) — คุยภาษาไทย มีความจำ ดึงข้อมูลจริงได้ พูดด้วยเสียงสังเคราะห์
+สั่งพิมพ์ PDF ได้ และร้องเพลง cover ในห้อง voice ได้
 
 > โปรเจกต์งานอดิเรก รันในเครื่องตัวเอง (local) ทั้งหมด
+> ดูรายการความสามารถ/ข้อจำกัดทั้งหมดที่ [CHANGELOG.md](CHANGELOG.md)
+
+> ⚠️ **สถานะ: alpha** — ยังเปลี่ยนโครงสร้าง/พฤติกรรมได้ตลอดโดยไม่ถือเป็น breaking change
+> รันบน Windows เท่านั้น และต้องมี GPU + Ollama ในเครื่อง
+
+### 🎭 ตัวละคร "รอสเต้" คือ template — แก้เป็นตัวละครของคุณได้เลย
+
+`persona.py` มีตัวละครรอสเต้มาให้ครบ (บุคลิก บทสนทนาตัวอย่าง อารมณ์ กลไกกันหลุดคาแร็กเตอร์)
+แต่ตั้งใจให้เป็น **แม่แบบ** ไม่ใช่ของตายตัว — เปิดไฟล์แล้วแก้ `SYSTEM_PROMPT`,
+`FEWSHOT_EXAMPLES`, `MOODS` ให้เป็นตัวละครของคุณได้เลย โครงสร้างและคอมเมนต์ในไฟล์
+อธิบายไว้ว่าแต่ละส่วนมีผลยังไง รวมถึงกับดักที่เจอมาแล้วจริง (เช่น few-shot ที่มีวันที่/ราคา
+จะทำให้โมเดลก๊อปคำตอบมาใช้แทนการเรียก tool)
+
+> **เสียงไม่ได้มาด้วย** — โมเดล RVC และ reference audio เป็นเสียงส่วนตัว ไม่แจกจ่าย
+> ถ้าอยากให้บอทพูดต้องเตรียม ref audio ของคุณเอง (ดูหัวข้อ [ระบบเสียง](#-ระบบเสียงรอสเต้))
 
 ## ✨ ความสามารถ
 
@@ -43,7 +62,7 @@
 | ไฟล์ | หน้าที่ |
 |------|---------|
 | `bot.py` | ตัวหลัก — เชื่อม Discord, LLM, เครื่องมือต่างๆ |
-| `persona.py` | บุคลิกรอสเต้ — `SYSTEM_PROMPT`, few-shot examples, moods, author note |
+| `persona.py` | ตัวละคร (`SYSTEM_PROMPT`, few-shot, moods) + กลไกกันหลุดคาแร็กเตอร์ — **แก้เป็นตัวละครของคุณได้** |
 | `memory.py` | ระบบความจำ — load/save/facts/recall/summaries + คำสั่งจำ-ลืม |
 | `printing.py` | ระบบพิมพ์ PDF + ตั้งค่าเครื่องพิมพ์ |
 | `music.py` | ระบบเล่นเพลงในห้อง voice + ตั้งค่าโฟลเดอร์เพลง |
@@ -141,7 +160,10 @@
    - คัดลอก `.env.example` → `.env`
    - ใส่ Token จาก [Discord Developer Portal](https://discord.com/developers/applications)
    - เปิด **MESSAGE CONTENT INTENT** ใน Bot settings
-5. รันบอท — ดับเบิลคลิก `start.bat`
+5. *(ไม่บังคับ)* **แก้ตัวละคร** — เปิด `persona.py` แล้วแก้ `SYSTEM_PROMPT`,
+   `FEWSHOT_EXAMPLES`, `MOODS` ให้เป็นตัวละครของคุณเอง
+   (ไม่แก้ก็รันได้ จะได้รอสเต้ตามค่าเริ่มต้น)
+6. รันบอท — ดับเบิลคลิก `start.bat`
 
 ### API keys เสริม (ไม่บังคับ)
 
@@ -157,8 +179,9 @@
 
 | ต้องการแก้อะไร | แก้ที่ไหน |
 |---------------|----------|
-| บุคลิก/น้ำเสียงรอสเต้ | `persona.py` → `SYSTEM_PROMPT` |
+| บุคลิก/น้ำเสียงตัวละคร | `persona.py` → `SYSTEM_PROMPT` |
 | ตัวอย่างบทสนทนา (few-shot) | `persona.py` → `FEWSHOT_EXAMPLES` |
+| อารมณ์ที่สุ่มมาใช้ | `persona.py` → `MOODS` |
 | โมเดล LLM | `bot.py` → `MODEL` |
 | จังหวัดบ้านเกิด (ตัดไฟ/อากาศ default) | `bot.py` → `HOME_PROVINCE_ID`, `HOME_PROVINCE_NAME` |
 | จำนวน history ที่เก็บ | `memory.py` → `MAX_HISTORY_PAIRS` |

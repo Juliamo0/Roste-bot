@@ -13,6 +13,9 @@ import aiohttp
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
+# alpha = ยังเปลี่ยนโครงสร้าง/พฤติกรรมได้โดยไม่ถือว่า breaking (ตาม SemVer 0.y.z)
+__version__ = "0.1.0-alpha"
+
 # ============================================================
 #  📝  Logging — เดิมใช้ print() ล้วน หายหมดตอนปิด console ไม่มีล็อกย้อนหลังดูตอนบอทมีปัญหา
 #      ตั้งที่ root logger เพื่อให้จับ log ของ discord.py (discord.client, discord.gateway ฯลฯ)
