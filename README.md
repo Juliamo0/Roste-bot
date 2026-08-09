@@ -80,16 +80,16 @@
 | ไฟล์ | ประเภท | จำนวน tests |
 |------|--------|-------------|
 | `test_bot.py` | pytest | 260 — lock, summarize (JSON + tag เจ้าของ), memory overflow, tool calling dispatch/validation/grounding, **dynamic tool selection**, persona-slip filter, AI-claim guard, **บุคลิกกันเองเสมอ/สรรพนามทางการ**, rate limiting, karaoke outro |
-| `test_memory.py` | pytest | 95 — facts, recall (ตัดคำไทย/คำพ้อง), **แยกความทรงจำตามเจ้าของ**, parse, summaries, supersede/consolidation |
-| `test_realtime.py` | pytest | 55 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
-| `test_voice.py` | pytest | 55 — streaming segment order/fail-safe, ตัวซอยข้อความไทย, f5_preprocess, worker hang timeout |
+| `test_memory.py` | pytest | 97 — facts, recall (ตัดคำไทย/คำพ้อง), **แยกความทรงจำตามเจ้าของ**, parse, summaries, supersede/consolidation |
+| `test_realtime.py` | pytest | 63 — oil, weather, PEA, search, places (data-fetch functions ตรงๆ) |
+| `test_voice.py` | pytest | 68 — streaming segment order/fail-safe, ตัวซอยข้อความไทย, f5_preprocess, worker hang timeout, crossfade/edge fade |
 | `test_vectormemory.py` | pytest | 19 — rerank fail-safe (output หลุดฟอร์แมต, temperature, edge case), PDF page cap |
 | `test_stats.py` | pytest | 17 — stage timing, concurrent message isolation |
 | `test_monitor.py` | pytest | 16 — health check, resource sampling |
 | `test_config.py` | pytest | 14 — โหลด `.env`, ค่า default |
 | `test_printing.py` | pytest | 9 — print_jobs cleanup, pending_prints expiry |
 | `test_music.py` | pytest | 9 — song_requests.json entry cap, extract_song_query tokenize |
-| `test_tts_stream.py` | pytest | 8 — prefetch ไม่บล็อก, ลำดับ segment, เก็บกวาดไฟล์ตอนหยุดกลางคัน |
+| `test_tts_stream.py` | pytest | 10 — prefetch ไม่บล็อก, ลำดับ segment, เก็บกวาดไฟล์ตอนหยุดกลางคัน |
 | `test_all_systems.py` | integration script | 9 ระบบ — ยิง HTTP จริง รายงานตาราง ✅/⚠️/❌ |
 
 **รวม 582 unit tests** — รันทั้งหมดด้วย `pytest` (ไฟล์เทสอยู่ใน `tests/` — `pytest.ini` ตั้ง path ให้แล้ว)
@@ -183,8 +183,8 @@
 | บุคลิก/น้ำเสียงตัวละคร | `persona.py` → `SYSTEM_PROMPT` |
 | ตัวอย่างบทสนทนา (few-shot) | `persona.py` → `FEWSHOT_EXAMPLES` |
 | อารมณ์ที่สุ่มมาใช้ | `persona.py` → `MOODS` |
-| โมเดล LLM | `bot.py` → `MODEL` |
-| จังหวัดบ้านเกิด (ตัดไฟ/อากาศ default) | `bot.py` → `HOME_PROVINCE_ID`, `HOME_PROVINCE_NAME` |
+| โมเดล LLM | `ollama_client.py` → `MODEL` |
+| จังหวัดบ้านเกิด (ตัดไฟ/อากาศ default) | `datasources.py` → `HOME_PROVINCE_ID`, `HOME_PROVINCE_NAME` |
 | จำนวน history ที่เก็บ | `memory.py` → `MAX_HISTORY_PAIRS` |
 | จำนวน facts สูงสุดต่อคน | `memory.py` → `MAX_FACTS` |
 | จำนวน summaries สูงสุดต่อคน | `memory.py` → `MAX_SUMMARIES` |
@@ -483,11 +483,10 @@ python tools/test_voice_pipeline.py
 4. วางไฟล์ในโฟลเดอร์ `karaoke/`
 5. ไม่ต้อง restart บอท — ค้นหาไฟล์แบบ on-demand
 
-### เพลงที่มีตอนนี้
+### คลังเพลง
 
-| ไฟล์ | ชื่อเพลง | ศิลปิน |
-|------|---------|--------|
-| `monster_yoasobi.wav` | Monster | YOASOBI |
+โฟลเดอร์ `karaoke/` ไม่ได้ commit ขึ้น repo (ลิขสิทธิ์เป็นของเจ้าของเพลง) — ต้องเตรียมเอง
+บอทค้นไฟล์แบบ on-demand ทุกครั้งที่ถูกขอ จึงเพิ่ม/ลบเพลงได้โดยไม่ต้องรีสตาร์ท
 
 ## 🔧 Troubleshooting
 
