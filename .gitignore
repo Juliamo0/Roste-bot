@@ -42,10 +42,10 @@ Thumbs.db
 test*.mp3
 *.mp3
 *.wav
-# ยกเว้น ref ของ VoxCPM2 — ไม่ใช่เสียงคนจริง แต่เป็นเสียงรอสเต้ที่ TTS สร้างเอง
-# (F5 + pitch108) และ VOXCPM_REF_AUDIO ชี้มาที่ไฟล์นี้ ถ้าไม่ commit ไปด้วย
-# clone ใหม่จะรัน VoxCPM2 ไม่ได้เลย — fallback ไป F5 เงียบๆ โดยไม่มีใครรู้
-!ref_audio/roste_v2/*.wav
+# ⛔ เดิม whitelist ref ของ VoxCPM2 ไว้ (!ref_audio/roste_v2/*.wav) เพราะ VOXCPM_REF_AUDIO
+# ชี้มาที่ไฟล์นี้ — ถอด whitelist ออกแล้ว ไม่ commit เสียงขึ้น repo อีก
+# เหตุผลเดิมหมดไปแล้วด้วยเพราะ VOXCPM_ENABLED=False (กลับไปใช้ F5)
+# ถ้าเปิด VoxCPM2 กลับ ต้องก๊อปไฟล์ ref เข้าเครื่องเองหลัง clone ไม่ใช่ดึงจาก repo
 # ไฟล์ reference audio สำหรับ F5 (ใหญ่ + อาจมีลิขสิทธิ์)
 1_Lai_ref*
 # transcript ของ ref audio — เป็นคำพูดคนจริงเล่าเรื่องส่วนตัว (ข้อมูลส่วนบุคคล)
@@ -53,8 +53,8 @@ test*.mp3
 ref_audio/candidates/
 ref_audio/**/*.json
 ref_audio/**/*.txt
-# ยกเว้น transcript ของ roste_v2 — เป็นประโยคที่เราแต่งเอง ไม่ใช่คำพูดคนจริง
-!ref_audio/roste_v2/*.txt
+# ⛔ ถอด whitelist transcript ของ roste_v2 ออกด้วย (เดิม !ref_audio/roste_v2/*.txt)
+# ให้ทั้งโฟลเดอร์ roste_v2 อยู่นอก repo ทั้งชุด กันหลุดซ้ำ
 # โฟลเดอร์ voice model (edge-tts ONNX ขนาดใหญ่)
 voices/
 
