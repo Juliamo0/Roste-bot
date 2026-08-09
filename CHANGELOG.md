@@ -9,6 +9,31 @@
 
 ---
 
+## [0.1.1-alpha] — 2026-08-10
+
+### แก้บั๊ก
+- **`_pitch_shift` พังทั้ง segment ถ้าเครื่องไม่มี ffmpeg** — guard เดิมเช็คแค่ `returncode`
+  ซึ่งครอบเฉพาะกรณี ffmpeg *รันแล้วล้มเหลว* ถ้าไม่มี ffmpeg เลย `subprocess.run` โยน
+  `FileNotFoundError` ตั้งแต่ก่อนคืน returncode → exception หลุดขึ้นไปทำให้ทั้ง segment พัง
+  (โผล่ตอน `F5_THEN_RVC=False` ทำให้ pitch shift กลายเป็นขั้นบังคับของทุก segment)
+- ถอดการเช็ค ref audio ใน `F5Worker.start()` ที่วางผิดที่จนทำให้ worker เปิดไม่ได้บนเครื่อง
+  ที่ไม่มีไฟล์เสียง (CI แดง)
+
+### เพิ่ม
+- **fade รอยต่อ segment** — `_apply_edge_fade()` fade หัว/ท้าย 15ms ต่อ segment กันเสียงคลิก
+  ที่เกิดจากคลื่นถูกตัดกลางคัน (`SEG_EDGE_FADE_MS`)
+- `_concat_wavs()` รองรับ crossfade แท้ 150ms สำหรับเส้นไฟล์เดียว (`SEG_CROSSFADE_MS`,
+  default 0 คงพฤติกรรมเดิมที่เว้น silence)
+- CI ติดตั้ง ffmpeg บน runner — ไม่งั้นเทสวิ่งเข้า fallback path แทนพฤติกรรมจริง
+
+### เอกสาร
+ตรวจ README/ROADMAP/CHANGELOG ทั้งหมดเทียบกับโค้ดจริง แก้ที่ไม่ตรง 15+ จุด เช่น
+จำนวนเทส (559 → 582 และรายไฟล์อีก 4 จุด), torch 2.4.0/cu121 → 2.11.0+cu128,
+Python 3.11 → 3.10, cold load F5 ~18s → ~13–36s, latency ~6.7s → ~3s,
+ตาราง "การปรับแต่ง" ที่ชี้ไฟล์ผิด (`MODEL`, `HOME_PROVINCE_*`)
+
+---
+
 ## [0.1.0-alpha] — 2026-08-09
 
 เวอร์ชันแรกที่ติดเลขอย่างเป็นทางการ ก่อนหน้านี้พัฒนาแบบไม่มีเวอร์ชันมาตลอด

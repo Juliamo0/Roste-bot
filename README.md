@@ -1,6 +1,6 @@
 # 🌙 รอสเต้ (Roste) — Discord AI Bot
 
-![version](https://img.shields.io/badge/version-0.1.0--alpha-orange)
+![version](https://img.shields.io/badge/version-0.1.1--alpha-orange)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
