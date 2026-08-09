@@ -514,6 +514,17 @@ class F5Worker:
             raise RuntimeError(f"ไม่พบ f5_venv: {_F5_VENV_PY}")
         if not _F5_WORKER_PY.exists():
             raise RuntimeError(f"ไม่พบ f5_worker.py: {_F5_WORKER_PY}")
+        # ref audio ไม่อยู่ใน repo (เป็นเสียงส่วนตัว) — คน clone ใหม่ต้องเตรียมเอง
+        # เช็คตรงนี้เพื่อให้ fail ทันทีพร้อมบอกวิธีแก้ แทนที่จะปล่อยไปพังตอน generate
+        # โดยขึ้นแค่ "F5 segment พัง" ซึ่งไม่บอกสาเหตุจริง
+        if not os.path.exists(F5_REF_AUDIO):
+            raise RuntimeError(
+                f"ไม่พบ reference audio: {F5_REF_AUDIO}\n"
+                f"   ไฟล์เสียงต้นแบบไม่ได้แจกมากับ repo (เป็นเสียงส่วนตัว) — ต้องเตรียมเอง:\n"
+                f"   1. เตรียมไฟล์ .wav เสียงพูดชัดๆ ยาว 10-160 วินาที\n"
+                f"   2. วางไว้ที่ ref_audio/ แล้วแก้ F5_REF_AUDIO ใน voice.py ให้ชี้ไฟล์นั้น\n"
+                f"   3. แก้ F5_REF_TEXT ให้ตรงกับคำพูดในไฟล์ (ถอดเทปเอง)"
+            )
 
         t0 = time.perf_counter()
         self._proc = subprocess.Popen(
