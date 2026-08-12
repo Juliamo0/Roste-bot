@@ -79,11 +79,3 @@ tts_raw/
 *.index
 *.onnx
 .coverage
-
-# ชุดข้อมูลทดสอบมาตรฐาน (LongMemEval/ไทย ~384MB) — ดาวน์โหลดเองด้วย tools/fetch_longmemeval.py
-tools/data/
-
-# ไฟล์สำรอง/log ตอน restart
-backup_restart_*/
-bot_restart.log
-bot_restart.err
