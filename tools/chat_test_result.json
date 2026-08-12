@@ -1,0 +1,89 @@
+{
+ "name": "ผู้ทดสอบ",
+ "preferred_name": "",
+ "facts": [
+  {
+   "category": "ความชอบ",
+   "text": "ชอบเล่นเกมยิงปืน",
+   "created": "2026-08-11T18:40:38+07:00",
+   "superseded": false,
+   "superseded_at": null,
+   "superseded_by": null
+  },
+  {
+   "category": "งาน",
+   "text": "ทำงานเป็นช่างซ่อมแอร์",
+   "created": "2026-08-11T18:40:43+07:00",
+   "superseded": true,
+   "superseded_at": "2026-08-11T18:41:32+07:00",
+   "superseded_by": "ทำงานช่างซ่อมแอร์"
+  },
+  {
+   "category": "ความชอบ",
+   "text": "ชอบเล่นเกม Valorant",
+   "created": "2026-08-11T18:40:49+07:00",
+   "superseded": false,
+   "superseded_at": null,
+   "superseded_by": null
+  },
+  {
+   "category": "ของที่มี",
+   "text": "มีเกม Valorant",
+   "created": "2026-08-11T18:40:49+07:00",
+   "superseded": false,
+   "superseded_at": null,
+   "superseded_by": null
+  },
+  {
+   "category": "ความชอบ",
+   "text": "ชอบกินส้มตำ",
+   "created": "2026-08-11T18:40:53+07:00",
+   "superseded": false,
+   "superseded_at": null,
+   "superseded_by": null
+  },
+  {
+   "category": "ที่อยู่",
+   "text": "อยู่ขอนแก่น",
+   "created": "2026-08-11T18:40:59+07:00",
+   "superseded": false,
+   "superseded_at": null,
+   "superseded_by": null
+  },
+  {
+   "category": "งาน",
+   "text": "ทำงานช่างซ่อมแอร์",
+   "created": "2026-08-11T18:41:32+07:00",
+   "superseded": false,
+   "superseded_at": null,
+   "superseded_by": null
+  },
+  {
+   "category": "ของที่มี",
+   "text": "เล่นเกมปลูกผัก",
+   "created": "2026-08-11T18:41:37+07:00",
+   "superseded": false,
+   "superseded_at": null,
+   "superseded_by": null
+  },
+  {
+   "category": "ความชอบ",
+   "text": "ชอบเล่นเกมปลูกผัก",
+   "created": "2026-08-11T18:41:37+07:00",
+   "superseded": false,
+   "superseded_at": null,
+   "superseded_by": null
+  }
+ ],
+ "history": [],
+ "summaries": [
+  {
+   "date": "2026-08-11",
+   "text": "11 ส.ค.: ผู้ใช้และรอสเต้พูดคุยเรื่องงาน ความสนใจ อาหาร และสภาพอากาศ | user_pref:ชอบเล่นเกมยิงปืน user_fact:ทำงานเป็นช่างซ่อมแอร์ user_pref:ชอบกินส้มตำเผ็ดๆ user_fact:อยู่ขอนแก่น"
+  },
+  {
+   "date": "2026-08-11",
+   "text": "11 ส.ค.: ผู้ใช้เล่าเรื่องการทำงานและกิจกรรมในชีวิตประจำวัน | user_fact:ทำงานช่างซ่อมแอร์มา 5 ปี user_pref:เบื่อเกมยิงปืน หันมาเล่นเกมปลูกผักแทน me_fact:ชอบอ่านหนังสือ เดินเล่น หรือหาข้อมูลตัวเลขแปลกๆ me_pref:ชอบพูดคุยเรื่องต่างๆ อย่างเป็นมิตร"
+  }
+ ]
+}

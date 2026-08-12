@@ -496,6 +496,431 @@ class TestThaiKeywordRecall:
         assert memory._keywords("อยู่ ชุมพร") != []
 
 
+class TestMetaSummaryTagGuard:
+    """tag ที่พูดถึง "การสนทนา" เอง ไม่ใช่ข้อเท็จจริงของใคร ต้องไม่ถูกเก็บ
+
+    🚨 บั๊กที่เจอตอนคุยจริง 15 เทิร์น: ผู้ใช้ถาม "เราเคยคุยเรื่องอะไรกันบ้าง"
+    รอสเต้ตอบว่า "เคยคุยเรื่องงาน ความชอบเกม และอาหาร" แล้วรอบสรุปถัดมาเก็บว่า
+
+        user_fact:เคยคุยเรื่องงาน ความชอบเกม และอาหาร
+
+    ซึ่งเป็น *คำตอบของรอสเต้เอง* ไม่ใช่ข้อเท็จจริงของผู้ใช้ = attribution error ตอนเขียน
+    (ต่างจาก B1 ที่แก้ตอนอ่าน) และจะสะสมทุกครั้งที่ผู้ใช้ถามเรื่องความจำ —
+    ความทรงจำจะค่อยๆ เต็มไปด้วย "บันทึกว่าเคยบันทึกอะไร" แทนข้อมูลจริง
+    """
+
+    @pytest.mark.parametrize("tag_value", [
+        "เคยคุยเรื่องงาน ความชอบเกม และอาหาร",
+        "คุยกันเรื่องหนังสือ",
+        "พูดคุยเกี่ยวกับการทำงาน",
+        "สนทนาเรื่องอาหาร",
+        "ถามเรื่องความจำ",
+    ])
+    def test_meta_conversation_tag_rejected(self, tag_value):
+        assert memory.is_meta_summary_tag(tag_value), f"{tag_value!r} ควรถูกกรองทิ้ง"
+
+    @pytest.mark.parametrize("tag_value", [
+        "ทำงานเป็นช่างซ่อมแอร์", "ชอบกินส้มตำเผ็ดๆ", "อยู่ขอนแก่น",
+        "เบื่อเกมยิงปืน หันมาเล่นเกมปลูกผัก", "ชอบเล่นเกม Valorant",
+    ])
+    def test_real_facts_kept(self, tag_value):
+        """⚠️ regression guard: ข้อเท็จจริงจริงต้องไม่โดนตัด"""
+        assert not memory.is_meta_summary_tag(tag_value)
+
+    def test_parse_drops_meta_tag_keeps_others(self):
+        """ด่านตรวจตอน parse — ตัดเฉพาะ meta tag ที่เหลือต้องอยู่ครบ"""
+        raw = ('{"summary":"คุยเรื่องงาน",'
+               '"tags":["user_fact:เคยคุยเรื่องงาน ความชอบเกม",'
+               '"user_fact:ทำงานเป็นช่างซ่อมแอร์"]}')
+        out = memory.parse_summary_json(raw)
+        assert "ทำงานเป็นช่างซ่อมแอร์" in out
+        assert "เคยคุยเรื่องงาน" not in out
+
+
+class TestMiscategorizedFactGuard:
+    """fact ที่โมเดลจัดหมวดผิด ต้องไม่ไป supersede ข้อมูลจริงทิ้ง
+
+    🚨 บั๊กที่เจอตอนคุยกับรอสเต้จริง 15 เทิร์น (11 ส.ค. 2569) — เทส 626 ตัวจับไม่ได้เลย:
+
+        ผู้ใช้: "เกมที่ชอบที่สุดคือ Valorant เล่นมา 3 ปีแล้ว"
+        โมเดลสกัดได้: [งาน] "เล่นเกมมา 3 ปีแล้ว"   ← จัดหมวดผิด
+        ผลลัพธ์: ไป supersede "ทำงานเป็นช่างซ่อมแอร์" ทิ้ง
+
+    "งาน" อยู่ใน SINGLE_VALUE_CATEGORIES (มีค่าจริงได้ค่าเดียว) การเพิ่มค่าใหม่จึงลบค่าเก่า
+    ถ้าผู้ใช้ไม่บังเอิญพูดเรื่องอาชีพซ้ำอีก **ข้อมูลอาชีพจริงจะหายถาวร**
+
+    ทำซ้ำได้: "…มา N ปีแล้ว" ทำให้โมเดลเดาว่าเป็นหมวด "งาน" แม้เนื้อหาจะเป็นเรื่องเกม
+
+    ⚠️ แก้ที่ prompt ไม่พอ (MEMORY_EXPERIMENTS §4 เตือนซ้ำ 3 ครั้งแล้ว) — ต้องมี
+    validation layer ที่ตรวจว่า "เนื้อหาเข้ากับหมวดที่โมเดลบอกจริงไหม" ก่อนให้ supersede
+    """
+
+    @pytest.mark.parametrize("text,claimed", [
+        ("เล่นเกมมา 3 ปีแล้ว", "งาน"),
+        ("ชอบเล่นเกม Valorant", "งาน"),
+        ("อ่านหนังสือมา 5 ปี", "งาน"),
+    ])
+    def test_game_hobby_not_accepted_as_job(self, text, claimed):
+        """เนื้อหาเรื่องเกม/งานอดิเรก ห้ามรับเป็นหมวด "งาน" """
+        assert not memory.category_matches_text(claimed, text), \
+            f"{text!r} ไม่ควรผ่านเป็นหมวด {claimed!r}"
+
+    @pytest.mark.parametrize("text", [
+        "ทำงานเป็นช่างซ่อมแอร์", "เป็นโปรแกรมเมอร์", "ทำงานสายไอที",
+        "อาชีพครู", "ทำงานที่โรงพยาบาล",
+    ])
+    def test_real_job_still_accepted(self, text):
+        """⚠️ regression guard: อาชีพจริงต้องยังผ่านได้ (อย่าเหวี่ยงตัด)"""
+        assert memory.category_matches_text("งาน", text)
+
+    @pytest.mark.parametrize("text", ["อยู่ขอนแก่น", "ย้ายมาอยู่เชียงใหม่", "บ้านอยู่ภูเก็ต"])
+    def test_real_address_still_accepted(self, text):
+        assert memory.category_matches_text("ที่อยู่", text)
+
+    def test_multi_value_category_never_blocked(self):
+        """หมวด multi-value ไม่ supersede อะไรอยู่แล้ว → ไม่ต้องตรวจ ปล่อยผ่านหมด
+
+        กันไม่ให้ guard นี้ไปตัดข้อมูลที่ไม่มีความเสี่ยง
+        """
+        assert memory.category_matches_text("ความชอบ", "เล่นเกมมา 3 ปีแล้ว")
+        assert memory.category_matches_text("ของที่มี", "อะไรก็ได้")
+
+    def test_add_fact_downgrades_instead_of_dropping(self):
+        """fact ที่หมวดไม่ตรง ต้อง *ไม่หาย* — เก็บต่อแบบไม่มีหมวด (ไม่ supersede ใคร)
+
+        ทิ้งข้อมูลผู้ใช้ไปเลยแย่กว่าเก็บไว้แบบไม่มีหมวด
+        """
+        mem = {"facts": []}
+        memory.add_fact(mem, "ทำงานเป็นช่างซ่อมแอร์", "งาน")
+        memory.add_fact(mem, "เล่นเกมมา 3 ปีแล้ว", "งาน")   # หมวดผิด
+
+        job = [f for f in mem["facts"] if f["text"] == "ทำงานเป็นช่างซ่อมแอร์"][0]
+        assert not job["superseded"], "อาชีพจริงต้องไม่ถูกลบด้วย fact ที่จัดหมวดผิด"
+        game = [f for f in mem["facts"] if f["text"] == "เล่นเกมมา 3 ปีแล้ว"][0]
+        assert game["category"] is None, "fact ที่หมวดไม่ตรงต้องถูกลดเป็นไม่มีหมวด"
+
+    def test_genuine_job_change_still_supersedes(self):
+        """⚠️ สำคัญ: เปลี่ยนงานจริงต้องยัง supersede ได้เหมือนเดิม"""
+        mem = {"facts": []}
+        memory.add_fact(mem, "ทำงานเป็นช่างซ่อมแอร์", "งาน")
+        memory.add_fact(mem, "เป็นโปรแกรมเมอร์", "งาน")
+        old = [f for f in mem["facts"] if f["text"] == "ทำงานเป็นช่างซ่อมแอร์"][0]
+        assert old["superseded"], "เปลี่ยนอาชีพจริงต้อง supersede ของเก่า"
+
+
+class TestTagDeduplication:
+    """tag ที่ผู้ใช้พูดซ้ำไม่ควรกลายเป็นหลาย record (กรอบ LTM ข้อ 2: Deduplication)
+
+    วัดกับความจำจริง (หลังกันของลอกจาก prompt แล้ว): tag ซ้ำ 31/144 = 22%
+        4x user_pref:ต้องการคำพูดเป็นทางการ
+        4x me_fact:แนะนำวิธีจัดการงาน
+        3x user_fact:ทำงานหนัก
+    เปลืองโควตา context (attention cliff ~3,700c) และทำให้ recall คืนของซ้ำๆ
+
+    ต้นเหตุ: chat.py เขียน summary ด้วย `summaries.append(entry)` ตรงๆ
+    ไม่เคยเทียบกับของเดิมเลย — ต่างจาก facts ที่มี add_fact() กันซ้ำอยู่แล้ว
+
+    ⚠️ ระวัง: ห้ามลบ summary ทั้งบรรทัดเพราะ tag ซ้ำบางตัว — บรรทัดเดียวมีหลาย tag
+    และหัวเรื่องต่างกัน (เป็นคนละบทสนทนา) จึงกันซ้ำ *ระดับ tag* ไม่ใช่ระดับบรรทัด
+    """
+
+    def test_exact_duplicate_tag_removed_from_new_summary(self):
+        """tag ที่มีอยู่แล้วในความจำ ไม่ต้องเก็บซ้ำในบรรทัดใหม่"""
+        old = ["6 ส.ค.: คุยเรื่องงาน | user_fact:ทำงานหนัก me_fact:แนะนำวิธีจัดการงาน"]
+        new = "7 ส.ค.: คุยเรื่องงานอีกครั้ง | user_fact:ทำงานหนัก user_pref:ชอบทำงานดึก"
+        out = memory.dedupe_tags_against(new, old)
+        assert "ชอบทำงานดึก" in out, "tag ใหม่ต้องอยู่"
+        assert "ทำงานหนัก" not in out, "tag ที่ซ้ำของเดิมต้องถูกตัด"
+
+    def test_keeps_summary_when_all_tags_duplicate(self):
+        """ถ้า tag ซ้ำหมด ยังต้องเก็บบรรทัดไว้ (หัวเรื่องยังมีค่า เป็นคนละบทสนทนา)"""
+        old = ["6 ส.ค.: คุยเรื่องงาน | user_fact:ทำงานหนัก"]
+        new = "7 ส.ค.: คุยเรื่องงานอีกครั้ง | user_fact:ทำงานหนัก"
+        out = memory.dedupe_tags_against(new, old)
+        assert out.startswith("7 ส.ค.: คุยเรื่องงานอีกครั้ง")
+
+    def test_same_value_different_kind_is_not_duplicate(self):
+        """user_pref:อ่านหนังสือ กับ me_pref:อ่านหนังสือ = คนละคน ไม่ใช่ของซ้ำ"""
+        old = ["6 ส.ค.: คุย | user_pref:ชอบอ่านหนังสือ"]
+        new = "7 ส.ค.: คุย | me_pref:ชอบอ่านหนังสือ"
+        out = memory.dedupe_tags_against(new, old)
+        assert "ชอบอ่านหนังสือ" in out, "ฝั่งรอสเต้ยังไม่เคยเก็บ ต้องไม่ถูกตัด"
+
+    def test_no_old_summaries_keeps_everything(self):
+        """ความจำว่าง → ไม่ต้องตัดอะไร"""
+        new = "7 ส.ค.: คุยเรื่องงาน | user_fact:ทำงานหนัก"
+        assert memory.dedupe_tags_against(new, []) == new
+
+    def test_summary_without_tags_passes_through(self):
+        """summary แบบเก่าที่ไม่มี tag ต้องไม่พัง"""
+        new = "7 ส.ค.: คุยเรื่องงาน"
+        assert memory.dedupe_tags_against(new, ["6 ส.ค.: อะไรสักอย่าง"]) == new
+
+
+class TestProvenanceFactVsPref:
+    """แยก "สิ่งที่รอสเต้ทำให้" (fact) ออกจาก "สิ่งที่รอสเต้เป็น" (pref)
+
+    🚨 attribution error ที่วัดได้กับความจำจริง (11 ส.ค. 2569):
+    ถาม "รอสเต้ชอบอะไร" (ถามความชอบ) แล้วได้ "แนะนำร้านให้" ปนมาด้วยทุกครั้ง
+    ทั้งที่นั่นคือ *สิ่งที่รอสเต้ทำให้ผู้ใช้* ไม่ใช่ *ความชอบของรอสเต้*
+
+    ต้นเหตุ: split_owner_tags ทิ้งความต่างระหว่าง pref/fact ทั้งหมด เหลือแค่ user/me
+    แล้ว filter_by_owner ยัดรวมกันเป็น "รอสเต้: แนะนำร้านให้, ชอบหนังสือเก่า"
+    โมเดลจึงแยกไม่ออกว่าอันไหนคือความชอบ อันไหนคือการกระทำ
+
+    ตรงกับ "attribution error" ในกรอบ LTM ข้อ 7 — สับสนระหว่างสิ่งที่ผู้ใช้พูด
+    กับสิ่งที่โมเดลเคยเสนอ (ที่นี่คือสับสนระหว่างสิ่งที่รอสเต้เป็น กับสิ่งที่รอสเต้ทำ)
+    """
+
+    SUMMARIES = [
+        {"date": "2026-08-06",
+         "text": "6 ส.ค.: คุยเรื่องหนังสือ | me_pref:ชอบหนังสือเก่า me_fact:แนะนำร้านหนังสือให้"},
+        {"date": "2026-08-07",
+         "text": "7 ส.ค.: คุยเรื่องงาน | me_fact:แนะนำวิธีจัดการงาน user_fact:ทำงานหนัก"},
+    ]
+
+    def test_split_keeps_pref_and_fact_separate(self):
+        """split_owner_tags ต้องเก็บความต่าง pref/fact ไว้ ไม่ใช่ยุบรวม"""
+        parts = memory.split_owner_tags(self.SUMMARIES[0]["text"])
+        assert parts["me_pref"] == ["ชอบหนังสือเก่า"]
+        assert parts["me_fact"] == ["แนะนำร้านหนังสือให้"]
+
+    def test_backward_compatible_me_key_still_works(self):
+        """⚠️ ของเดิมต้องไม่พัง — key 'me'/'user' ยังต้องคืนทุกอันรวมกันเหมือนเดิม
+
+        มีที่เรียกใช้อยู่หลายจุด (filter_by_owner, recall_summaries, conflict_proto)
+        """
+        parts = memory.split_owner_tags(self.SUMMARIES[0]["text"])
+        assert set(parts["me"]) == {"ชอบหนังสือเก่า", "แนะนำร้านหนังสือให้"}
+
+    def test_preference_question_excludes_actions(self):
+        """ถาม "ชอบอะไร" ต้องไม่ได้ "แนะนำร้านให้" (สิ่งที่ทำ) ปนมา"""
+        got = memory.recall_summaries({"summaries": self.SUMMARIES}, "รอสเต้ชอบอะไร")
+        blob = "\n".join(got)
+        assert "ชอบหนังสือเก่า" in blob, "ความชอบจริงต้องยังอยู่"
+        assert "แนะนำร้าน" not in blob, "สิ่งที่รอสเต้ *ทำ* ไม่ควรตอบคำถามว่า *ชอบ* อะไร"
+
+    def test_action_question_still_gets_actions(self):
+        """แต่ถามว่า "ทำอะไรให้" ต้องได้ me_fact ตามปกติ"""
+        got = memory.recall_summaries({"summaries": self.SUMMARIES},
+                                      "รอสเต้เคยแนะนำอะไรให้ผมบ้าง")
+        assert any("แนะนำ" in s for s in got)
+
+    def test_user_side_unaffected(self):
+        """ฝั่งผู้ใช้ต้องทำงานเหมือนเดิม (ไม่ได้แก้ฝั่งนี้)"""
+        got = memory.recall_summaries({"summaries": self.SUMMARIES}, "ผมทำงานอะไร")
+        assert any("ทำงานหนัก" in s for s in got)
+
+
+class TestSummaryPromptExampleLeak:
+    """ตัวอย่างใน build_summary_prompt ต้องไม่ถูกโมเดลลอกมาเป็นความทรงจำจริง
+
+    🚨 วัดกับความจำจริง (11 ส.ค. 2569) — โมเดลลอกตัวอย่างใน prompt มาใส่ tag:
+        "me_fact:แนะนำร้านให้"    โผล่ 17/55 ครั้ง  ← ตัวอย่างใน prompt เป๊ะๆ
+        "me_pref:ชอบหนังสือเก่า"  โผล่ 14/55 ครั้ง  ← ตัวอย่างใน prompt เป๊ะๆ
+        "user_pref:ชอบนิยายสืบสวน" โผล่ 0 ครั้ง     ← ตัวอย่างฝั่ง user ไม่หลุด
+        "user_fact:กินเผ็ดไม่ได้"  โผล่ 0 ครั้ง
+
+    ทำไมหลุดเฉพาะฝั่ง me: กฎในprompt บอกว่า "รอสเต้จำความชอบของตัวเองได้ ให้ใส่ me_pref:"
+    ซึ่งกดดันให้โมเดล *ต้องหา* อะไรมาใส่ฝั่ง me ทุกครั้ง พอในบทไม่มีจริงก็ลอกตัวอย่างมาแทน
+    วัดได้: tag ฝั่งรอสเต้ว่าง 0/55 (ต้องมีเสมอ) แต่ฝั่งผู้ใช้ว่าง 17/55 (31%)
+
+    เป็นบั๊กตระกูลเดียวกับที่ persona.py:92-97 บันทึกไว้ — few-shot ที่มีข้อมูลปลอม
+    ทำให้โมเดลลอกข้อมูลนั้นแทนที่จะใช้ของจริง
+    """
+
+    def test_prompt_examples_are_marked_as_placeholders(self):
+        """ตัวอย่างใน prompt ต้องดูออกชัดว่าเป็นตัวอย่าง ไม่ใช่ข้อมูลจริงที่ลอกได้
+
+        แก้โดยเปลี่ยนตัวอย่างให้เป็น placeholder แบบ <...> ซึ่งลอกมาใส่ตรงๆ ไม่ได้
+        """
+        prompt = memory.build_summary_prompt([
+            {"role": "user", "content": "สวัสดี"},
+            {"role": "assistant", "content": "สวัสดีค่ะ"},
+        ])
+        leaked = [s for s in ("ชอบหนังสือเก่า", "แนะนำร้านให้") if s in prompt]
+        assert not leaked, (
+            f"prompt ยังมีตัวอย่างที่ลอกได้: {leaked} — วัดแล้วโมเดลลอกไปใช้จริง 17/55 ครั้ง")
+
+    def test_prompt_does_not_force_me_tags(self):
+        """ต้องไม่มีกฎที่กดดันให้ใส่ tag ฝั่งรอสเต้ทุกครั้ง
+
+        กฎเดิม "รอสเต้จำความชอบของตัวเองได้ ให้ใส่ me_pref:" ทำให้โมเดลเติมมั่วเมื่อไม่มีของจริง
+        (ฝั่ง me ว่าง 0/55 = ไม่เคยว่างเลย ซึ่งผิดธรรมชาติ)
+        """
+        prompt = memory.build_summary_prompt([{"role": "user", "content": "x"}])
+        assert "ถ้าไม่มีอย่าใส่" in prompt or "เท่าที่มีจริง" in prompt
+
+    def test_parse_rejects_known_placeholder_leak(self):
+        """ด่านสุดท้าย: ถ้าโมเดลยังลอกตัวอย่างมา ต้องกรองทิ้งตอน parse
+
+        MEMORY_EXPERIMENTS §4: "prompt แก้พฤติกรรมโมเดลไม่ได้ ต้องมี validation layer"
+        — แก้ prompt อย่างเดียวไม่พอ ต้องมีด่านตรวจด้วย
+        """
+        raw = ('{"summary":"คุยเรื่องหนังสือ",'
+               '"tags":["me_fact:แนะนำร้านให้","user_pref:ชอบอ่านนิยาย"]}')
+        out = memory.parse_summary_json(raw)
+        assert "แนะนำร้านให้" not in out, "tag ที่ลอกจากตัวอย่างต้องถูกกรองทิ้ง"
+        assert "ชอบอ่านนิยาย" in out, "tag จริงต้องยังอยู่"
+
+
+class TestSubstringFalseMatches:
+    """ภาษาไทยเขียนติดกัน — การเทียบ *สตริงย่อย* จับคำที่ไม่ได้ตั้งใจ
+
+    บทเรียนเดียวกับ _looks_like_hair ใน persona.py: "ผม" (สรรพนาม) vs "สระผม" (เส้นผม)
+    แก้ไม่ได้ด้วย blacklist เพราะคำที่เป็นไปได้มีไม่จำกัด — ต้อง *ตัดคำ* แล้วเทียบทั้งโทเคน
+
+    เจอ 2 จุดในระบบความจำ (11 ส.ค. 2569) วัดกับความจำจริงของผู้ใช้:
+      A2  "หน้าร้อน" มี "ร้อน" ∈ _LIVE_DATA_SIGNALS → ถูกตัดทิ้งเป็นคำถามข้อมูลสด
+          ทั้งที่คะแนนจริง = 2 (หยิบได้) — กระทบ 4/8 เคสที่ oracle พลาด
+      A3  "ขอบคุณ" มี "คุณ" → ไปแมตช์เนื้อความ summary แล้ว inject มั่ว 5 อัน
+          (ยืนยันด้วย git stash ว่ามีก่อนงานนี้ ไม่ใช่ของใหม่)
+    """
+
+    SUMMARIES = [
+        {"date": "2026-06-11", "text": "11 มิ.ย.: คุยเรื่องหน้าร้อน | user_pref:หน้าร้อนชอบไปทะเล"},
+        {"date": "2026-06-12", "text": "12 มิ.ย.: คุยเรื่องหน้าหนาว | user_pref:หน้าหนาวชอบไปภูเขา"},
+        {"date": "2026-06-13", "text": "13 มิ.ย.: คุยเรื่องหนังสือ | user_pref:ชอบอ่านนิยาย"},
+    ]
+
+    # ── A2: live-data gate ต้องไม่ตัดคำถามความจำที่บังเอิญมีสตริงย่อยตรงกัน ──
+    @pytest.mark.parametrize("question,expect", [
+        ("หน้าร้อนผมชอบไปเที่ยวไหน", "ทะเล"),
+        ("หน้าหนาวผมชอบไปไหน", "ภูเขา"),
+    ])
+    def test_season_question_is_not_treated_as_weather(self, question, expect):
+        """"หน้าร้อน"/"หน้าหนาว" = ฤดู ไม่ใช่คำถามสภาพอากาศวันนี้"""
+        got = memory.recall_summaries({"summaries": self.SUMMARIES}, question)
+        assert any(expect in s for s in got), f"{question!r} คืน {got}"
+
+    @pytest.mark.parametrize("question", [
+        "วันนี้อากาศเป็นไง", "พรุ่งนี้ฝนตกไหม", "ตอนนี้ร้อนไหม", "อากาศหนาวหรือยัง",
+    ])
+    def test_real_weather_questions_still_blocked(self, question):
+        """⚠️ regression guard: คำถามอากาศจริงต้องยังถูกกันเหมือนเดิม
+
+        MEMORY_EXPERIMENTS §6 บันทึกว่าเคยลบ gate ทิ้งแล้ว inject มั่ว 3/9 — ห้ามซ้ำรอย
+        """
+        assert memory.recall_summaries({"summaries": self.SUMMARIES}, question) == []
+
+    def test_weather_word_with_past_hint_still_recalls(self):
+        """มีคำใบ้อดีตชัดเจน → คำใบ้อดีตต้องชนะสัญญาณข้อมูลสด (พฤติกรรมเดิม ห้ามพัง)"""
+        summaries = [{"date": "2026-07-21", "text": "21 ก.ค.: คุยเรื่องอากาศ | user_fact:ไม่ชอบอากาศร้อน"}]
+        got = memory.recall_summaries({"summaries": summaries}, "จำได้ไหมว่าเคยคุยเรื่องอากาศ")
+        assert got
+
+    # ── A3: คำทักทาย/ขอบคุณ ไม่ใช่คำถาม ต้องไม่ trigger การดึงความทรงจำ ──
+    #
+    # ⚠️ แก้ความเข้าใจผิดของผมเอง: ตอนแรกวินิจฉัยว่าเป็นบั๊ก substring ("ขอบคุณ" มี "คุณ")
+    #    ตรวจจริงแล้ว _keywords("ขอบคุณนะ") = ['ขอบคุณ'] เป็นโทเคนเต็ม ไม่ใช่ substring
+    #    ที่มันแมตช์เพราะ summary จริงของผู้ใช้ *มีคำว่า "ขอบคุณ" อยู่จริง*
+    #    (ผู้ใช้เคยคุยเรื่องการเขียนคำกล่าวขอบคุณ) — retrieval ทำงานถูกต้องทุกประการ
+    #
+    #    ปัญหาจริงคือ: "ขอบคุณนะ" เป็น *คำทักทายทางสังคม* ไม่ใช่คำถาม จึงไม่ควรดึงความจำ
+    #    ตั้งแต่แรก — เป็นเรื่อง intrusiveness (กรอบ LTM ข้อ 7) ไม่ใช่เรื่องการจับคู่คำ
+    SOCIAL_SUMMARIES = [
+        {"date": "2026-08-06", "text": "6 ส.ค.: คุยเรื่องคำกล่าวขอบคุณ | user_pref:ต้องการคำพูดเป็นทางการ"},
+        {"date": "2026-08-07", "text": "7 ส.ค.: คุยเรื่องสวัสดีทักทาย | me_fact:แนะนำคำทักทาย"},
+    ]
+
+    @pytest.mark.parametrize("question", [
+        "ขอบคุณนะ", "ขอบคุณมากค่ะ", "สวัสดีครับ", "โอเคครับ", "เยี่ยมเลย",
+    ])
+    def test_social_pleasantry_does_not_inject_memory(self, question):
+        """คำขอบคุณ/ทักทาย ไม่ใช่คำถาม — ยัดความจำใส่ทำให้ UX แย่กว่าไม่มี memory
+
+        วัดกับความจำจริง: "ขอบคุณนะ" ดึงมา 5 อัน เพราะผู้ใช้เคยคุยเรื่องคำกล่าวขอบคุณจริง
+        """
+        got = memory.recall_summaries({"summaries": self.SOCIAL_SUMMARIES}, question)
+        assert got == [], f"{question!r} inject {len(got)} อัน"
+
+    def test_real_question_about_thanks_still_works(self):
+        """แต่ถ้าถามเรื่องคำขอบคุณจริงๆ ต้องยังดึงได้ (อย่าเหวี่ยงตัดทั้งคำ)"""
+        got = memory.recall_summaries({"summaries": self.SOCIAL_SUMMARIES},
+                                      "จำได้ไหมว่าเคยคุยเรื่องคำกล่าวขอบคุณ")
+        assert got
+
+
+class TestBroadRecallQuestions:
+    """คำถามทบทวนความจำแบบกว้าง — ไม่ระบุหัวข้อ แต่ขอให้เล่าว่าเคยคุยอะไรกันบ้าง
+
+    ⚠️ บั๊ก production ที่เจอตอนวัดกับความจำจริง (11 ส.ค. 2569):
+        "เราเคยคุยเรื่องอะไรกันบ้าง" → _keywords() คืน [] → recall คืน 0 อัน
+        ทั้งที่ผู้ใช้คนนั้นมี summary อยู่ 55 อัน
+
+    ต้นเหตุ: ทุกคำในประโยค (เรา/เคย/คุย/เรื่อง/อะไร/บ้าง) อยู่ใน _STOPWORDS ซึ่ง *ถูกต้อง*
+    สำหรับการให้คะแนน (คำพวกนี้แมตช์ทุก summary เท่าๆ กัน จึงไม่ช่วยจัดอันดับ) แต่พอไม่เหลือ
+    keyword เลย เงื่อนไข `score > 0` ก็เป็นจริงไม่ได้ → คืน [] เสมอ
+
+    วัดแล้ว 4 ใน 8 สำนวนที่คนใช้จริงเจอปัญหานี้ ที่บอทยังดูไม่พังเพราะ vector ครอบให้อยู่
+    """
+
+    SUMMARIES = [
+        {"date": "2026-08-06", "text": "6 ส.ค.: คุยเรื่องการอ่านหนังสือ | user_pref:สนใจหนังสือเก่า"},
+        {"date": "2026-08-07", "text": "7 ส.ค.: คุยเรื่องงานที่ทำ | user_fact:ทำงานหนัก"},
+        {"date": "2026-08-08", "text": "8 ส.ค.: คุยเรื่องอาหารเย็น | user_pref:ชอบต้มยำ"},
+    ]
+
+    @pytest.mark.parametrize("question", [
+        "เราเคยคุยเรื่องอะไรกันบ้าง",
+        "เคยคุยอะไรกันบ้าง",
+        "เราคุยเรื่องอะไรกัน",
+        "มีอะไรที่เราคุยกันบ้าง",
+    ])
+    def test_broad_recall_returns_something(self, question):
+        """ถามกว้างว่าเคยคุยอะไรกันบ้าง ต้องได้ summary กลับมา ไม่ใช่ []"""
+        got = memory.recall_summaries({"summaries": self.SUMMARIES}, question)
+        assert got, f"{question!r} คืน [] ทั้งที่มี summary อยู่ {len(self.SUMMARIES)} อัน"
+
+    def test_broad_recall_returns_most_recent_first(self):
+        """ไม่มี keyword ให้จัดอันดับ → เรียงตามใหม่สุดก่อน (ของล่าสุดเกี่ยวข้องที่สุด)"""
+        got = memory.recall_summaries({"summaries": self.SUMMARIES},
+                                      "เราเคยคุยเรื่องอะไรกันบ้าง")
+        assert "อาหารเย็น" in got[0], f"ควรได้ของใหม่สุดก่อน แต่ได้ {got[0]!r}"
+
+    def test_broad_recall_still_respects_owner_filter(self):
+        """ถามกว้างแต่เจาะจงฝั่ง ต้องยังกรองเจ้าของ (กันของอีกฝั่งปน)"""
+        summaries = [
+            {"date": "2026-08-06", "text": "6 ส.ค.: คุยเรื่องหนังสือ | user_pref:ชอบสืบสวน"},
+            {"date": "2026-08-07", "text": "7 ส.ค.: คุยเรื่องเพลง | me_pref:ชอบคลาสสิก"},
+        ]
+        got = memory.recall_summaries({"summaries": summaries}, "รอสเต้เคยคุยอะไรกับผมบ้าง")
+        assert got and all("สืบสวน" not in s for s in got)
+
+    @pytest.mark.parametrize("question", [
+        "วันนี้อากาศเป็นไง", "ราคาน้ำมันวันนี้", "สวัสดีค่ะ", "ขอบคุณนะ",
+    ])
+    def test_still_silent_when_not_asking_about_past(self, question):
+        """⚠️ regression guard: การแก้บั๊กนี้ต้องไม่ทำให้ inject มั่วในคำถามทั่วไป
+
+        เดิมเคยพลาดทางนี้มาแล้ว (MEMORY_EXPERIMENTS §6: ลบ PAST_HINTS gate ทิ้งเลย
+        ทำให้ inject มั่ว 3/9 ในคำถามข้อมูลสด) — ต้องคืน [] เหมือนเดิม
+        """
+        assert memory.recall_summaries({"summaries": self.SUMMARIES}, question) == []
+
+    def test_broad_recall_hint_does_not_fire_on_thanks(self):
+        """"ขอบคุณนะ" ต้องไม่ตรง _BROAD_RECALL_HINTS
+
+        ⚠️ หมายเหตุ: คำถามนี้ยัง inject อยู่ด้วยเหตุผล *อื่น* — token "ขอบคุณ" มีสตริงย่อย
+        "คุณ" ซึ่งไปแมตช์เนื้อความ summary ผ่านการให้คะแนนปกติ (เทียบแบบ substring)
+        เป็นบั๊กคนละตัวที่ *มีอยู่ก่อนแล้ว* (ยืนยันด้วย git stash: โค้ดเดิมก็คืน 5 อัน)
+        และเป็นบั๊กตระกูลเดียวกับ _looks_like_hair ใน persona.py — ภาษาไทยเขียนติดกัน
+        การเทียบ substring จึงจับคำที่ไม่ได้ตั้งใจ
+
+        เทสนี้ล็อกเฉพาะส่วนที่งานนี้เพิ่ม (hint list) ไม่ให้เป็นต้นเหตุซ้ำอีกทาง
+        """
+        assert not memory.wants_broad_recall("ขอบคุณนะ")
+        assert not memory.wants_broad_recall("ขอบคุณมากค่ะ")
+
+    def test_empty_keywords_without_recall_intent_stays_silent(self):
+        """keyword ว่าง *และ* ไม่มีสัญญาณทบทวนความจำ → ต้องไม่ inject
+
+        กันการแก้แบบเหวี่ยง "ถ้า keyword ว่างก็คืนทุกอัน" ซึ่งจะ inject ทุกข้อความสั้นๆ
+        """
+        assert memory._keywords("ค่ะ") == []
+        assert memory.recall_summaries({"summaries": self.SUMMARIES}, "ค่ะ") == []
+
+
 # ── แยกความทรงจำตามเจ้าของ (วิธี F + P3) ──────────────────────────────────────
 
 class TestOwnerSeparatedMemory:

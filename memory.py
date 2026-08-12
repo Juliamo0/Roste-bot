@@ -157,6 +157,46 @@ def _fact_superseded(f) -> bool:
     return isinstance(f, dict) and bool(f.get("superseded"))
 
 
+# คำที่ต้องมีในเนื้อหา ถึงจะรับว่าเป็นหมวด single-value นั้นจริง
+#
+# 🚨 บั๊กที่เจอตอนคุยกับรอสเต้จริง (11 ส.ค. 2569) — เทส 626 ตัว + bench n=117 จับไม่ได้เลย:
+#     ผู้ใช้พูด: "เกมที่ชอบที่สุดคือ Valorant เล่นมา 3 ปีแล้ว"
+#     โมเดลสกัด: [งาน] "เล่นเกมมา 3 ปีแล้ว"        ← จัดหมวดผิด
+#     ผลลัพธ์:   ไป supersede "ทำงานเป็นช่างซ่อมแอร์" ทิ้ง = ข้อมูลอาชีพจริงหาย
+# ทำซ้ำได้: สำนวน "…มา N ปีแล้ว" ทำให้โมเดลเดาเป็นหมวด "งาน" แม้เนื้อหาเป็นเรื่องเกม
+#
+# ตรวจเฉพาะ SINGLE_VALUE_CATEGORIES เพราะมีแค่หมวดพวกนี้ที่ supersede ของเก่าทิ้ง
+# หมวด multi-value สะสมได้อยู่แล้ว จัดผิดก็แค่รกไม่ถึงกับทำข้อมูลหาย → ไม่ต้องตรวจ
+#
+# ⚠️ ลิสต์คำไม่มีวันครบ (บทเรียนซ้ำจาก _HAIR_NEXT / _CHANGE_SIGNALS) จึงออกแบบให้
+# "พลาดไปทางปลอดภัย": ไม่ผ่านเกณฑ์ = ไม่ทิ้งข้อมูล แค่ลดเป็น category=None ซึ่งยังเก็บไว้
+# แต่ไม่มีสิทธิ์ supersede ใคร — เสีย precision ดีกว่าลบของจริงทิ้ง
+_CATEGORY_REQUIRED_HINTS = {
+    "งาน": ("ทำงาน", "อาชีพ", "เป็น", "ตำแหน่ง", "บริษัท", "ธุรกิจ", "ค้าขาย", "รับจ้าง",
+            "พนักงาน", "ช่าง", "หมอ", "ครู", "วิศวกร", "โปรแกรมเมอร์", "นักเรียน", "นักศึกษา"),
+    "ที่อยู่": ("อยู่", "บ้าน", "พัก", "ย้าย", "ภูมิลำเนา", "จังหวัด", "อาศัย"),
+    "ชื่อ": ("ชื่อ", "เรียก"),
+}
+
+# คำที่บอกว่า *ไม่ใช่* หมวดนั้นแน่ๆ แม้จะมีคำใบ้ข้างบนปนอยู่
+# ("ชอบเล่นเกม Valorant" มีคำว่า "เป็น" ไม่ได้ แต่ "เกมที่ชอบเป็น X" มี)
+_CATEGORY_EXCLUDE_HINTS = {
+    "งาน": ("เกม", "เล่น", "อ่านหนังสือ", "ดูหนัง", "ฟังเพลง", "งานอดิเรก", "ยามว่าง"),
+}
+
+
+def category_matches_text(category, text: str) -> bool:
+    """เนื้อหานี้เข้ากับหมวดที่โมเดลบอกจริงไหม — ตรวจเฉพาะหมวดที่ supersede ได้
+
+    คืน True เสมอสำหรับหมวด multi-value และหมวดที่ไม่มีเกณฑ์กำกับ (ไม่ไปขวางของเดิม)
+    """
+    if category not in _CATEGORY_REQUIRED_HINTS:
+        return True
+    if any(bad in text for bad in _CATEGORY_EXCLUDE_HINTS.get(category, ())):
+        return False
+    return any(h in text for h in _CATEGORY_REQUIRED_HINTS[category])
+
+
 def add_fact(mem, text, category=None):
     """เพิ่ม fact เข้าความจำ พร้อมกันซ้ำ + คุมเพดาน
 
@@ -172,6 +212,10 @@ def add_fact(mem, text, category=None):
     if not text:
         return False
     if category not in FACT_CATEGORIES:
+        category = None
+    # หมวด single-value ที่เนื้อหาไม่เข้าเกณฑ์ → ลดเป็นไม่มีหมวด (ยังเก็บ แต่ห้าม supersede)
+    # กันเคสจริง: [งาน]"เล่นเกมมา 3 ปีแล้ว" ไปลบ "ทำงานเป็นช่างซ่อมแอร์" ทิ้ง
+    if category and not category_matches_text(category, text):
         category = None
 
     facts = mem.setdefault("facts", [])
@@ -376,12 +420,13 @@ def build_summary_prompt(pairs: list) -> str:
         "คุณคือรอสเต้ กำลังบันทึกความทรงจำของตัวเอง — ต้องแยกให้ชัดว่าเรื่องไหนของใคร\n"
         '{"summary": "<หัวข้อที่คุย 1 บรรทัดสั้นๆ>", "tags": [...]}\n'
         "ชนิดของ tag (เลือกใช้เท่าที่มีจริงในบท):\n"
-        '- "user_pref:<สิ่งที่ผู้ใช้ชอบ/ไม่ชอบ>"   เช่น user_pref:ชอบนิยายสืบสวน\n'
-        '- "user_fact:<ข้อเท็จจริงของผู้ใช้>"      เช่น user_fact:กินเผ็ดไม่ได้\n'
-        '- "me_pref:<สิ่งที่รอสเต้เองชอบ/ไม่ชอบ>"  เช่น me_pref:ชอบหนังสือเก่า\n'
-        '- "me_fact:<สิ่งที่รอสเต้ทำหรือเป็น>"     เช่น me_fact:แนะนำร้านให้\n'
+        '- "user_pref:<สิ่งที่ผู้ใช้ชอบ/ไม่ชอบ>"\n'
+        '- "user_fact:<ข้อเท็จจริงของผู้ใช้>"\n'
+        '- "me_pref:<สิ่งที่รอสเต้เองชอบ/ไม่ชอบ>"\n'
+        '- "me_fact:<สิ่งที่รอสเต้ทำหรือเป็น>"\n'
         "กฎ:\n"
-        "- รอสเต้จำความชอบของตัวเองได้ ให้ใส่ me_pref: ถ้ารอสเต้บอกว่าชอบ/ไม่ชอบอะไรในบท\n"
+        "- ใส่ tag เฉพาะเรื่องที่ *มีอยู่จริงในบทสนทนาข้างล่าง* เท่านั้น ถ้าไม่มีอย่าใส่\n"
+        "- ฝั่งไหนไม่มีอะไรน่าจำ ปล่อยว่างได้ ไม่ต้องหาอะไรมาเติมให้ครบทุกฝั่ง\n"
         "- ห้ามสลับเจ้าของ: สิ่งที่ผู้ใช้พูดต้องเป็น user_* สิ่งที่รอสเต้พูดต้องเป็น me_*\n"
         "- ห้ามบันทึกข้อมูลสดที่หมดอายุ (ราคาน้ำมัน พยากรณ์อากาศ เวลา)\n"
         "- ห้ามแต่งชื่อเฉพาะ/ตัวเลขที่ไม่ได้อยู่ในบท\n"
@@ -415,9 +460,111 @@ def parse_summary_json(raw: str) -> str:
     if not isinstance(tags, list):
         tags = []
     clean = [str(t).strip() for t in tags if str(t).strip()]
+    clean = [t for t in clean if not _is_leaked_example(t)]
+    # ตัด tag ที่พูดถึงตัวการสนทนาเอง ("เคยคุยเรื่อง…") — ดู is_meta_summary_tag
+    clean = [t for t in clean
+             if not ((m := _OWNER_TAG_RE.match(t.strip()))
+                     and is_meta_summary_tag(t.strip()[m.end():]))]
     if not head and not clean:
         return ""
     return f"{head} | {' '.join(clean)}" if clean else head
+
+
+# ข้อความที่เคยเป็น "ตัวอย่าง" ใน build_summary_prompt แล้วโมเดลลอกมาใช้จริง
+#
+# 🚨 วัดกับความจำจริง: "แนะนำร้านให้" โผล่ 17/55 ครั้ง · "ชอบหนังสือเก่า" 14/55 ครั้ง
+# ทั้งที่เป็นแค่ตัวอย่างใน prompt — ส่วนตัวอย่างฝั่ง user ("ชอบนิยายสืบสวน"/"กินเผ็ดไม่ได้")
+# ไม่หลุดเลยสักครั้ง เพราะกฎเดิมกดดันให้ *ต้องมี* tag ฝั่ง me ทุกครั้ง
+# (วัดได้: ฝั่ง me ว่าง 0/55 แต่ฝั่ง user ว่าง 17/55) พอไม่มีของจริงก็ลอกตัวอย่างมาแทน
+#
+# แก้ที่ prompt แล้ว (ถอดตัวอย่าง + เลิกบังคับให้ครบทุกฝั่ง) แต่ MEMORY_EXPERIMENTS §4
+# เตือนซ้ำ 3 ครั้งว่า "prompt แก้พฤติกรรมโมเดลไม่ได้ ต้องมี validation layer" — นี่คือด่านนั้น
+#
+# ⚠️ ลิสต์นี้ตั้งใจให้แคบมาก: เฉพาะข้อความที่ *เคยเป็นตัวอย่างใน prompt จริงๆ* เท่านั้น
+# ไม่ใช่ blacklist คำทั่วไป เพราะถ้าผู้ใช้คุยเรื่องร้านอาหารจริง "แนะนำร้าน" ก็ควรถูกเก็บได้
+# จึงเทียบแบบ *ตรงเป๊ะทั้ง tag* ไม่ใช่ substring
+_LEAKED_EXAMPLE_VALUES = {
+    "แนะนำร้านให้",
+    "ชอบหนังสือเก่า",
+}
+
+
+# คำที่บอกว่า tag นี้พูดถึง "ตัวการสนทนา" ไม่ใช่ข้อเท็จจริงของใคร
+#
+# 🚨 บั๊กที่เจอตอนคุยจริง: ผู้ใช้ถาม "เราเคยคุยเรื่องอะไรกันบ้าง" รอสเต้ตอบไป
+# แล้วรอบสรุปถัดมาเก็บคำตอบนั้นเป็น `user_fact:เคยคุยเรื่องงาน ความชอบเกม และอาหาร`
+# = เอาคำพูดของตัวเองมาเก็บเป็นข้อเท็จจริงของผู้ใช้ (attribution error ตอนเขียน)
+#
+# อันตรายเพราะสะสม: ทุกครั้งที่ผู้ใช้ถามเรื่องความจำ จะได้ tag แบบนี้เพิ่มอีกอัน
+# ความทรงจำจะค่อยๆ เต็มไปด้วย "บันทึกว่าเคยบันทึกอะไร" แทนข้อมูลจริง
+#
+# ⚠️ ต้องระวังไม่ให้ตัดของจริง: "เบื่อเกมยิงปืน หันมาเล่นเกมปลูกผัก" มีคำว่า "เล่น"
+# แต่ไม่ใช่ meta — จึงเทียบเฉพาะคำที่ *ขึ้นต้น* ด้วยกริยาพูดคุย ไม่ใช่มีคำนั้นที่ไหนก็ได้
+_META_TAG_PREFIXES = (
+    "เคยคุย", "คุยกัน", "คุยเรื่อง", "พูดคุย", "สนทนา", "ถามเรื่อง", "ถามถึง",
+    "เล่าเรื่อง", "อธิบายเรื่อง", "แลกเปลี่ยน",
+)
+
+
+def is_meta_summary_tag(value: str) -> bool:
+    """tag นี้พูดถึงตัวการสนทนาเอง (ไม่ใช่ข้อเท็จจริงของใคร) หรือเปล่า"""
+    v = value.strip()
+    return any(v.startswith(p) for p in _META_TAG_PREFIXES)
+
+
+def _is_leaked_example(tag: str) -> bool:
+    """tag นี้เป็นข้อความที่ลอกมาจากตัวอย่างใน prompt หรือเปล่า"""
+    m = _OWNER_TAG_RE.match(tag.strip())
+    if not m:
+        return False
+    return tag.strip()[m.end():].strip() in _LEAKED_EXAMPLE_VALUES
+
+
+# จำนวน summary ล่าสุดที่ใช้เทียบหาของซ้ำ
+#
+# ไม่เทียบทั้ง 100 อันเพราะ (1) เปลืองเวลาโดยไม่จำเป็น (2) เรื่องที่พูดเมื่อ 3 เดือนก่อน
+# แล้วพูดซ้ำวันนี้ ถือว่า "ย้ำ" ซึ่งมีความหมาย ไม่ใช่ของซ้ำที่ต้องตัด
+_DEDUPE_LOOKBACK = 20
+
+
+def dedupe_tags_against(new_summary: str, old_texts) -> str:
+    """ตัด tag ที่มีอยู่แล้วในความจำออกจาก summary ใหม่ — คืนบรรทัดที่ตัดแล้ว
+
+    ⚠️ กรอบ LTM ข้อ 2 (Deduplication): "ข้อเท็จจริงเดิมที่พูดซ้ำไม่ควรกลายเป็น 5 records"
+    วัดกับความจำจริง: tag ซ้ำ 31/144 = 22% (นับเฉพาะที่ไม่ใช่ของลอกจาก prompt)
+        4x user_pref:ต้องการคำพูดเป็นทางการ · 3x user_fact:ทำงานหนัก
+
+    ต้นเหตุ: chat.py เขียนด้วย `summaries.append(entry)` ตรงๆ ไม่เทียบของเดิมเลย
+    ต่างจากฝั่ง facts ที่ add_fact() กันซ้ำมาตั้งแต่ต้น
+
+    ⚠️ กันซ้ำ *ระดับ tag* ไม่ใช่ระดับบรรทัด — บรรทัดเดียวมีหลาย tag และหัวเรื่องต่างกัน
+    (เป็นคนละบทสนทนา) ถ้าลบทั้งบรรทัดจะเสียหัวเรื่องที่ยังมีค่าไปด้วย
+
+    เทียบแบบ "ชนิด+ค่า ตรงกันเป๊ะ" เท่านั้น — user_pref:อ่านหนังสือ กับ me_pref:อ่านหนังสือ
+    เป็นคนละคน ไม่ใช่ของซ้ำ ส่วนคำที่ใกล้เคียงกัน ("แนะนำคำกล่าว" vs "แนะนำคำกล่าวขอบคุณ")
+    ไม่ตัด เพราะการเดาว่าอันไหน "เหมือนพอ" คือปัญหาเดียวกับ conflict resolution ที่วัดแล้วว่ายาก
+    """
+    marks = list(_OWNER_TAG_RE.finditer(new_summary))
+    if not marks or not old_texts:
+        return new_summary
+
+    seen = set()
+    for t in list(old_texts)[-_DEDUPE_LOOKBACK:]:
+        text = t["text"] if isinstance(t, dict) else t
+        p = split_owner_tags(text)
+        for kind in ("user_pref", "user_fact", "me_pref", "me_fact"):
+            for v in p[kind]:
+                seen.add((kind, v))
+
+    head = new_summary.split("|", 1)[0].strip()
+    kept = []
+    for i, mk in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(new_summary)
+        seg = new_summary[mk.end():end].strip(" |,")
+        kind = mk.group(1).rstrip(":")
+        if seg and (kind, seg) not in seen:
+            kept.append(f"{kind}:{seg}")
+    return f"{head} | {' '.join(kept)}" if kept else head
 
 
 def build_verify_prompt(pairs: list, summary: str) -> str:
@@ -465,13 +612,18 @@ def split_owner_tags(text: str) -> dict:
     """
     head = text.split("|", 1)[0].strip()
     marks = list(_OWNER_TAG_RE.finditer(text))
-    user, me = [], []
+    out = {"summary": head, "user": [], "me": [],
+           "user_pref": [], "user_fact": [], "me_pref": [], "me_fact": []}
     for i, mk in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
         seg = text[mk.end():end].strip(" |,")
-        if seg:
-            (me if mk.group(1).startswith("me") else user).append(seg)
-    return {"summary": head, "user": user, "me": me}
+        if not seg:
+            continue
+        kind = mk.group(1).rstrip(":")            # user_pref / me_fact / ...
+        out["me" if kind.startswith("me") else "user"].append(seg)
+        if kind in out:                           # แยกละเอียดอีกชั้น (ดู B1 ด้านล่าง)
+            out[kind].append(seg)
+    return out
 
 
 def guess_owner(question: str) -> str:
@@ -490,21 +642,44 @@ def guess_owner(question: str) -> str:
     return "any"
 
 
-def filter_by_owner(texts, whose: str) -> list:
+# คำที่บอกว่าผู้ใช้ถามถึง "ความชอบ/นิสัย" ไม่ใช่ "สิ่งที่ทำให้"
+#
+# ⚠️ B1 (attribution error) — วัดกับความจำจริง: ถาม "รอสเต้ชอบอะไร" แล้วได้
+# "แนะนำร้านให้" ปนมาทุกครั้ง ทั้งที่นั่นคือ *สิ่งที่รอสเต้ทำให้ผู้ใช้* ไม่ใช่ *ความชอบ*
+# เพราะ filter_by_owner ยัด me_pref กับ me_fact รวมกันเป็น "รอสเต้: ..." ก้อนเดียว
+#
+# ตรงกับ "attribution error" ในกรอบ LTM: สับสนระหว่างสิ่งที่เป็น กับสิ่งที่ทำ
+_PREF_QUESTION_HINTS = ("ชอบ", "ไม่ชอบ", "โปรด", "ถนัด", "สนใจ", "เกลียด", "นิสัย", "ทัศนคติ")
+_ACTION_QUESTION_HINTS = ("แนะนำ", "ทำอะไรให้", "ช่วยอะไร", "บอกอะไร", "สอน")
+
+
+def asks_about_preference(question: str) -> bool:
+    """คำถามนี้ถามถึง "ความชอบ/นิสัย" ล้วนๆ (ไม่ได้ถามว่าทำอะไรให้) หรือเปล่า"""
+    if any(h in question for h in _ACTION_QUESTION_HINTS):
+        return False        # ถามทั้งสองอย่างปนกัน → ไม่กรอง (ปลอดภัยกว่า)
+    return any(h in question for h in _PREF_QUESTION_HINTS)
+
+
+def filter_by_owner(texts, whose: str, kind: str = None) -> list:
     """กรองรายการ summary ให้เหลือเฉพาะฝั่งที่ถาม แล้วเขียนใหม่ให้อ่านง่าย
 
     whose='any' → คืนตามเดิมทั้งหมด
     บรรทัดที่ไม่มี tag ฝั่งที่ถาม จะถูกตัดทิ้ง — รวมถึง summary แบบเก่าที่ไม่มี tag เลย
     (ตั้งใจ: ถามเจาะจงฝั่งแล้วไม่มีข้อมูลฝั่งนั้น ควรตอบว่าจำไม่ได้ ดีกว่าเอาของอีกฝั่งมาตอบ)
+
+    kind='pref' → เอาเฉพาะ <whose>_pref (ความชอบ) ไม่เอา _fact (สิ่งที่ทำ) — ดู B1
+    kind=None   → เอาทั้งหมดเหมือนเดิม (พฤติกรรมเดิม ไม่กระทบผู้เรียกที่มีอยู่)
     """
     if whose not in ("user", "me"):
         return list(texts)
     label = "ผู้ใช้" if whose == "user" else "รอสเต้"
+    key = f"{whose}_{kind}" if kind else whose
     out = []
     for t in texts:
         parts = split_owner_tags(t)
-        own = parts[whose]
+        own = parts.get(key) or []
         if not own:
+            # ไม่มีของชนิดที่ขอ — ถ้ากรองชนิดอยู่ให้ข้ามไปเลย (ตอบว่าจำไม่ได้ดีกว่าตอบผิดชนิด)
             continue
         out.append(f"{parts['summary']} — {label}: {', '.join(own)}")
     return out
@@ -534,7 +709,54 @@ _LIVE_DATA_SIGNALS = (
 )
 
 
-def recall_summaries(mem, user_message: str) -> list:
+def has_live_data_signal(text: str) -> bool:
+    """ข้อความนี้ถามข้อมูลสด (อากาศ/ราคาน้ำมัน/ไฟดับ) หรือเปล่า — เทียบระดับ *โทเคน*
+
+    ⚠️ เดิมเช็คด้วย `any(s in text for s in _LIVE_DATA_SIGNALS)` ซึ่งเป็นการเทียบสตริงย่อย
+    ภาษาไทยเขียนติดกัน จึงจับคำที่ไม่ได้ตั้งใจ — วัดกับความจำจริงพบว่า:
+        "หน้าร้อนผมชอบไปเที่ยวไหน"  →  "ร้อน" อยู่ใน "หน้าร้อน"  →  ถูกตัดเป็นคำถามอากาศ
+        คืน [] ทันที **ทั้งที่คะแนนจับคู่จริง = 2 (หยิบได้)**
+    โดนหมด: หน้าร้อน / หน้าหนาว / หน้าฝน / ของร้อนๆ — คิดเป็น 4 ใน 8 เคสที่ oracle พลาด
+
+    ต้นเหตุเดียวกับ _looks_like_hair ใน persona.py ("ผม" สรรพนาม vs "สระผม" เส้นผม) และกับ
+    บั๊ก keyword recall เดิม — ทางแก้เดียวกัน: **ตัดคำก่อนแล้วเทียบทั้งโทเคน**
+
+    ทำไมไม่ใช้ blacklist ("หน้าร้อน" ไม่นับ): คำประสมที่มี "ร้อน/หนาว/ฝน" มีไม่จำกัด
+    (หน้าร้อน, ของร้อน, ใจร้อน, ร้อนใจ, ร้อนวิชา...) blacklist ครอบได้แค่ที่นึกออก
+    — บทเรียนตรงกับ MEMORY_EXPERIMENTS §4 "อย่าจับคู่ประธาน+กริยา กริยาไม่มีวันครบ"
+    """
+    toks = set(_keywords(text, expand=False))
+    if toks & set(_LIVE_DATA_SIGNALS):
+        return True
+    # tokenizer พังแล้วถอยไป split() → คืนทั้งประโยคเป็นก้อนเดียว ทำให้ set ข้างบนไม่มีวันตรง
+    # กรณีนั้นถอยไปใช้การเทียบสตริงย่อยแบบเดิม (ยอมพลาดทาง false positive ดีกว่าไม่กันเลย)
+    if not toks:
+        return any(s in text for s in _LIVE_DATA_SIGNALS)
+    return False
+
+
+# ข้อความทักทาย/ขอบคุณ/รับคำ — เป็นการเข้าสังคม ไม่ใช่คำถาม จึงไม่ควรดึงความทรงจำ
+#
+# ⚠️ เจอจากการวัดกับความจำจริง: "ขอบคุณนะ" ดึง summary มา 5 อัน เพราะผู้ใช้เคยคุยเรื่อง
+# "การเขียนคำกล่าวขอบคุณ" จริง → โทเคน "ขอบคุณ" แมตช์ตรงเป๊ะ **retrieval ทำงานถูกต้อง**
+# แต่ผลลัพธ์ผิดในระดับ UX: ผู้ใช้แค่ขอบคุณ ไม่ได้ถามอะไร การยัดความทรงจำเข้าไปคือ
+# intrusiveness (กรอบ LTM ข้อ 7) ซึ่งทำให้ประสบการณ์แย่กว่าไม่มี memory เลย
+#
+# เทียบทั้งข้อความหลังตัดช่องว่าง (ไม่ใช่ substring) — "ขอบคุณนะ" ใช่ แต่
+# "จำได้ไหมว่าเคยคุยเรื่องคำกล่าวขอบคุณ" ไม่ใช่ เพราะเป็นประโยคยาวที่มีเจตนาถามจริง
+_SOCIAL_ONLY_RE = re.compile(
+    r"^(ขอบคุณ|ขอบใจ|thx|thanks?|สวัสดี|หวัดดี|ดีจ้า|โอเค|โอเคร|ok|okay|เยี่ยม|เจ๋ง|"
+    r"สุดยอด|เข้าใจแล้ว|ได้เลย|จ้า|ครับ|ค่ะ|คะ)"
+    r"[\s่้๊๋]*(มาก|เลย|นะ|น่ะ|จ้า|ครับ|ค่ะ|คะ|เด้อ|เน้อ|ๆ|!|~|\.)*$",
+    re.IGNORECASE)
+
+
+def is_social_pleasantry(text: str) -> bool:
+    """ข้อความนี้เป็นแค่คำทักทาย/ขอบคุณ ไม่ใช่คำถาม → ไม่ต้องดึงความทรงจำ"""
+    return bool(_SOCIAL_ONLY_RE.match(text.strip()))
+
+
+def recall_summaries(mem, user_message: str, top_k: int = 5) -> list:
     """คืน summaries ที่เกี่ยวข้อง — กรองเหลือเฉพาะฝั่งเจ้าของที่ถูกถามแล้ว
 
     ⚠️ เดิมด่านแรกเช็คว่า "มีคำใน PAST_HINTS ไหม ไม่มีก็คืน [] ทันที" — วัดแล้วพบว่าด่านนี้
@@ -564,8 +786,12 @@ def recall_summaries(mem, user_message: str) -> list:
 
     # กันคำถามข้อมูลสด — เว้นแต่มีคำใบ้อดีตชัดเจนปนอยู่ด้วย ("เมื่อวานคุยเรื่องอากาศไหม"
     # = ถามบทสนทนาเก่าจริง ไม่ใช่ถามพยากรณ์) ให้คำใบ้อดีตชนะสัญญาณข้อมูลสดเสมอ
-    if (any(s in user_message for s in _LIVE_DATA_SIGNALS)
+    if (has_live_data_signal(user_message)
             and not any(h in user_message for h in PAST_HINTS)):
+        return []
+
+    # แค่ทักทาย/ขอบคุณ ไม่ได้ถามอะไร → ไม่ต้องยัดความทรงจำ (ดู is_social_pleasantry)
+    if is_social_pleasantry(user_message):
         return []
 
     # ตัดคำไทยจริง + ขยายคำพ้อง — split() ตามช่องว่างใช้กับภาษาไทยไม่ได้ (ดู _keywords)
@@ -595,10 +821,61 @@ def recall_summaries(mem, user_message: str) -> list:
             scored.append((score, text))
 
     if not scored:
+        # ไม่มี summary ไหนมีคำตรงเลย — อาจเป็นเพราะคำถามไม่มี keyword ให้จับคู่ตั้งแต่แรก
+        # ("เราเคยคุยเรื่องอะไรกันบ้าง" ทุกคำเป็น stopword) ถ้าผู้ใช้ขอทบทวนความจำจริง
+        # ให้คืนของล่าสุดแทนการเงียบ — ดู recall_recent_summaries
+        if wants_broad_recall(user_message):
+            return recall_recent_summaries(mem, user_message)
         return []
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return filter_by_owner([t for _, t in scored[:5]], whose)
+    # ถามความชอบล้วนๆ → เอาเฉพาะ _pref กันคำตอบแบบ "รอสเต้ชอบ แนะนำร้านให้" (B1)
+    kind = "pref" if asks_about_preference(user_message) else None
+    return filter_by_owner([t for _, t in scored[:top_k]], whose, kind)
+
+
+# คำที่บอกว่า "ขอให้ทบทวนความจำ" โดยไม่ได้ระบุหัวข้อ
+#
+# ต่างจาก PAST_HINTS ตรงที่ PAST_HINTS ใช้ตัดสินว่า *ถามอดีตไหม* ส่วนชุดนี้ใช้ตัดสินว่า
+# *ขอให้เล่าว่าเคยคุยอะไรกันบ้าง* ซึ่งเป็นคำถามที่ไม่มีหัวข้อให้จับคู่เลย
+_BROAD_RECALL_HINTS = (
+    "คุยอะไร", "คุยเรื่องอะไร", "คุยกันบ้าง", "คุยอะไรกัน", "คุยกันเรื่องไหน",
+    "เคยคุย", "คุยกันมา", "คุยกันไป", "เล่าเรื่องที่เคย", "ทบทวน",
+)
+
+
+def wants_broad_recall(user_message: str) -> bool:
+    """ผู้ใช้ขอให้เล่าว่าเคยคุยอะไรกันบ้าง (ไม่ระบุหัวข้อ) ใช่ไหม"""
+    return any(h in user_message for h in _BROAD_RECALL_HINTS)
+
+
+def recall_recent_summaries(mem, user_message: str, limit: int = 5) -> list:
+    """คืน summary ล่าสุดสำหรับ "คำถามทบทวนความจำแบบกว้าง" ที่ไม่มี keyword ให้จับคู่
+
+    ⚠️ บั๊ก production ที่เจอตอนวัดกับความจำจริง (11 ส.ค. 2569):
+        "เราเคยคุยเรื่องอะไรกันบ้าง" → _keywords() คืน [] → recall_summaries คืน 0 อัน
+        ทั้งที่ผู้ใช้คนนั้นมี summary อยู่ 55 อัน (วัด 4 ใน 8 สำนวนที่คนใช้จริงเจอปัญหานี้)
+
+    ต้นเหตุ: ทุกคำในประโยค (เรา/เคย/คุย/เรื่อง/อะไร/บ้าง) อยู่ใน _STOPWORDS ซึ่งถูกต้อง
+    สำหรับ *การให้คะแนน* (คำพวกนี้แมตช์ทุก summary เท่ากันหมด จึงไม่ช่วยจัดอันดับ)
+    แต่พอไม่เหลือ keyword เลย เงื่อนไข `score > 0` ก็เป็นจริงไม่ได้ → คืน [] เสมอ
+
+    ทำไมต้องแยกฟังก์ชัน ไม่แก้ในลูปให้คะแนน: การให้ stopword มีคะแนนจะทำให้ทุก summary
+    ได้คะแนนเท่ากันหมดในคำถาม *ทุกแบบ* แล้วอันดับจะมั่วไปหมด — ปัญหาเดียวกับที่คอมเมนต์
+    _STOPWORDS อธิบายไว้ตั้งแต่ต้น ตรงนี้จึงเปลี่ยน *เกณฑ์จัดอันดับ* เป็น "ใหม่สุดก่อน" แทน
+
+    ⚠️ ไม่ใช้ทางลัด "keyword ว่าง = คืนทุกอัน" เพราะจะ inject ทุกข้อความสั้นๆ ("ค่ะ", "นะ")
+    ต้องมีสัญญาณว่าผู้ใช้ *ขอให้ทบทวน* จริงเท่านั้น
+    """
+    summaries = mem.get("summaries", [])
+    if not summaries:
+        return []
+    whose = guess_owner(user_message)
+    texts = [e["text"] if isinstance(e, dict) else e for e in summaries]
+    if whose in ("user", "me") and not any(_OWNER_TAG_RE.search(t) for t in texts):
+        whose = "any"                      # ทางถอยเดียวกับ recall_summaries
+    # ไม่มี keyword ให้จัดอันดับ → ใหม่สุดเกี่ยวข้องที่สุด (summaries เรียงเก่า→ใหม่)
+    return filter_by_owner(list(reversed(texts))[:limit], whose)
 
 
 # จับประโยค "ฉันชื่อ X" / "ผมชื่อ X" / "หนูชื่อ X" ที่บ่งบอกชื่อที่ผู้ใช้อยากให้เรียก
