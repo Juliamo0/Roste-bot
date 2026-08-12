@@ -137,10 +137,14 @@ async def auto_remember(user_id: int, user_name: str, user_message: str):
         }
         # constrained decoding — ข้ามการ "คิดออกเสียง" ของโมเดลตระกูล reasoning
         # (qwen3:4b ไม่เคารพ think:False เขียนการคิดลง content 1,022 tokens = ช้า 13-30s
-        #  บังคับ format:json แล้วเหลือ 0.8s) ผลที่ได้เป็น object เดี่ยว ไม่ใช่ array —
-        # parse_extracted_facts รองรับทั้งสองแบบแล้ว
+        #  บังคับ format แล้วเหลือ ~1s)
+        #
+        # ใช้ **JSON schema** ไม่ใช่ "json" เฉยๆ — เพราะแบบหลวมทำให้โมเดลคืน object เดี่ยว
+        # แล้วหยุดหลัง fact แรก ประโยคที่มีหลายข้อมูลจึงเก็บครบแค่ 1/5
+        # ("ผมชื่อสมชาย อยู่ขอนแก่น" ได้แค่ชื่อ) — schema บังคับ array แก้ได้ 5/5
+        # ดู memory.EXTRACT_JSON_SCHEMA
         if EXTRACT_FORMAT_JSON:
-            payload["format"] = "json"
+            payload["format"] = memory.EXTRACT_JSON_SCHEMA
         data = await _get_json_post(payload, timeout=120)
         output = data.get("message", {}).get("content", "")
         facts = memory.parse_extracted_facts(output)  # [{"category":..., "text":...}, ...]
@@ -514,13 +518,21 @@ async def summarize_and_verify(user_id: int, pairs: list):
             final_text = memory.dedupe_tags_against(final_text, summaries)
             entry = {"date": str(d), "text": f"{d.day} {_THAI_MONTHS[d.month]}: {final_text}"}
             summaries.append(entry)
-            mem["summaries"] = summaries[-memory.MAX_SUMMARIES:]
+            kept = summaries[-memory.MAX_SUMMARIES:]
+            # summary ที่ถูกตัดทิ้งตามเพดาน — ต้องลบออกจาก vector ด้วย ไม่งั้นสองสโตร์ drift
+            # (เดิมไม่มี delete เลย: JSON ตัดที่ 100 แต่ Chroma เก็บตลอดกาล → RAG ดึงของที่
+            #  ระบบ "ลืม" ไปแล้วกลับมาได้ ยืนยันด้วย tools/probe_vector_drift.py)
+            dropped = [e["text"] for e in summaries[:len(summaries) - len(kept)]]
+            mem["summaries"] = kept
             save_memory(user_id, mem)
             # เนื้อหาสรุปจริง (PII) แยกไป DEBUG — INFO แค่ยืนยันว่าสรุปเสร็จ
             logger.info("   📝 สรุปบทสนทนาเก่าเสร็จแล้ว")
             logger.debug(f"   📝 เนื้อหาที่สรุป: {entry['text']}")
         # 🔎 เก็บลง vector memory ด้วย — ให้ค้นแบบความหมาย (semantic) ได้ทีหลัง
+        #    (JSON เป็น source of truth · vector เป็นดัชนีที่สร้างใหม่ได้เสมอ)
         await vectormemory.add_conversation_memory(user_id, entry["text"])
+        if dropped:
+            await vectormemory.delete_conversation_memory(user_id, dropped)
     except Exception as e:
         # logger.exception() แนบ traceback ให้อัตโนมัติ + เข้าไฟล์ log (เดิม print_exc() ไป stderr เฉยๆ)
         logger.exception(f"   ⚠️ สรุปบทพลาด (ไม่กระทบการตอบ): {type(e).__name__}: {e}")

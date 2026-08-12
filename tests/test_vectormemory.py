@@ -246,3 +246,90 @@ class TestPdfPerUserFileCap:
 
         mock_coll.delete.assert_called_once_with(where={"filename": "old.pdf"})
         mock_coll.upsert.assert_called_once()
+
+
+# ── 6) D1: สองสโตร์ไม่ตรงกัน (vector drift) ───────────────────────────────────
+
+class TestStableConversationMemoryId:
+    """id ของ summary ใน vector store ต้อง **เสถียร** ผูกกับเนื้อหา ไม่ใช่เวลาที่เขียน
+
+    🚨 บั๊กที่ยืนยันด้วยตัวเลข (tools/probe_vector_drift.py) และเจอในเครื่องจริง:
+        id = int(time.time()*1000) → ไม่มีวันซ้ำ → `upsert` ทำงานเป็น `insert` เสมอ
+        เขียนข้อความเดิมซ้ำ = ได้แถวใหม่ (1 → 2 แถว)
+        JSON ตัดที่ MAX_SUMMARIES แต่ Chroma ไม่มี delete → เก็บตลอดกาล
+    วัดกับข้อมูลจริง: chroma 53 vs json 55 (ผู้ใช้หลัก) = drift จริง
+
+    ทางแก้ตามที่งานวิจัย/แนวปฏิบัติระบุ:
+    "every write should carry a stable, deterministic key derived from the source record,
+     and the target should treat that key as unique — this makes upsert idempotent"
+    (Qdrant/Postgres sync guide) + รูปแบบ "source of truth + derived index":
+    JSON เป็นแหล่งความจริง · vector เป็นดัชนีที่สร้างใหม่ได้เสมอ
+    """
+
+    def test_id_is_derived_from_text(self):
+        """id เดียวกันสำหรับข้อความเดียวกัน (deterministic)"""
+        a = vectormemory._summary_id("1 ส.ค.: คุยเรื่องหนังสือ")
+        b = vectormemory._summary_id("1 ส.ค.: คุยเรื่องหนังสือ")
+        assert a == b and len(a) > 0
+
+    def test_different_text_different_id(self):
+        assert (vectormemory._summary_id("ก") != vectormemory._summary_id("ข"))
+
+    def test_id_stable_across_whitespace(self):
+        """เว้นวรรคต่างกันเล็กน้อยไม่ควรกลายเป็นคนละ record"""
+        assert (vectormemory._summary_id(" คุยเรื่องหนังสือ ")
+                == vectormemory._summary_id("คุยเรื่องหนังสือ"))
+
+
+class TestConversationMemoryDelete:
+    """ต้องลบ summary ออกจาก vector store ได้ — ไม่งั้น JSON ตัดแล้ว Chroma ยังเก็บ"""
+
+    def test_delete_api_exists(self):
+        assert hasattr(vectormemory, "delete_conversation_memory")
+
+    def test_delete_uses_same_id_scheme(self):
+        """ลบด้วยข้อความเดิมต้องได้ id เดียวกับตอนเขียน (ไม่งั้นลบไม่โดน)"""
+        coll = MagicMock()
+        with patch.object(vectormemory, "_convmem_collection", return_value=coll):
+            asyncio.run(vectormemory.delete_conversation_memory(1, ["สรุปเรื่องหนึ่ง"]))
+        coll.delete.assert_called_once()
+        called_ids = coll.delete.call_args.kwargs.get("ids")
+        assert called_ids == [vectormemory._summary_id("สรุปเรื่องหนึ่ง")]
+
+    def test_delete_empty_list_is_noop(self):
+        """ไม่มีอะไรให้ลบ → ต้องไม่เรียก Chroma (กันลบทั้ง collection โดยพลาด)"""
+        coll = MagicMock()
+        with patch.object(vectormemory, "_convmem_collection", return_value=coll):
+            asyncio.run(vectormemory.delete_conversation_memory(1, []))
+        coll.delete.assert_not_called()
+
+
+class TestEmbeddingFailureIsLogged:
+    """embedding ล้มเหลวต้องไม่เงียบ — ไม่งั้น summary หายจาก vector โดยไม่มีใครรู้
+
+    🚨 เจอในเครื่องจริง: 2 summary อยู่ใน JSON แต่ไม่มีใน Chroma
+    ต้นเหตุ: `if emb is None: return` เงียบสนิท ไม่ log ไม่ retry
+    (น่าจะเกิดตอน Ollama ไม่พร้อม) — ผู้ดูแลจึงไม่มีทางรู้ว่าความจำหายไปแล้ว
+    """
+
+    def test_returns_false_when_embedding_fails(self):
+        """คืนค่าบอกผลสำเร็จ เพื่อให้ผู้เรียกรู้ว่าต้อง retry/ซ่อมทีหลัง"""
+        with patch.object(vectormemory, "get_embedding", AsyncMock(return_value=None)):
+            ok = asyncio.run(vectormemory.add_conversation_memory(1, "ข้อความ"))
+        assert ok is False
+
+    def test_returns_true_on_success(self):
+        coll = MagicMock()
+        with patch.object(vectormemory, "get_embedding", AsyncMock(return_value=[0.1] * 8)), \
+             patch.object(vectormemory, "_convmem_collection", return_value=coll):
+            ok = asyncio.run(vectormemory.add_conversation_memory(1, "ข้อความ"))
+        assert ok is True
+        coll.upsert.assert_called_once()
+
+    def test_upsert_uses_stable_id(self):
+        """เขียนด้วย id ที่ derive จากข้อความ (idempotent)"""
+        coll = MagicMock()
+        with patch.object(vectormemory, "get_embedding", AsyncMock(return_value=[0.1] * 8)), \
+             patch.object(vectormemory, "_convmem_collection", return_value=coll):
+            asyncio.run(vectormemory.add_conversation_memory(1, "สรุป ก"))
+        assert coll.upsert.call_args.kwargs["ids"] == [vectormemory._summary_id("สรุป ก")]
