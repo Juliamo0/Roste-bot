@@ -622,6 +622,12 @@ def build_summary_prompt(pairs: list) -> str:
 
 # ── แปลงผล JSON จาก build_summary_prompt เป็นบรรทัดเดียวสำหรับเก็บ ──────────────
 
+def _unbracket(val) -> str:
+    """ตัดวงเล็บ <> ที่โมเดลลอกมาจาก placeholder ใน prompt ("<สิ่งที่ผู้ใช้ชอบ>")"""
+    s = str(val).strip()
+    return s[1:-1].strip() if s.startswith("<") and s.endswith(">") else s
+
+
 def parse_summary_json(raw: str) -> str:
     """แปลง {"summary":..., "tags":[...]} → "หัวข้อ | tag1 tag2"
 
@@ -643,7 +649,23 @@ def parse_summary_json(raw: str) -> str:
     tags = d.get("tags") or []
     if not isinstance(tags, list):
         tags = []
-    clean = [str(t).strip() for t in tags if str(t).strip()]
+    # ⚠️ 4B คืน tag เป็น **object** แทน string เมื่อบทมีคำตอบยาวๆ — วัดได้ 5/5 รอบ
+    #   ที่ต้องการ: "user_ask:ขอคำแนะนำ"
+    #   ที่ได้จริง: {"user_ask": "ขอคำแนะนำ"}
+    # str(dict) เดิมได้ "{'user_ask': 'ขอคำแนะนำ'}" ซึ่ง _OWNER_TAG_RE จับไม่ได้
+    # -> tag หายทั้งหมด ทั้งที่โมเดลสกัดมา **ถูกต้องครบถ้วน**
+    # นี่คือต้นเหตุจริงของอาการ "4B ทิ้งข้อเท็จจริงเมื่อบทยาว" — ไม่ใช่ attention cliff
+    # (วัดแล้ว 4B คง fact ได้ถึง 4,442c ส่วนบทที่พังยาวแค่ 1,615c)
+    clean = []
+    for t in tags:
+        if isinstance(t, dict):
+            clean += [f"{k}:{_unbracket(v)}" for k, v in t.items() if str(v).strip()]
+        elif str(t).strip():
+            clean.append(str(t).strip())
+    # 4B ลอกวงเล็บ <> จาก placeholder ใน prompt มาด้วยเป็นบางครั้ง (วัดได้ 6/223 tag)
+    # ไม่ทำให้ recall พัง แต่หลุดเข้า context ให้ผู้ใช้เห็น — ตัดทิ้งแบบ deterministic
+    clean = [((m := _OWNER_TAG_RE.match(c)) and f"{c[:m.end()]}{_unbracket(c[m.end():])}")
+             or c for c in clean]
     clean = [t for t in clean if not _is_leaked_example(t)]
     # ตัด tag ที่พูดถึงตัวการสนทนาเอง ("เคยคุยเรื่อง…") — ดู is_meta_summary_tag
     clean = [t for t in clean
@@ -785,6 +807,70 @@ def dedupe_tags_against(new_summary: str, old_texts) -> str:
         if seg and (kind, seg) not in seen:
             kept.append(f"{kind}:{seg}")
     return f"{head} | {' '.join(kept)}" if kept else head
+
+
+def fix_owner_slips(summary: str, pairs: list) -> str:
+    """ตรวจ tag ที่ 4B ติดผิด**เจ้าของ** แล้วย้ายกลับ — validation layer ไม่ใช่กฎใน prompt
+
+    ⚠️ ทำไมเป็น validation layer: MEMORY_EXPERIMENTS §4 บันทึกไว้ว่า
+    "prompt แก้พฤติกรรมโมเดลไม่ได้ — ต้องมี validation layer" (เจอมาแล้ว 3 ครั้ง:
+    _strip_ungrounded_optional_args, fix_persona_slips, และรอบนี้)
+    ยืนยันซ้ำในงานนี้: เติมกฎ ""ชอบ" = _pref เสมอ" ลง prompt แล้ว **ยังพลาดกับบทยาว**
+
+    อาการที่วัดได้ (ทำซ้ำ 3/3 รอบ temperature 0):
+        ผู้ใช้: "ผมเลี้ยงแมวชื่อโมจิ" + "ขอคำแนะนำเรื่องเลี้ยงแมว"
+        รอสเต้: ตอบยาวเรื่องวิธีเลี้ยงแมว
+        -> 4B ได้ me_fact:รอสเต้เลี้ยงแมวชื่อโมจิ  ❌ แมวของผู้ใช้กลายเป็นของรอสเต้
+    ต้นเหตุเดียวกับที่เอกสารบันทึกเรื่องวิธี D (สลับเจ้าของ 47%): พอบทเอียงไปฝั่งเดียว
+    โมเดลก็ยัดทุกอย่างลงฝั่งนั้น — 4 tag ของวิธี F ก็ยังไม่พอกัน
+
+    หลักการ: เทียบกับ **ข้อความที่แต่ละฝ่ายพูดจริง** (grounding) แบบเดียวกับ
+    _strip_ungrounded_optional_args — ไม่ใช่เดาจากกริยา (§4: "กริยาไม่มีวันครบ")
+
+    ย้ายเฉพาะกรณีที่ชัดเจนเท่านั้น: เนื้อหา tag ไปโผล่ในฝั่งที่ผู้ใช้พูด แต่ไม่โผล่ในฝั่งรอสเต้เลย
+    ก้ำกึ่ง (โผล่ทั้งคู่ / ไม่โผล่เลย) = ปล่อยไว้ ไม่เดา
+    """
+    marks = list(_OWNER_TAG_RE.finditer(summary))
+    if not marks:
+        return summary
+    user_said = " ".join(m.get("content", "") for m in pairs if m.get("role") == "user")
+    bot_said = " ".join(m.get("content", "") for m in pairs if m.get("role") != "user")
+    if not user_said:
+        return summary
+
+    out = summary[:marks[0].start()]
+    for i, mk in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(summary)
+        kind = mk.group(1).rstrip(":")
+        seg = summary[mk.end():end]
+        val = seg.strip(" |,")
+        # สนใจเฉพาะ me_fact — ชนิดเดียวที่วัดแล้วว่าโดนสลับจริง
+        # (me_pref/me_suggest เป็นเรื่องของรอสเต้โดยธรรมชาติ ไม่ควรย้าย)
+        if kind == "me_fact" and val:
+            core = [w for w in _keywords(val, expand=False)
+                    if len(w) >= 3 and w not in _ROSTE_WORDS]
+            if core:
+                in_user = sum(1 for w in core if w in user_said)
+                in_bot = sum(1 for w in core if w in bot_said)
+                # ผู้ใช้พูดถึงเกินครึ่ง และรอสเต้พูดถึงน้อยกว่า = ของผู้ใช้ชัดเจน
+                if in_user > len(core) / 2 and in_user > in_bot:
+                    kind = "user_fact"
+                    val = _strip_roste_subject(val)
+                    seg = seg.replace(seg.strip(" |,"), val, 1)
+        out += f"{kind}:{seg}"
+    return out
+
+
+# คำที่เป็น "ตัวรอสเต้เอง" — ไม่นับเป็นคำเนื้อหาตอนเทียบว่าใครพูด
+_ROSTE_WORDS = {"รอสเต้", "ฉัน", "ดิฉัน", "หนู", "เรา"}
+
+
+def _strip_roste_subject(val: str) -> str:
+    """ตัดประธาน "รอสเต้" ออกจากค่าที่ย้ายมาฝั่งผู้ใช้ ("รอสเต้เลี้ยงแมว" -> "เลี้ยงแมว")"""
+    for w in ("รอสเต้", "ดิฉัน", "ฉัน"):
+        if val.startswith(w):
+            return val[len(w):].lstrip()
+    return val
 
 
 def build_verify_prompt(pairs: list, summary: str) -> str:
@@ -1144,8 +1230,16 @@ def recall_summaries(mem, user_message: str, top_k: int = 5, now=None) -> list:
 
     # กันคำถามข้อมูลสด — เว้นแต่มีคำใบ้อดีตชัดเจนปนอยู่ด้วย ("เมื่อวานคุยเรื่องอากาศไหม"
     # = ถามบทสนทนาเก่าจริง ไม่ใช่ถามพยากรณ์) ให้คำใบ้อดีตชนะสัญญาณข้อมูลสดเสมอ
+    #
+    # ⚠️ คำถาม *ความชอบ* ก็ต้องชนะเหมือนกัน — วัดจากบทคุยจริงชุดที่ 2:
+    #   "ผมชอบอากาศแบบไหน" -> โทเคน "อากาศ" ตรง _LIVE_DATA_SIGNALS -> คืน [] ทันที
+    #   ทั้งที่ user_pref:ชอบอากาศเย็นสบาย อยู่ในความจำครบและได้คะแนน 2
+    # ความชอบเป็นของถาวร ไม่ใช่ข้อมูลสด ("ชอบอากาศแบบไหน" != "วันนี้อากาศเป็นไง")
+    # เป็นบั๊กตระกูลเดียวกับ "หน้าร้อนผมชอบไปเที่ยวไหน" ที่เคยแก้ด้วยการเทียบระดับโทเคน
+    # — รอบนั้นแก้ที่ *วิธีเทียบ* รอบนี้ต้องแก้ที่ *เจตนาของคำถาม*
     if (has_live_data_signal(user_message)
-            and not any(h in user_message for h in PAST_HINTS)):
+            and not any(h in user_message for h in PAST_HINTS)
+            and not asks_about_preference(user_message)):
         return []
 
     # แค่ทักทาย/ขอบคุณ ไม่ได้ถามอะไร → ไม่ต้องยัดความทรงจำ (ดู is_social_pleasantry)
