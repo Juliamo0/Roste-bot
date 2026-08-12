@@ -474,6 +474,14 @@ async def summarize_and_verify(user_id: int, pairs: list):
             logger.info("   🗑️ สรุปบทไม่เป็น JSON ที่อ่านได้ — ข้ามรอบนี้")
             return
 
+        # ─ validation layer: ตรวจ tag ที่ติดผิดเจ้าของแล้วย้ายกลับ ─
+        # §4 ของ MEMORY_EXPERIMENTS: "prompt แก้พฤติกรรมโมเดลไม่ได้ ต้องมี validation layer"
+        # ยืนยันซ้ำในงานนี้ — เติมกฎลง prompt แล้วยังพลาดกับบทยาว
+        fixed = memory.fix_owner_slips(summary_text, pairs)
+        if fixed != summary_text:
+            logger.info("   🔧 แก้ tag ที่ติดผิดเจ้าของก่อนเก็บ")
+            summary_text = fixed
+
         # ─ ขั้นที่ 2: ตรวจ hallucinate — ถ้าสรุปแต่งรายละเอียด แก้หรือทิ้ง ─
         verify_prompt = memory.build_verify_prompt(pairs, summary_text)
         verify_payload = {

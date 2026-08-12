@@ -83,3 +83,6 @@ tts_raw/
 # ชุดข้อมูลทดสอบมาตรฐาน (LongMemEval ~280MB) — ดาวน์โหลดเองด้วย tools/fetch_longmemeval.py
 tools/data/
 tools/thai_cases_generated.json
+backup_restart_*/
+bot_restart.log
+bot_restart.err

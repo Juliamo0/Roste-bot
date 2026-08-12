@@ -1382,6 +1382,44 @@ class TestOwnerSeparatedMemory:
             '{"summary": "คุยแนวนิยาย", "tags": ["user_pref:ชอบสืบสวน"]}')
         assert out == "คุยแนวนิยาย | user_pref:ชอบสืบสวน"
 
+    def test_parse_json_tags_as_objects(self):
+        """4B คืน tag เป็น object แทน string เมื่อบทมีคำตอบยาวๆ (วัดได้ 5/5 รอบ)
+
+        เดิม str(dict) ได้ "{'user_ask': '...'}" ซึ่ง _OWNER_TAG_RE จับไม่ได้
+        -> tag หายทั้งหมด ทั้งที่โมเดลสกัดมาถูกครบ
+        นี่คือต้นเหตุจริงของ "4B ทิ้งข้อเท็จจริงเมื่อบทยาว" ไม่ใช่ attention cliff
+        """
+        out = memory.parse_summary_json(
+            '{"summary": "ก", "tags": [{"user_fact": "เลี้ยงแมวชื่อโมจิ"},'
+            ' {"me_suggest": "ให้อาหารแมว"}]}')
+        p = memory.split_owner_tags(out)
+        assert p["user_fact"] == ["เลี้ยงแมวชื่อโมจิ"]
+        assert p["me_suggest"] == ["ให้อาหารแมว"]
+
+    def test_parse_json_strips_placeholder_brackets(self):
+        """4B ลอกวงเล็บ <> จาก placeholder ใน prompt มาบ้าง (วัดได้ 6/223 tag)"""
+        out = memory.parse_summary_json(
+            '{"summary": "ก", "tags": ["me_pref:<ชอบแฟนตาซี>", {"user_fact": "<เลี้ยงแมว>"}]}')
+        p = memory.split_owner_tags(out)
+        assert p["me_pref"] == ["ชอบแฟนตาซี"] and p["user_fact"] == ["เลี้ยงแมว"]
+
+    def test_parse_json_keeps_inner_angle_brackets(self):
+        """ตัดเฉพาะวงเล็บที่ครอบทั้งค่า ไม่ใช่ที่อยู่กลางข้อความ"""
+        out = memory.parse_summary_json(
+            '{"summary": "ก", "tags": ["user_pref:ชอบ<ปกติ>ไม่ตัด"]}')
+        assert "ชอบ<ปกติ>ไม่ตัด" in out
+
+    def test_parse_json_mixed_string_and_object_tags(self):
+        out = memory.parse_summary_json(
+            '{"summary": "ก", "tags": ["user_pref:ชอบสืบสวน", {"me_pref": "ชอบแฟนตาซี"}]}')
+        p = memory.split_owner_tags(out)
+        assert p["user_pref"] == ["ชอบสืบสวน"] and p["me_pref"] == ["ชอบแฟนตาซี"]
+
+    def test_parse_json_object_tag_with_empty_value_dropped(self):
+        out = memory.parse_summary_json(
+            '{"summary": "ก", "tags": [{"user_ask": ""}, {"me_pref": "ชอบแมว"}]}')
+        assert "user_ask" not in out and "ชอบแมว" in out
+
     def test_parse_json_ignores_surrounding_text(self):
         """qwen3:8b ชอบพูดนำหน้า/ตามหลัง JSON — ต้องตัดเอาเฉพาะช่วง {...}"""
         out = memory.parse_summary_json(
@@ -1461,6 +1499,27 @@ class TestAskAndSuggestTags:
         t = "12 ส.ค.: ห | user_fact:ทำงานสายไอที"
         assert memory.filter_by_owner([t], "user", "pref") == []
 
+    @pytest.mark.parametrize("q", [
+        "ผมชอบอากาศแบบไหน",
+        "ผมชอบอากาศร้อนหรือหนาว",
+    ])
+    def test_preference_question_beats_live_data_gate(self, q):
+        """ถามความชอบต้องชนะด่านกันข้อมูลสด — ความชอบเป็นของถาวร ไม่ใช่พยากรณ์
+        วัดจากบทคุยจริง: "ผมชอบอากาศแบบไหน" เคยได้ [] เพราะโทเคน "อากาศ" """
+        mem = {"summaries": [{"text": "12 ส.ค.: ห | user_pref:ชอบอากาศเย็นสบาย",
+                              "date": "2026-08-12"}]}
+        assert memory.recall_summaries(mem, q), "คำถามความชอบต้องไม่ถูกด่านข้อมูลสดตัด"
+
+    @pytest.mark.parametrize("q", [
+        "วันนี้อากาศเป็นไง", "ราคาน้ำมันวันนี้",
+        "พรุ่งนี้ฝนตกไหม", "อากาศวันนี้ร้อนไหม",
+    ])
+    def test_live_data_still_silent(self, q):
+        """แต่คำถามข้อมูลสดจริงต้องยังเงียบ — กันการยกเว้นข้างบนเปิดรูเดิม"""
+        mem = {"summaries": [{"text": "12 ส.ค.: ห | user_pref:ชอบอากาศเย็นสบาย",
+                              "date": "2026-08-12"}]}
+        assert memory.recall_summaries(mem, q) == []
+
     def test_prompt_keeps_like_in_pref(self):
         """กันผลข้างเคียงที่เจอตอนคุยจริง: เพิ่ม tag ใหม่แล้วโมเดลระวังเกิน
         ย้าย "ชอบ" ไปลง _fact -> คำถามความชอบหาไม่เจอเพราะ B1 กรอง kind='pref'"""
@@ -1474,6 +1533,71 @@ class TestAskAndSuggestTags:
         p = memory.split_owner_tags(old)
         assert p["user_ask"] == [] and p["me_suggest"] == []
         assert memory.filter_by_owner([old], "user")[0].endswith("ชอบสืบสวน")
+
+
+class TestFixOwnerSlips:
+    """validation layer — ตรวจ tag ที่ 4B ติดผิดเจ้าของแล้วย้ายกลับ
+
+    ที่มา: MEMORY_EXPERIMENTS §4 "prompt แก้พฤติกรรมโมเดลไม่ได้ ต้องมี validation layer"
+    วัดได้ (ทำซ้ำ 3/3 รอบ temperature 0): ผู้ใช้บอก "ผมเลี้ยงแมวชื่อโมจิ" แล้วขอคำแนะนำ
+    -> 4B ได้ me_fact:รอสเต้เลี้ยงแมวชื่อโมจิ = แมวของผู้ใช้กลายเป็นของรอสเต้
+
+    เขียนเพื่อ *หาจุดพัง* — ครึ่งหนึ่งของเทสคือเคสที่ **ห้ามย้าย**
+    """
+
+    PAIRS = [
+        {"role": "user", "content": "ผมเลี้ยงแมวไว้ตัวนึงชื่อโมจิ สีส้มทั้งตัว"},
+        {"role": "assistant", "content": "น่ารักจังค่ะ"},
+        {"role": "user", "content": "ขอคำแนะนำเรื่องเลี้ยงแมวหน่อยสิ"},
+        {"role": "assistant", "content": "ให้อาหารแมวเฉพาะทาง พาไปตรวจสุขภาพนะคะ"},
+    ]
+
+    def test_moves_user_fact_back(self):
+        t = "12 ส.ค.: ห | me_fact:รอสเต้เลี้ยงแมวชื่อโมจิ สีส้ม"
+        got = memory.split_owner_tags(memory.fix_owner_slips(t, self.PAIRS))
+        assert got["user_fact"] and "แมว" in got["user_fact"][0]
+        assert got["me_fact"] == []
+
+    def test_strips_roste_subject_when_moving(self):
+        t = "12 ส.ค.: ห | me_fact:รอสเต้เลี้ยงแมวชื่อโมจิ"
+        got = memory.split_owner_tags(memory.fix_owner_slips(t, self.PAIRS))
+        assert not got["user_fact"][0].startswith("รอสเต้")
+
+    def test_keeps_genuine_me_fact(self):
+        """สิ่งที่รอสเต้พูดถึงตัวเองจริง ห้ามย้าย"""
+        pairs = [{"role": "user", "content": "ทำอะไรอยู่"},
+                 {"role": "assistant", "content": "กำลังอ่านหนังสืออยู่ค่ะ"}]
+        t = "12 ส.ค.: ห | me_fact:กำลังอ่านหนังสืออยู่"
+        assert memory.split_owner_tags(
+            memory.fix_owner_slips(t, pairs))["me_fact"] != []
+
+    def test_never_touches_me_pref(self):
+        """me_pref เป็นความชอบของรอสเต้ ไม่ใช่ข้อเท็จจริงที่สลับได้"""
+        t = "12 ส.ค.: ห | me_pref:ชอบแมว"
+        assert "me_pref:ชอบแมว" in memory.fix_owner_slips(t, self.PAIRS)
+
+    def test_never_touches_me_suggest(self):
+        t = "12 ส.ค.: ห | me_suggest:แนะนำให้อาหารแมว"
+        assert "me_suggest:" in memory.fix_owner_slips(t, self.PAIRS)
+
+    def test_leaves_correct_tags_alone(self):
+        t = "12 ส.ค.: ห | user_fact:เลี้ยงแมวชื่อโมจิ me_suggest:แนะนำให้อาหารแมว"
+        assert memory.fix_owner_slips(t, self.PAIRS) == t
+
+    def test_ambiguous_is_left_alone(self):
+        """ทั้งสองฝ่ายพูดถึงพอๆ กัน = ก้ำกึ่ง ไม่เดา"""
+        pairs = [{"role": "user", "content": "ชอบอ่านหนังสือไหม"},
+                 {"role": "assistant", "content": "ชอบอ่านหนังสือมากค่ะ อ่านทุกวันเลย"}]
+        t = "12 ส.ค.: ห | me_fact:อ่านหนังสือทุกวัน"
+        assert "me_fact:" in memory.fix_owner_slips(t, pairs)
+
+    def test_no_tags_returns_unchanged(self):
+        t = "12 ส.ค.: สรุปแบบเก่าที่ไม่มี tag เลย"
+        assert memory.fix_owner_slips(t, self.PAIRS) == t
+
+    def test_empty_pairs_safe(self):
+        t = "12 ส.ค.: ห | me_fact:รอสเต้เลี้ยงแมว"
+        assert memory.fix_owner_slips(t, []) == t
 
 
 class TestRareWordWeighting:
