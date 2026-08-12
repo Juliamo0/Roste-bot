@@ -505,6 +505,162 @@ class TestThaiKeywordRecall:
         assert memory._keywords("อยู่ ชุมพร") != []
 
 
+class TestQuestionTailDetection:
+    """คำถามภาษาไทยลงท้ายด้วยคำถาม — ใช้ *ตำแหน่ง* แทนการนับระยะห่างในสตริง
+
+    🚨 fact ขยะที่เจอจากการคุยจริง 2 รอบ:
+        "ผมเคยเล่าเรื่องรถของผมให้ฟังไหม"  -> [ข้อมูลส่วนตัว] เคยเล่าเรื่องรถของผมให้ฟัง
+        "รอสเต้คิดว่าผมควรเก็บเงินยังไงดี" -> [การเงิน] ควรเก็บเงิน
+
+    ทำไม guard เดิมไม่จับ:
+      A) is_recall_question ใช้ `เคยเล่า.{0,16}ไหม` แต่ช่องว่างจริง 19 ตัว
+         -> การไล่ขยายตัวเลขคือ whack-a-mole ที่ MEMORY_EXPERIMENTS §4 เตือนไว้
+      B) _looks_like_question ปล่อยผ่านทุกประโยคที่มีสรรพนาม (กฎกันเคส
+         "ผมควรกินยาตอนไหนดี" ที่มีข้อมูลตัวเองจริง) แต่ "รอสเต้คิดว่า...ยังไงดี"
+         เป็นการ *ขอคำแนะนำ* ไม่ใช่การบอกข้อมูล
+
+    ทางแก้เชิงโครงสร้าง: ภาษาไทยวางคำถามไว้ *ท้ายประโยค* เกือบเสมอ
+    ("...ไหม" "...ยังไงดี" "...เหรอ") ส่วนประโยคบอกเล่าไม่ลงท้ายแบบนั้น
+    -> เช็คหางประโยคแทนการนับระยะ ไม่ต้องเดาว่าช่องว่างยาวเท่าไหร่
+    """
+
+    @pytest.mark.parametrize("text", [
+        "ผมเคยเล่าเรื่องรถของผมให้ฟังไหม",
+        "รอสเต้คิดว่าผมควรเก็บเงินยังไงดี",
+        "ผมควรกินยาตอนไหนดี",
+        "รอสเต้ชอบอะไรบ้างเหรอ",
+        "ผมทำงานอะไรนะครับ",
+        "แล้วผมชอบกินอะไรมั้ย",
+    ])
+    def test_question_detected_by_tail(self, text):
+        assert memory.ends_like_question(text), f"{text!r} เป็นคำถาม"
+
+    @pytest.mark.parametrize("text", [
+        "ผมเคยไปญี่ปุ่นมาแล้ว",
+        "ผมทำงานเป็นช่างซ่อมแอร์",
+        "แพ้กุ้ง แล้วก็แพ้ถั่วด้วย",
+        "ผมชื่อสมชาย อยู่ขอนแก่นครับ",
+        "เมื่อวานพาลูกไปสวนสาธารณะ",
+        "ผมเลิกเก็บเงินซื้อบ้านแล้ว",
+        "ผมมีลูกสาวสองคนครับ คนโตเรียนอยู่ ป.4",
+        # ⚠️ regression จริงที่ผมทำพังตอนแก้รอบแรก: ใส่ "ดี" เดี่ยวๆ ใน tails
+        # ทำให้ "สนุกดี"/"อร่อยดี" (คำขยาย) ถูกกรองทิ้งทั้งที่เป็นข้อมูล
+        "เมื่อวานพาลูกไปสวนสาธารณะมา สนุกดี",
+        "อาหารที่ร้านนั้นอร่อยดี",
+    ])
+    def test_statement_not_flagged(self, text):
+        """⚠️ regression guard: ประโยคบอกเล่าต้องไม่โดนตัด — นี่คือข้อมูลที่ต้องจำ"""
+        assert not memory.ends_like_question(text)
+
+    @pytest.mark.parametrize("text", [
+        "ผมเคยเล่าเรื่องรถของผมให้ฟังไหม",
+        "รอสเต้คิดว่าผมควรเก็บเงินยังไงดี",
+    ])
+    def test_junk_facts_no_longer_extracted(self, text):
+        """เคสจริงที่เคยกลายเป็น fact ขยะ ต้องไม่ถึงโมเดลด้วยซ้ำ"""
+        assert not memory.should_try_extract(text)
+
+    def test_real_statements_still_extracted(self):
+        """⚠️ ของจริงต้องยังผ่าน — ไม่งั้นแก้บั๊กแล้วทำให้ความจำแย่ลง"""
+        for t in ["ผมทำงานเป็นช่างซ่อมแอร์", "ผมมีลูกสาวสองคนครับ คนโตเรียนอยู่ ป.4",
+                  "แพ้กุ้ง แล้วก็แพ้ถั่วด้วย"]:
+            assert memory.should_try_extract(t), t
+
+
+class TestMultiFactSchema:
+    """ประโยคเดียวที่มีหลายข้อมูล ต้องเก็บได้ครบทุกอัน
+
+    🚨 ปัญหา: `format: "json"` (constrained decoding แบบหลวม) ทำให้โมเดลคืน object เดี่ยว
+    มันจึงหยุดหลังสกัดได้ fact แรก — วัดได้ว่าประโยคที่มี 2 ข้อมูล **เก็บครบแค่ 1/5**
+        "ผมมีลูกสาวสองคนครับ คนโตเรียนอยู่ ป.4" -> ['มีลูกสาว 2 คน']   (ป.4 หาย)
+        "ผมชื่อสมชาย อยู่ขอนแก่นครับ"          -> ['ชื่อสมชาย']       (ขอนแก่น หาย)
+        "แพ้กุ้ง แล้วก็แพ้ถั่วด้วย"            -> ['แพ้กุ้ง']          (ถั่ว หาย)
+
+    งานวิจัยเรียกเรื่องนี้ว่า **atomic fact decomposition** — AtomMem (arXiv 2606.19847)
+    ใช้กับ agent memory โดยตรงและได้ F1 20.97 -> 42.50 บน multi-hop
+    ⚠️ แต่ arXiv 2603.28005 เตือนว่าการ decompose ไม่ได้ดีเสมอ: ช่วยงานง่าย
+    แต่ *ทำงานซับซ้อนแย่ลง* และ "strips away essential contextual information"
+
+    ทางแก้ที่เลือก: **ไม่ต้อง decompose เพิ่มรอบ** แค่เปลี่ยน format เป็น JSON schema
+    ที่บังคับให้เป็น array — โมเดลจึงรู้ว่าตอบได้หลายอัน (ไม่เพิ่ม LLM call เลย)
+    วัดแล้ว: ประโยคหลายข้อมูลได้ครบ 5/5 (เดิม 1/5) · ชุด 80 เคส 79/80 (เดิม ~50/80)
+    """
+
+    def test_schema_requires_array(self):
+        """schema ต้องบังคับ facts เป็น array ไม่ใช่ object เดี่ยว"""
+        s = memory.EXTRACT_JSON_SCHEMA
+        assert s["properties"]["facts"]["type"] == "array"
+        item = s["properties"]["facts"]["items"]
+        assert set(item["required"]) == {"category", "text"}
+
+    def test_parse_schema_response(self):
+        """parse ผลรูปแบบ {"facts": [...]} ที่ schema บังคับ"""
+        out = memory.parse_extracted_facts(
+            '{"facts": [{"category":"ครอบครัว","text":"มีลูกสาวสองคน"},'
+            ' {"category":"การศึกษา","text":"ลูกคนโตเรียน ป.4"}]}')
+        assert len(out) == 2
+        assert out[1]["text"] == "ลูกคนโตเรียน ป.4"
+
+    def test_plain_array_still_works(self):
+        """⚠️ regression guard: array เปล่าๆ แบบเดิมต้องยังใช้ได้"""
+        out = memory.parse_extracted_facts('[{"category":"ที่อยู่","text":"อยู่ชุมพร"}]')
+        assert out == [{"category": "ที่อยู่", "text": "อยู่ชุมพร"}]
+
+    def test_single_object_still_works(self):
+        """⚠️ regression guard: object เดี่ยวต้องยังใช้ได้ (โมเดลอื่น/format หลวม)"""
+        out = memory.parse_extracted_facts('{"category":"สุขภาพ","text":"แพ้กุ้ง"}')
+        assert out == [{"category": "สุขภาพ", "text": "แพ้กุ้ง"}]
+
+    def test_empty_facts_array(self):
+        assert memory.parse_extracted_facts('{"facts": []}') == []
+
+
+class TestRecallQuestionNotStoredAsFact:
+    """คำถามเรื่องความจำ ต้องไม่ถูกเก็บเป็น fact ของผู้ใช้
+
+    🚨 เจอตอนคุยจริงหลัง restart (11 ส.ค. 2569):
+        ผู้ใช้ถาม "จำได้ไหมว่าผมทำงานอะไร"
+        -> เก็บเป็น fact: [กิจวัตร] จำได้ไหมว่าผมทำงานอะไร
+
+    ทำไม guard ที่มีอยู่ไม่จับ:
+        should_try_extract    -> True  (ยาวพอ ไม่ใช่คำทักทาย)
+        _looks_like_question  -> False (มีคำว่า "ผม" อยู่ ผมตั้งกฎเองว่าถ้ามีสรรพนาม
+                                        อาจมีข้อมูลตัวเองปน เช่น "ผมควรกินยาตอนไหนดี")
+        is_meta_summary_tag   -> ใช้กับ summary tag เท่านั้น ไม่ได้ใช้กับ fact
+
+    เป็นปัญหาเดียวกับ meta tag ที่แก้ไปแล้วฝั่ง summary แต่ฝั่ง fact ยังไม่มีด่าน
+    อันตรายเพราะสะสม: ทุกครั้งที่ผู้ใช้ถามเรื่องความจำ จะได้ fact ขยะเพิ่มอีกอัน
+    """
+
+    @pytest.mark.parametrize("text", [
+        "จำได้ไหมว่าผมทำงานอะไร",
+        "จำได้ไหมว่าผมชอบอะไร",
+        "ผมเคยเล่าเรื่องรถให้ฟังไหม",
+        "เราเคยคุยเรื่องอะไรกันบ้าง",
+        "รอสเต้จำผมได้ไหม",
+    ])
+    def test_recall_question_rejected(self, text):
+        assert memory.is_recall_question(text), f"{text!r} เป็นคำถามความจำ ต้องไม่เก็บเป็น fact"
+
+    @pytest.mark.parametrize("text", [
+        "ผมทำงานเป็นช่างซ่อมแอร์",
+        "ผมชอบกินส้มตำ",
+        "ผมเคยไปญี่ปุ่นมาแล้ว",
+        "ผมเลิกเก็บเงินซื้อบ้านแล้ว",
+    ])
+    def test_real_statements_kept(self, text):
+        """⚠️ regression guard: ประโยคบอกเล่าจริงต้องไม่โดนตัด
+
+        โดยเฉพาะ "ผมเคยไปญี่ปุ่นมาแล้ว" ที่มีคำว่า "เคย" เหมือนคำถามความจำ
+        """
+        assert not memory.is_recall_question(text)
+
+    def test_auto_remember_path_skips_recall_question(self):
+        """ด่านนี้ต้องอยู่ใน should_try_extract เพื่อไม่ต้องเปลือง LLM call ด้วย"""
+        assert not memory.should_try_extract("จำได้ไหมว่าผมทำงานอะไร")
+        assert memory.should_try_extract("ผมทำงานเป็นช่างซ่อมแอร์")
+
+
 class TestParseSingleObjectOutput:
     """รองรับ format:json ที่ทำให้โมเดลคืน object เดี่ยว ไม่ใช่ array
 

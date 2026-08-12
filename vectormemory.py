@@ -241,16 +241,66 @@ async def query_pdf(user_id: int, question: str, top_k: int = 3) -> list:
     return await rerank_with_llm(question, candidates, top_n=top_k)
 
 
-async def add_conversation_memory(user_id: int, text: str) -> None:
+def _summary_id(text: str) -> str:
+    """id ที่ derive จากเนื้อหา summary — เสถียร ซ้ำได้ ทำให้ upsert เป็น idempotent
+
+    ⚠️ เดิมใช้ `int(time.time()*1000)` ซึ่ง **ไม่มีวันซ้ำ** → `upsert` ทำงานเป็น `insert`
+    เสมอ อัปเดต/ลบของเดิมไม่ได้เลย ยืนยันด้วย tools/probe_vector_drift.py:
+        เขียนข้อความเดิมซ้ำ → 1 กลายเป็น 2 แถว
+        เขียน 105 อัน (เพดาน JSON 100) → JSON เหลือ 100 แต่ Chroma เก็บ 105
+    และเจอ drift จริงในเครื่อง: chroma 53 vs json 55 ของผู้ใช้หลัก
+
+    ทางแก้ตามแนวปฏิบัติที่ใช้กันทั่วไปในการ sync vector store กับแหล่งข้อมูลหลัก
+    ("stable, deterministic key derived from the source record ... makes upsert idempotent")
+    โดย JSON เป็น source of truth ส่วน vector เป็น derived index ที่สร้างใหม่ได้เสมอ
+
+    normalize ช่องว่างก่อน hash — เว้นวรรคต่างกันเล็กน้อยไม่ควรกลายเป็นคนละ record
+    """
+    import hashlib
+    norm = " ".join(text.split())
+    return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:24]
+
+
+async def add_conversation_memory(user_id: int, text: str) -> bool:
     """เก็บสรุปบทสนทนา (จาก summarize_and_verify หลังตรวจ hallucinate แล้ว) ลง vector memory
-    เพื่อให้ค้นแบบความหมายได้ทีหลัง — เสริม recall_summaries แบบ keyword ใน memory.py"""
+    เพื่อให้ค้นแบบความหมายได้ทีหลัง — เสริม recall_summaries แบบ keyword ใน memory.py
+
+    คืน True ถ้าเขียนสำเร็จ · False ถ้าไม่ได้เขียน (ผู้เรียกจะได้รู้ว่าสองสโตร์ไม่ตรงกัน)
+
+    ⚠️ เดิมคืน None และ `if emb is None: return` เงียบสนิท ไม่ log ไม่บอกใคร —
+    เจอในเครื่องจริงว่ามี 2 summary อยู่ใน JSON แต่ไม่มีใน Chroma (น่าจะตอน Ollama ไม่พร้อม)
+    ผู้ดูแลไม่มีทางรู้ว่าความจำส่วนนั้นค้นแบบ semantic ไม่เจอแล้ว
+    """
     if not text.strip():
-        return
+        return False
     emb = await get_embedding(text)
     if emb is None:
-        return
+        # ไม่ raise — งานสรุปต้องไม่พังเพราะ embedding ล่ม แต่ต้องได้ยินเสียง
+        logger.warning("   ⚠️ vectormemory: embed ไม่สำเร็จ — summary นี้จะค้นแบบ "
+                       "semantic ไม่เจอ (keyword ยังหาได้) ซ่อมด้วย tools/repair_vector_sync.py")
+        return False
     coll = _convmem_collection(user_id)
-    coll.upsert(ids=[f"{int(time.time() * 1000)}"], embeddings=[emb], documents=[text])
+    coll.upsert(ids=[_summary_id(text)], embeddings=[emb], documents=[text])
+    return True
+
+
+async def delete_conversation_memory(user_id: int, texts: list) -> int:
+    """ลบ summary ออกจาก vector store — ใช้ตอน JSON ตัดของเก่าทิ้งตาม MAX_SUMMARIES
+
+    ⚠️ เดิมไม่มี API นี้เลย convmem จึงโตไม่หยุด: JSON ตัดที่ 100 แต่ Chroma เก็บตลอดกาล
+    ทำให้ RAG ดึงของที่ระบบ "ลืม" ไปแล้วกลับมาได้
+
+    คืนจำนวนที่สั่งลบ — ลบด้วย id ที่ derive จากข้อความ (ต้องตรงกับตอนเขียน)
+    """
+    ids = [_summary_id(t) for t in texts if t and t.strip()]
+    if not ids:
+        return 0          # กันเรียก delete โดยไม่มี ids ซึ่ง Chroma อาจตีความว่าลบทั้งหมด
+    try:
+        _convmem_collection(user_id).delete(ids=ids)
+    except Exception as e:
+        logger.warning(f"   ⚠️ vectormemory: ลบ summary เก่าไม่สำเร็จ: {type(e).__name__}: {e}")
+        return 0
+    return len(ids)
 
 
 async def query_conversation_memory(user_id: int, question: str, top_k: int = 3) -> list:

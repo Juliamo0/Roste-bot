@@ -55,6 +55,10 @@ async def probe_json_vector_drift() -> dict:
 
     จำลอง write path ของ chat.py:471-481 ตรงๆ (สรุปเสร็จ → append JSON + ตัด → เขียน vector)
     """
+    # ⚠️ ฟังก์ชันนี้จำลอง write path **แบบเดิม** (append + ตัด แต่ไม่ลบฝั่ง vector)
+    # ไว้ยืนยันว่าบั๊กเคยมีจริง — หลังแก้แล้ว chat.summarize_and_verify เรียก
+    # vectormemory.delete_conversation_memory ให้ด้วย จึงไม่ drift อีก
+    # (ทดสอบเส้นจริงได้ที่ tests/test_vectormemory.py + tools/repair_vector_sync.py)
     n_write = memory.MAX_SUMMARIES + 5   # เขียนให้ล้นเพดาน 5 อัน
 
     # ⚠️ ล้าง collection ก่อนเสมอ — ไม่งั้นของที่ probe [1] เขียนไว้จะค้างมานับรวมด้วย
