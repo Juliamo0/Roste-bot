@@ -1283,6 +1283,53 @@ class TestOwnerSeparatedMemory:
         texts = [s["text"] for s in self.SUMMARIES]
         assert memory.filter_by_owner(texts, "any") == texts
 
+    # ── provenance: แยก "ยืนยันแล้ว" ออกจาก "แค่เสนอ/แค่ขอ" ──
+    # เขียนเพื่อ *หาจุดพัง* ตามสไตล์ชุดนี้ ไม่ใช่เพื่อให้ผ่าน
+    # ที่มา: วัดได้ว่าโมเดลตอบราวกับผู้ใช้ใช้ Pomodoro อยู่จริง ทั้งที่รอสเต้แค่เคยเสนอ
+    # (attribution error 50% — ดู tools/bench_provenance.py)
+
+    _P = "6 ส.ค.: หัวข้อ | me_fact:แนะนำเทคนิค Pomodoro me_pref:ชอบอ่านหนังสือ"
+
+    def test_me_fact_marked_as_suggestion(self):
+        got = memory.filter_by_owner([self._P], "me", "fact")[0]
+        assert "รอสเต้เป็นคนเสนอ" in got
+
+    def test_me_pref_not_marked(self):
+        """ความชอบของรอสเต้เองเป็นเรื่องจริง ไม่ใช่ข้อเสนอ — ห้ามติดป้าย"""
+        got = memory.filter_by_owner([self._P], "me", "pref")[0]
+        assert "รอสเต้เป็นคนเสนอ" not in got
+
+    def test_kind_none_marks_only_the_fact_item(self):
+        """เส้นที่ production ใช้จริง (kind=None) รวม fact+pref ไว้ด้วยกัน
+        ต้องมาร์กเป็นรายอัน ไม่ใช่ต่อท้ายทั้งก้อน"""
+        got = memory.filter_by_owner([self._P], "me")[0]
+        assert "Pomodoro (รอสเต้เป็นคนเสนอ" in got
+        assert "ชอบอ่านหนังสือ (รอสเต้เป็นคนเสนอ" not in got
+
+    def test_user_want_marked_as_request(self):
+        """'ต้องการ X' = ผู้ใช้ขอ X ไม่ใช่ผู้ใช้ทำ X อยู่
+        วัดได้ว่าเดิมโมเดลตอบว่า 'คุณเคยใช้คำกล่าวขอบคุณแบบเป็นทางการ' แล้วแต่งตัวอย่างเอง"""
+        got = memory.filter_by_owner(
+            ["6 ส.ค.: หัวข้อ | user_pref:ต้องการคำกล่าวขอบคุณ"], "user")[0]
+        assert "ผู้ใช้ขอมา" in got
+
+    def test_user_plain_fact_not_marked(self):
+        """ข้อเท็จจริงที่ผู้ใช้ยืนยันเองต้องไม่ถูกติดป้ายว่าเป็นคำขอ"""
+        got = memory.filter_by_owner(
+            ["6 ส.ค.: หัวข้อ | user_fact:ทำงานหนัก"], "user")[0]
+        assert "ผู้ใช้ขอมา" not in got
+
+    def test_provenance_does_not_break_owner_separation(self):
+        """เพิ่ม provenance แล้วต้องไม่ทำให้การแยกเจ้าของเสีย (regression ของ B1)
+
+        ⚠️ เทสนี้จับของจริงมาแล้ว: เคยลองให้บรรทัดฝั่งรอสเต้ "กู้" กลับมาตอนถามฝั่งผู้ใช้
+        เพื่อกันบอทแต่งคำตอบ — เทสนี้ตกทันที และวัดจริงก็ยืนยันว่าแย่ลง (50% -> 67%)
+        อย่าถอดออก
+        """
+        got = memory.filter_by_owner([self._P], "user")
+        assert got == [], "summary ที่มีแต่ฝั่งรอสเต้ ต้องไม่โผล่ตอนถามฝั่งผู้ใช้"
+
+
     # ── recall_summaries แบบครบวงจร ──
     @pytest.mark.parametrize("question,must,forbid", [
         ("จำได้ไหมว่าผมชอบอ่านนิยายแนวไหน", "สืบสวน", "แฟนตาซี"),
@@ -1345,6 +1392,123 @@ class TestOwnerSeparatedMemory:
         """parse ไม่ได้ = ทิ้งรอบนั้น ไม่เก็บข้อความดิบที่กรองฝั่งไม่ได้"""
         assert memory.parse_summary_json("สรุปเป็นข้อความธรรมดา") == ""
         assert memory.parse_summary_json("") == ""
+
+
+class TestAskAndSuggestTags:
+    """schema ใหม่: user_ask / me_suggest — แยก "ขอ" และ "เสนอ" ออกจาก "ชอบ"
+
+    ที่มา: วัดความจำจริงพบ tag ติดผิดชนิด 28/144 = 19%
+    ต้นเหตุคือ schema เดิมมีแค่ pref/fact — "ผู้ใช้ขอวิธีจัดการเวลา" กับ
+    "รอสเต้แนะนำ Pomodoro" ไม่มีช่องให้ลง โมเดลจึงยัดลง pref ทั้งคู่
+    -> กลายเป็น "ผู้ใช้ชอบงานหนัก" / "รอสเต้ชอบ Pomodoro" ซึ่งผิดทั้งคู่
+    """
+
+    T = ("6 ส.ค.: หัวข้อ | user_ask:ขอวิธีจัดการเวลา me_suggest:ลอง Pomodoro "
+         "user_pref:ชอบสืบสวน me_pref:ชอบแฟนตาซี")
+
+    def test_new_tags_are_parsed(self):
+        p = memory.split_owner_tags(self.T)
+        assert p["user_ask"] == ["ขอวิธีจัดการเวลา"]
+        assert p["me_suggest"] == ["ลอง Pomodoro"]
+
+    def test_new_tags_join_the_right_side(self):
+        p = memory.split_owner_tags(self.T)
+        assert "ขอวิธีจัดการเวลา" in p["user"]
+        assert "ลอง Pomodoro" in p["me"]
+
+    def test_ask_is_marked_as_request(self):
+        got = memory.filter_by_owner([self.T], "user")[0]
+        assert "ขอวิธีจัดการเวลา (ผู้ใช้ขอมา" in got
+
+    def test_suggest_is_marked_as_suggestion(self):
+        got = memory.filter_by_owner([self.T], "me")[0]
+        assert "ลอง Pomodoro (รอสเต้เป็นคนเสนอ" in got
+
+    def test_real_preference_is_not_marked(self):
+        """ความชอบจริงต้องไม่ถูกติดป้ายว่าเป็นคำขอ/ข้อเสนอ"""
+        got = memory.filter_by_owner([self.T], "user")[0]
+        assert "ชอบสืบสวน (" not in got
+
+    @pytest.mark.parametrize("whose,expect,absent", [
+        ("user", "ชอบสืบสวน", "ขอวิธีจัดการเวลา"),
+        ("me", "ชอบแฟนตาซี", "ลอง Pomodoro"),
+    ])
+    def test_pref_question_excludes_ask_and_suggest(self, whose, expect, absent):
+        """ถามความชอบล้วนๆ ต้องไม่ได้คำขอ/ข้อเสนอปนมา (ต่อยอด B1)"""
+        got = memory.filter_by_owner([self.T], whose, "pref")[0]
+        assert expect in got and absent not in got
+
+    def test_prompt_documents_new_tags(self):
+        p = memory.build_summary_prompt(
+            [{"role": "user", "content": "ขอวิธีจัดการเวลาหน่อย"}])
+        assert "user_ask:" in p and "me_suggest:" in p
+
+    def test_pref_question_rescues_like_in_fact(self):
+        """4B ติด "ชอบ/ไม่ชอบ" ลง _fact เป็นครั้งคราว (บทยาวหลายเรื่องยิ่งบ่อย)
+        ถามความชอบต้องยังหาเจอ — วัดจากบทคุยจริง: ไม่มีตัวกู้แล้ว
+        "ผมชอบกินของหวานไหม" ได้ [] ทั้งที่คำตอบอยู่ในความจำ"""
+        t = "12 ส.ค.: ห | user_fact:ไม่ชอบกินของหวาน ชอบของเผ็ดมากกว่า"
+        got = memory.filter_by_owner([t], "user", "pref")
+        assert got and "ของหวาน" in got[0]
+
+    def test_pref_rescue_does_not_readmit_action_facts(self):
+        """แต่ต้องไม่กู้ _fact ที่เป็น "สิ่งที่ทำให้" กลับมา — ไม่งั้นย้อนเป็นบั๊ก B1"""
+        t = "12 ส.ค.: ห | me_fact:แนะนำร้านให้ me_pref:ชอบหนังสือเก่า"
+        got = memory.filter_by_owner([t], "me", "pref")[0]
+        assert "ชอบหนังสือเก่า" in got and "แนะนำร้านให้" not in got
+
+    def test_pref_rescue_ignores_plain_facts(self):
+        t = "12 ส.ค.: ห | user_fact:ทำงานสายไอที"
+        assert memory.filter_by_owner([t], "user", "pref") == []
+
+    def test_prompt_keeps_like_in_pref(self):
+        """กันผลข้างเคียงที่เจอตอนคุยจริง: เพิ่ม tag ใหม่แล้วโมเดลระวังเกิน
+        ย้าย "ชอบ" ไปลง _fact -> คำถามความชอบหาไม่เจอเพราะ B1 กรอง kind='pref'"""
+        p = memory.build_summary_prompt(
+            [{"role": "user", "content": "ผมชอบอ่านนิยายสืบสวน"}])
+        assert "_pref เสมอ" in p
+
+    def test_old_summaries_without_new_tags_still_work(self):
+        """ความจำเก่า 55 อันไม่มี tag ใหม่ — ต้องไม่พัง"""
+        old = "6 ส.ค.: หัวข้อ | user_pref:ชอบสืบสวน me_fact:แนะนำร้าน"
+        p = memory.split_owner_tags(old)
+        assert p["user_ask"] == [] and p["me_suggest"] == []
+        assert memory.filter_by_owner([old], "user")[0].endswith("ชอบสืบสวน")
+
+
+class TestRareWordWeighting:
+    """คำหายากต้องมีน้ำหนักกว่าคำทั่วไปตอนจัดอันดับ
+
+    ที่มา: ถาม "ผมใช้เทคนิค Pomodoro อยู่ใช่ไหม" แล้ว summary ที่มีคำว่า Pomodoro
+    **ไม่ติด top-5** เพราะได้คะแนน 2 เท่ากับบรรทัดที่บังเอิญมีคำทั่วไป ('ผม','อยู่') หลายคำ
+    -> ไม่มีข้อมูลเรื่อง Pomodoro เข้า context เลย แล้วบอทแต่งคำตอบเอง
+    """
+
+    def test_rare_word_outweighs_common_word(self):
+        texts = [f"summary เรื่องทั่วไปอันที่ {i} | user_fact:ทำงาน" for i in range(10)]
+        texts.append("คุยเรื่องเทคนิค | user_fact:ใช้ Pomodoro")
+        assert memory._word_weight("Pomodoro", texts) > memory._word_weight("ทำงาน", texts)
+
+    def test_word_in_every_summary_gets_base_weight(self):
+        texts = ["ก ทำงาน", "ข ทำงาน", "ค ทำงาน"]
+        assert memory._word_weight("ทำงาน", texts) == 1.0
+
+    def test_missing_word_does_not_crash(self):
+        assert memory._word_weight("ไม่มีคำนี้", ["ก", "ข"]) == 1.0
+
+    def test_empty_corpus_safe(self):
+        assert memory._word_weight("อะไรก็ได้", []) == 1.0
+
+    def test_rare_word_line_reaches_context(self):
+        """เทสระดับพฤติกรรม — บรรทัดที่มีคำชี้ขาดต้องติด top_k จริง"""
+        summaries = [{"text": f"6 ส.ค.: คุยเรื่องอื่น {i} | user_fact:ผมทำงานอยู่",
+                      "date": "2026-08-06"} for i in range(8)]
+        summaries.append({"text": "6 ส.ค.: คุยเรื่องเทคนิค | user_fact:ผมใช้ Pomodoro อยู่",
+                          "date": "2026-08-06"})
+        got = memory.recall_summaries({"summaries": summaries},
+                                      "ผมใช้เทคนิค Pomodoro อยู่ใช่ไหม")
+        assert any("Pomodoro" in g for g in got), \
+            "บรรทัดที่มีคำหายากต้องไม่ถูกคำทั่วไปเบียดตก"
 
 
 class TestRecencyDecay:
