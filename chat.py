@@ -21,6 +21,13 @@ from llm_tools import (
 )
 from ollama_client import _chat_once, _get_json_post, _strip_think, MODEL
 
+# โมเดลสกัดความจำ — แยกจาก MODEL หลักโดยตั้งใจ (ดูเหตุผลใน config.py)
+# ถอยไปใช้ MODEL ถ้า config เก่าไม่มีค่านี้ (เช่นรันจาก checkout เดิม)
+try:
+    from config import OLLAMA_EXTRACT_MODEL as EXTRACT_MODEL, EXTRACT_FORMAT_JSON
+except ImportError:
+    EXTRACT_MODEL, EXTRACT_FORMAT_JSON = MODEL, False
+
 logger = logging.getLogger("roste.chat")
 
 # เครื่องมือ "ข้อมูลหลักช็อตเดียวจบ" — พอเรียกตัวใดตัวหนึ่งแล้ว ถือว่าได้ข้อมูลที่ผู้ใช้ต้องการแล้ว
@@ -118,12 +125,22 @@ async def auto_remember(user_id: int, user_name: str, user_message: str):
     try:
         prompt = memory.build_extract_prompt(user_message)
         # ยิงโมเดลแบบเรียบง่าย (ไม่ใช้ tools/persona — แค่สกัดข้อมูล) temp ต่ำ = แม่น
+        #
+        # ใช้ EXTRACT_MODEL แยกจากโมเดลหลัก — วัดแล้วว่างานสกัดกับงานแชตต้องการคนละคุณสมบัติ
+        # (qwen3:8b คืน [] 29/80 เคส "อนุรักษ์นิยม" เกินไป · qwen3:4b ได้ 71/80 แต่งเรื่อง 0%)
+        # ดูเหตุผลเต็มใน config.OLLAMA_EXTRACT_MODEL
         payload = {
-            "model": MODEL,
+            "model": EXTRACT_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False, "think": False,
             "options": {"temperature": 0.2},
         }
+        # constrained decoding — ข้ามการ "คิดออกเสียง" ของโมเดลตระกูล reasoning
+        # (qwen3:4b ไม่เคารพ think:False เขียนการคิดลง content 1,022 tokens = ช้า 13-30s
+        #  บังคับ format:json แล้วเหลือ 0.8s) ผลที่ได้เป็น object เดี่ยว ไม่ใช่ array —
+        # parse_extracted_facts รองรับทั้งสองแบบแล้ว
+        if EXTRACT_FORMAT_JSON:
+            payload["format"] = "json"
         data = await _get_json_post(payload, timeout=120)
         output = data.get("message", {}).get("content", "")
         facts = memory.parse_extracted_facts(output)  # [{"category":..., "text":...}, ...]

@@ -117,11 +117,15 @@ class TestAddFact:
         assert mem["facts"][0]["category"] is None
         assert mem["facts"][0]["superseded"] is False
 
-    def test_unknown_category_falls_back_to_none(self):
-        """category ที่หลุด FACT_CATEGORIES (โมเดลเผลอสร้างหมวดใหม่เอง) ต้องไม่ crash — เก็บเป็น None"""
+    def test_free_form_category_is_stored(self):
+        """หมวดที่โมเดลตั้งเอง — ตั้งแต่เปิด open schema ต้อง *เก็บชื่อหมวดไว้* ไม่ใช่ทิ้งเป็น None
+
+        ⚠️ พฤติกรรมนี้เปลี่ยนโดยตั้งใจ (11 ส.ค. 2569): เดิมทิ้งทุกหมวดนอก closed set 7 หมวด
+        วัดแล้วทำให้ข้อมูล 9 ใน 10 กลุ่มจำไม่ได้ (8% vs 62%) — ดู TestOpenSchemaExtraction
+        """
         mem = self._mem()
-        assert memory.add_fact(mem, "ชอบกาแฟ", category="หมวดที่ไม่มีอยู่จริง") is True
-        assert mem["facts"][0]["category"] is None
+        assert memory.add_fact(mem, "แพ้กุ้ง", category="สุขภาพ") is True
+        assert mem["facts"][0]["category"] == "สุขภาพ"
 
     def test_valid_category_stored(self):
         mem = self._mem()
@@ -337,11 +341,16 @@ class TestParseExtractedFacts:
             {"category": "ที่อยู่", "text": "อยู่ชุมพร"},
         ]
 
-    def test_unknown_category_becomes_none(self):
-        """โมเดลเผลอสร้าง category ใหม่เอง (ไม่อยู่ใน FACT_CATEGORIES) — ต้องไม่ crash เก็บเป็น None"""
-        output = '[{"category": "หมวดมั่ว", "text": "อยู่ชุมพร"}]'
+    def test_free_form_category_is_kept(self):
+        """หมวดที่โมเดลตั้งเองต้องถูกเก็บไว้ (open schema) — เปลี่ยนโดยตั้งใจ ดู TestOpenSchemaExtraction"""
+        output = '[{"category": "สุขภาพ", "text": "แพ้กุ้ง"}]'
         result = memory.parse_extracted_facts(output)
-        assert result == [{"category": None, "text": "อยู่ชุมพร"}]
+        assert result == [{"category": "สุขภาพ", "text": "แพ้กุ้ง"}]
+
+    def test_absurdly_long_category_becomes_none(self):
+        """หมวดยาวผิดปกติ = โมเดลเขียนประโยคมาแทนชื่อหมวด → ไม่รับ"""
+        output = '[{"category": "' + "ก" * 40 + '", "text": "อยู่ชุมพร"}]'
+        assert memory.parse_extracted_facts(output) == [{"category": None, "text": "อยู่ชุมพร"}]
 
     def test_missing_category_key_becomes_none(self):
         output = '[{"text": "อยู่ชุมพร"}]'
@@ -494,6 +503,125 @@ class TestThaiKeywordRecall:
             tk, "word_tokenize",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert memory._keywords("อยู่ ชุมพร") != []
+
+
+class TestParseSingleObjectOutput:
+    """รองรับ format:json ที่ทำให้โมเดลคืน object เดี่ยว ไม่ใช่ array
+
+    🚨 ที่มา: qwen3:4b แม่นที่สุดในการสกัด (89%) แต่ช้า 13-30s เพราะ *คิดออกเสียงก่อนเสมอ*
+    ไล่หาสาเหตุแล้วพบว่า:
+        think:False   -> 4b เขียนการคิดลง content เลย (3,252 ตัวอักษร / 1,022 tokens)
+        /no_think     -> ย้ายไปช่อง thinking (2,932 ตัวอักษร) แต่ยังช้าเท่าเดิม
+        num_predict   -> ตัดกลางการคิด JSON ไม่เคยออกมา
+        **format:json -> บังคับออก JSON ตั้งแต่ token แรก ข้ามการคิดทั้งหมด = 0.8s**
+
+    แต่ constrained decoding ทำให้โมเดลคืน object เดี่ยว `{"category":...,"text":...}`
+    ไม่ใช่ array `[{...}]` — parser เดิมหาแค่ `[...]` จึงได้ [] ทั้งที่สกัดถูก
+
+    วัดกับชุด 80 เคส: qwen3:4b + format:json + parser นี้ = 71/80 (89%) แต่งเรื่อง 0%
+    latency 0.8s — เท่า gemma3:12b แต่เล็กกว่า 2.5 เท่า (3.2GB vs 8.1GB)
+    """
+
+    def test_single_object_is_parsed(self):
+        """object เดี่ยวต้อง parse ได้ (format:json คืนแบบนี้)"""
+        out = memory.parse_extracted_facts('{"category": "สุขภาพ", "text": "แพ้กุ้ง"}')
+        assert out == [{"category": "สุขภาพ", "text": "แพ้กุ้ง"}]
+
+    def test_array_still_works(self):
+        """⚠️ regression guard: array แบบเดิมต้องยังใช้ได้ (โมเดลอื่นคืนแบบนี้)"""
+        out = memory.parse_extracted_facts(
+            '[{"category": "ที่อยู่", "text": "อยู่ชุมพร"},'
+            ' {"category": "งาน", "text": "เป็นครู"}]')
+        assert len(out) == 2 and out[0]["text"] == "อยู่ชุมพร"
+
+    def test_object_with_prose_around_it(self):
+        """โมเดลพูดนำหน้า/ตามหลัง — ต้องดึงเฉพาะ JSON ออกมาได้"""
+        out = memory.parse_extracted_facts(
+            'นี่คือผลลัพธ์: {"category": "ทักษะ", "text": "พูดญี่ปุ่นได้"} จบแล้วครับ')
+        assert out == [{"category": "ทักษะ", "text": "พูดญี่ปุ่นได้"}]
+
+    def test_array_preferred_when_both_present(self):
+        """ถ้ามีทั้ง array และ object ต้องเลือก array (ได้ข้อมูลครบกว่า)"""
+        out = memory.parse_extracted_facts(
+            '[{"category":"ก","text":"หนึ่ง"},{"category":"ข","text":"สอง"}]')
+        assert len(out) == 2
+
+    def test_object_without_text_key_ignored(self):
+        """object ที่ไม่มี key text = ไม่ใช่ fact ต้องข้าม ไม่ crash"""
+        assert memory.parse_extracted_facts('{"foo": "bar"}') == []
+
+    def test_empty_array_still_empty(self):
+        assert memory.parse_extracted_facts("[]") == []
+
+
+class TestOpenSchemaExtraction:
+    """หมวด fact เปิดให้โมเดลตั้งชื่อเองได้ — ไม่ใช่ closed set 7 หมวด
+
+    🚨 วัดกับชุดทดสอบ 80 เคส 10 กลุ่มข้อมูล (tools/memory_coverage_fixture.py):
+        baseline (closed set)  จำได้ 11/80 = 14%   [8-23%]
+        open schema + ตัดด่าน1 จำได้ 45/80 = 56%   [45-67%]   ← ช่วงไม่ซ้อนทับ
+    แยกดู: กลุ่มที่ *มีหมวดรองรับ* จำได้ 62% แต่กลุ่มที่ไม่มีหมวด 8% (ต่างกัน 8 เท่า)
+    → พิสูจน์ว่าคอขวดคือ closed set ไม่ใช่คุณภาพโมเดล
+
+    ตรงกับงานวิจัย arXiv 2604.11610 (self-evolving schema ชนะ fixed taxonomy) และ
+    mem0 ("LLM เป็น filter ที่ดีกว่า pre-computed structure")
+
+    ⚠️ ข้อควรระวัง: SINGLE_VALUE_CATEGORIES (ชื่อ/ที่อยู่/งาน) ยังต้อง supersede ได้
+    เหมือนเดิม — เปิด schema แต่ไม่ทิ้งกลไกที่วัดแล้วว่าทำงานดี
+    """
+
+    def test_free_form_category_is_kept(self):
+        """หมวดที่โมเดลตั้งเอง (นอก 7 หมวดเดิม) ต้องถูกเก็บ ไม่ใช่ทิ้งเป็น None"""
+        out = memory.parse_extracted_facts(
+            '[{"category":"สุขภาพ","text":"แพ้กุ้ง"},'
+            '{"category":"ครอบครัว","text":"มีลูกสาว 2 คน"}]')
+        cats = {f["category"] for f in out}
+        assert "สุขภาพ" in cats and "ครอบครัว" in cats, f"หมวดอิสระถูกทิ้ง: {out}"
+
+    def test_single_value_categories_still_supersede(self):
+        """⚠️ regression guard: ชื่อ/ที่อยู่/งาน ต้องยัง supersede ได้เหมือนเดิม"""
+        mem = {"facts": []}
+        memory.add_fact(mem, "อยู่ชุมพร", "ที่อยู่")
+        memory.add_fact(mem, "ย้ายมาอยู่เชียงใหม่", "ที่อยู่")
+        old = [f for f in mem["facts"] if f["text"] == "อยู่ชุมพร"][0]
+        assert old["superseded"], "ที่อยู่ต้องยัง supersede ของเก่า"
+
+    def test_free_form_category_does_not_supersede(self):
+        """หมวดอิสระต้องสะสมได้ ไม่ลบของเก่าทิ้ง (ปลอดภัยไว้ก่อน)
+
+        เพราะเราไม่รู้ล่วงหน้าว่าหมวดที่โมเดลตั้งเองเป็น single-value หรือ multi-value
+        — เดาผิดแล้วลบข้อมูลจริงทิ้งแย่กว่าเก็บซ้ำ
+        """
+        mem = {"facts": []}
+        memory.add_fact(mem, "แพ้กุ้ง", "สุขภาพ")
+        memory.add_fact(mem, "แพ้ถั่ว", "สุขภาพ")
+        assert all(not f["superseded"] for f in mem["facts"]), \
+            "หมวดอิสระไม่ควร supersede กันเอง"
+        assert len(mem["facts"]) == 2
+
+    def test_extract_prompt_has_no_closed_list(self):
+        """prompt ต้องไม่บังคับเลือกจากลิสต์ปิดอีกต่อไป"""
+        p = memory.build_extract_prompt("ผมแพ้กุ้ง")
+        assert "เฉพาะหมวดเหล่านี้เท่านั้น" not in p
+        assert "ตั้งชื่อเอง" in p or "ตั้งชื่อหมวด" in p
+
+    def test_extract_prompt_mentions_negation(self):
+        """baseline วัดได้ว่าปฏิเสธจำไม่ได้เลย 0/12 — prompt ต้องสั่งเรื่องนี้ตรงๆ"""
+        p = memory.build_extract_prompt("x")
+        assert "ปฏิเสธ" in p
+
+    def test_should_try_extract_no_longer_blocks_by_pronoun(self):
+        """ตัดด่านกรองด้วยคำใบ้ทิ้ง — ประโยคไม่มีสรรพนามต้องผ่านได้
+
+        baseline: ประโยคทั่วไปผ่านแค่ 47/80 = 59% (ตกไป 33 เคสโดยไม่ถึงโมเดล)
+        """
+        for t in ["แพ้กุ้ง", "ขับรถไม่เป็น", "นับถือพุทธ", "ตื่นตี 5 ทุกวัน"]:
+            assert memory.should_try_extract(t), f"{t!r} ควรผ่านไปให้โมเดลตัดสิน"
+
+    @pytest.mark.parametrize("text", ["ครับ", "ค่ะ", "555", "?", "อืม"])
+    def test_still_skips_trivial_messages(self, text):
+        """⚠️ แต่ข้อความสั้น/ไร้เนื้อหา ต้องยังข้าม — ไม่งั้นเปลือง LLM call ทุกข้อความ"""
+        assert not memory.should_try_extract(text)
 
 
 class TestMetaSummaryTagGuard:

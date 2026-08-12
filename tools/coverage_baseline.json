@@ -1,0 +1,1002 @@
+[
+ {
+  "group": "สุขภาพ",
+  "text": "ผมแพ้กุ้งครับ กินแล้วขึ้นผื่น",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "กุ้ง",
+   "แพ้"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "สุขภาพ",
+  "text": "แพ้อาหารทะเลนะ",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ทะเล",
+   "แพ้"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "สุขภาพ",
+  "text": "เป็นภูมิแพ้ จามบ่อยตอนเช้า",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ภูมิแพ้"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "สุขภาพ",
+  "text": "ผมกินยาความดันทุกวันครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ความดัน",
+   "ยา"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "สุขภาพ",
+  "text": "หมอบอกว่าผมเป็นเบาหวาน",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "เบาหวาน"
+  ],
+  "note": "อ้างคนอื่นพูดถึงตัวเอง"
+ },
+ {
+  "group": "สุขภาพ",
+  "text": "ผมไม่ได้แพ้นมนะ แค่แพ้ถั่ว",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ถั่ว"
+  ],
+  "note": "ปฏิเสธ+ยืนยัน"
+ },
+ {
+  "group": "สุขภาพ",
+  "text": "สายตาสั้น 300 ทั้งสองข้าง",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "สายตา"
+  ],
+  "note": "มีตัวเลข ไม่มีสรรพนาม"
+ },
+ {
+  "group": "สุขภาพ",
+  "text": "ช่วงนี้ปวดหลังบ่อย นั่งนานไม่ได้",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ปวดหลัง"
+  ],
+  "note": "อาการชั่วคราว"
+ },
+ {
+  "group": "ครอบครัว",
+  "text": "ผมมีลูกสาวสองคนครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ลูก",
+   "สอง"
+  ],
+  "note": "มีสรรพนาม+จำนวน"
+ },
+ {
+  "group": "ครอบครัว",
+  "text": "ภรรยาผมเป็นพยาบาล",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ภรรยา",
+   "พยาบาล"
+  ],
+  "note": "พูดถึงคนอื่น"
+ },
+ {
+  "group": "ครอบครัว",
+  "text": "ลูกคนเล็กเพิ่ง 3 ขวบ",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "3 ขวบ",
+   "ลูก"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ครอบครัว",
+  "text": "แม่ผมป่วยอยู่โรงพยาบาล",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "แม่"
+  ],
+  "note": "พูดถึงคนอื่น"
+ },
+ {
+  "group": "ครอบครัว",
+  "text": "ผมมีแฟนแล้วนะ คบกันมา 2 ปี",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "แฟน"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ครอบครัว",
+  "text": "อยู่บ้านกับพ่อแม่ครับ",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "ที่อยู่"
+  ],
+  "must": [
+   "พ่อแม่"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ครอบครัว",
+  "text": "ผมเป็นลูกคนโต มีน้องชายหนึ่งคน",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ลูกคนโต",
+   "น้อง"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ครอบครัว",
+  "text": "ยังโสดครับ ยังไม่มีแฟน",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "โสด"
+  ],
+  "note": "ปฏิเสธ"
+ },
+ {
+  "group": "วันสำคัญ",
+  "text": "วันเกิดผม 5 มีนาคมครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "5 มีนา",
+   "วันเกิด"
+  ],
+  "note": "มีสรรพนาม+วันที่"
+ },
+ {
+  "group": "วันสำคัญ",
+  "text": "เกิดปี 2540",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "2540"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "วันสำคัญ",
+  "text": "ครบรอบแต่งงานเดือนหน้า",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ครบรอบ",
+   "แต่งงาน"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "วันสำคัญ",
+  "text": "ผมเข้าทำงานที่นี่ตั้งแต่ปี 2565",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "งาน"
+  ],
+  "must": [
+   "2565"
+  ],
+  "note": "มีสรรพนาม+ปี"
+ },
+ {
+  "group": "วันสำคัญ",
+  "text": "เรียนจบเมื่อ 3 ปีที่แล้ว",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "จบ"
+  ],
+  "note": "เวลาสัมพัทธ์"
+ },
+ {
+  "group": "วันสำคัญ",
+  "text": "ผมอายุ 32 แล้วครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "32"
+  ],
+  "note": "มีสรรพนาม+อายุ"
+ },
+ {
+  "group": "วันสำคัญ",
+  "text": "วันหยุดผมคือวันอังคาร",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "อังคาร"
+  ],
+  "note": "กิจวัตร"
+ },
+ {
+  "group": "วันสำคัญ",
+  "text": "นัดหมอทุกวันที่ 15",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "15"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ข้อจำกัด",
+  "text": "ผมกลัวความสูงมากครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ความสูง",
+   "กลัว"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ข้อจำกัด",
+  "text": "ขับรถไม่เป็น",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ขับรถ"
+  ],
+  "note": "ปฏิเสธ+ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ข้อจำกัด",
+  "text": "ว่ายน้ำไม่เป็นเลย",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ว่ายน้ำ"
+  ],
+  "note": "ปฏิเสธ"
+ },
+ {
+  "group": "ข้อจำกัด",
+  "text": "ผมกินเผ็ดไม่ได้",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "เผ็ด"
+  ],
+  "note": "ปฏิเสธ+มีสรรพนาม"
+ },
+ {
+  "group": "ข้อจำกัด",
+  "text": "กลัวหมามาตั้งแต่เด็ก",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "หมา",
+   "กลัว"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ข้อจำกัด",
+  "text": "ผมไม่ดื่มเหล้าครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "เหล้า"
+  ],
+  "note": "ปฏิเสธ+มีสรรพนาม"
+ },
+ {
+  "group": "ข้อจำกัด",
+  "text": "ตื่นเช้าไม่ไหว เป็นคนนอนดึก",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "นอนดึก"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ข้อจำกัด",
+  "text": "แพ้แดด ออกแดดนานไม่ได้",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "แดด"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ทักษะ",
+  "text": "ผมพูดญี่ปุ่นได้ครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ญี่ปุ่น"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ทักษะ",
+  "text": "เล่นกีตาร์เป็น",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "กีตาร์"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ทักษะ",
+  "text": "ผมเขียนโปรแกรม Python ได้",
+  "gate": true,
+  "extracted": true,
+  "ok": false,
+  "cats": [
+   "งาน"
+  ],
+  "must": [
+   "Python"
+  ],
+  "note": "มีสรรพนาม+ศัพท์อังกฤษ"
+ },
+ {
+  "group": "ทักษะ",
+  "text": "ทำอาหารเก่งนะ ทำกับข้าวเองทุกวัน",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ทำอาหาร"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ทักษะ",
+  "text": "ผมวาดรูปไม่เป็นเลย",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "วาดรูป"
+  ],
+  "note": "ปฏิเสธ"
+ },
+ {
+  "group": "ทักษะ",
+  "text": "ขับมอเตอร์ไซค์ได้ แต่รถยนต์ไม่ได้",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "มอเตอร์ไซค์"
+  ],
+  "note": "ได้+ไม่ได้"
+ },
+ {
+  "group": "ทักษะ",
+  "text": "พิมพ์ดีดได้ 60 คำต่อนาที",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "พิมพ์ดีด"
+  ],
+  "note": "มีตัวเลข"
+ },
+ {
+  "group": "ทักษะ",
+  "text": "ผมเรียนจบวิศวะครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "วิศวะ"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ความเชื่อ",
+  "text": "ผมนับถือพุทธครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "พุทธ"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ความเชื่อ",
+  "text": "ไม่กินเนื้อวัว",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "เนื้อวัว"
+  ],
+  "note": "ปฏิเสธ+ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ความเชื่อ",
+  "text": "ผมกินมังสวิรัติ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "มังสวิรัติ"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ความเชื่อ",
+  "text": "ถือศีล 5 ครับ",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ศีล"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ความเชื่อ",
+  "text": "ผมไม่เชื่อเรื่องผี",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ผี"
+  ],
+  "note": "ปฏิเสธ"
+ },
+ {
+  "group": "ความเชื่อ",
+  "text": "ให้ความสำคัญกับครอบครัวมาก",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ครอบครัว"
+  ],
+  "note": "นามธรรม"
+ },
+ {
+  "group": "ความเชื่อ",
+  "text": "ผมเป็นคนตรงต่อเวลา",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ตรงต่อเวลา"
+  ],
+  "note": "นิสัย"
+ },
+ {
+  "group": "ความเชื่อ",
+  "text": "ไม่ชอบการโกหก",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "โกหก"
+  ],
+  "note": "ปฏิเสธ"
+ },
+ {
+  "group": "เป้าหมาย",
+  "text": "ผมกำลังเก็บเงินซื้อบ้านครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ซื้อบ้าน",
+   "เก็บเงิน"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "เป้าหมาย",
+  "text": "ตั้งเป้าเก็บเงิน 2 ล้าน",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "2 ล้าน"
+  ],
+  "note": "มีตัวเลข"
+ },
+ {
+  "group": "เป้าหมาย",
+  "text": "อยากไปเที่ยวญี่ปุ่นปีหน้า",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ญี่ปุ่น"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "เป้าหมาย",
+  "text": "ผมกำลังผ่อนคอนโดอยู่",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "ของที่มี"
+  ],
+  "must": [
+   "คอนโด"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "เป้าหมาย",
+  "text": "วางแผนจะแต่งงานปีหน้า",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "แต่งงาน"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "เป้าหมาย",
+  "text": "ผมอยากเปลี่ยนงานครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "เปลี่ยนงาน"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "เป้าหมาย",
+  "text": "กำลังเรียนต่อปริญญาโท",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "งาน"
+  ],
+  "must": [
+   "ปริญญาโท"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "เป้าหมาย",
+  "text": "ตั้งใจจะลดน้ำหนัก 10 โล",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ลดน้ำหนัก"
+  ],
+  "note": "มีตัวเลข"
+ },
+ {
+  "group": "กิจวัตร",
+  "text": "ผมตื่นตี 5 ทุกวันครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ตี 5"
+  ],
+  "note": "มีสรรพนาม+เวลา"
+ },
+ {
+  "group": "กิจวัตร",
+  "text": "ทำงานกะกลางคืน",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "งาน"
+  ],
+  "must": [
+   "กะกลางคืน"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "กิจวัตร",
+  "text": "ผมออกกำลังกายทุกเช้า",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ออกกำลังกาย"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "กิจวัตร",
+  "text": "สูบบุหรี่วันละซอง",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "บุหรี่"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "กิจวัตร",
+  "text": "ผมนอนดึกทุกคืน ตี 2 กว่า",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "นอนดึก"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "กิจวัตร",
+  "text": "กินข้าวนอกบ้านตลอด ไม่ค่อยทำเอง",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "นอกบ้าน"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "กิจวัตร",
+  "text": "ผมขับรถไปทำงานทุกวัน",
+  "gate": true,
+  "extracted": true,
+  "ok": false,
+  "cats": [
+   "งาน"
+  ],
+  "must": [
+   "ขับรถ"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "กิจวัตร",
+  "text": "ดื่มกาแฟวันละ 3 แก้ว",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "กาแฟ"
+  ],
+  "note": "มีตัวเลข"
+ },
+ {
+  "group": "ประสบการณ์",
+  "text": "ผมเคยไปญี่ปุ่นมาแล้วครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ญี่ปุ่น"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ประสบการณ์",
+  "text": "เคยทำงานที่กรุงเทพ 5 ปี",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "งาน"
+  ],
+  "must": [
+   "กรุงเทพ"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ประสบการณ์",
+  "text": "ผมเคยเป็นทหารครับ",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ทหาร"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ประสบการณ์",
+  "text": "เพิ่งกลับจากเชียงใหม่เมื่อวาน",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "เชียงใหม่"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ประสบการณ์",
+  "text": "ผมเคยผ่าตัดเข่ามาแล้ว",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ผ่าตัด"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ประสบการณ์",
+  "text": "ไม่เคยไปต่างประเทศเลย",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ต่างประเทศ"
+  ],
+  "note": "ปฏิเสธ"
+ },
+ {
+  "group": "ประสบการณ์",
+  "text": "เมื่อวานพาลูกไปสวนสาธารณะ",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "สวน"
+  ],
+  "note": "เหตุการณ์+ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ประสบการณ์",
+  "text": "ผมเรียนที่ขอนแก่นตอนมัธยม",
+  "gate": true,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ขอนแก่น"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ของที่มี",
+  "text": "ผมเลี้ยงหมา 2 ตัวครับ",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "ของที่มี"
+  ],
+  "must": [
+   "หมา"
+  ],
+  "note": "มีสรรพนาม — หมวดมีอยู่"
+ },
+ {
+  "group": "ของที่มี",
+  "text": "เพิ่งซื้อรถใหม่",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "รถ"
+  ],
+  "note": "ไม่มีสรรพนาม — หมวดมีอยู่"
+ },
+ {
+  "group": "ของที่มี",
+  "text": "ผมมีแมวชื่อโมจิ",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "ของที่มี",
+   "ชื่อ"
+  ],
+  "must": [
+   "แมว",
+   "โมจิ"
+  ],
+  "note": "มีสรรพนาม+ชื่อเฉพาะ"
+ },
+ {
+  "group": "ของที่มี",
+  "text": "มีคอมพิวเตอร์เครื่องเดียว",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "คอมพิวเตอร์"
+  ],
+  "note": "ไม่มีสรรพนาม"
+ },
+ {
+  "group": "ของที่มี",
+  "text": "ผมขับรถกระบะครับ",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "ของที่มี"
+  ],
+  "must": [
+   "กระบะ"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ของที่มี",
+  "text": "บ้านผมมีสวนเล็กๆ",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "ของที่มี"
+  ],
+  "must": [
+   "สวน"
+  ],
+  "note": "มีสรรพนาม"
+ },
+ {
+  "group": "ของที่มี",
+  "text": "ไม่มีรถส่วนตัว ใช้ขนส่งสาธารณะ",
+  "gate": false,
+  "extracted": false,
+  "ok": false,
+  "cats": [],
+  "must": [
+   "ขนส่ง"
+  ],
+  "note": "ปฏิเสธ"
+ },
+ {
+  "group": "ของที่มี",
+  "text": "ผมมีจักรยานคันหนึ่ง",
+  "gate": true,
+  "extracted": true,
+  "ok": true,
+  "cats": [
+   "ของที่มี"
+  ],
+  "must": [
+   "จักรยาน"
+  ],
+  "note": "มีสรรพนาม"
+ }
+]
