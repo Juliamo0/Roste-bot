@@ -636,6 +636,11 @@ def parse_summary_json(raw: str) -> str:
     clean = [t for t in clean
              if not ((m := _OWNER_TAG_RE.match(t.strip()))
                      and is_meta_summary_tag(t.strip()[m.end():]))]
+    # ตัดคำขอเฉพาะครั้ง ("ต้องการคำอธิบายเพิ่มเติม") — ไม่ใช่ความชอบถาวร
+    # แต่เก็บคำขอเรื่องวิธีสื่อสาร ("ต้องการคำพูดเป็นทางการ") ไว้ ดู is_transient_request
+    clean = [t for t in clean
+             if not ((m := _OWNER_TAG_RE.match(t.strip()))
+                     and is_transient_request(t.strip()[m.end():]))]
     if not head and not clean:
         return ""
     return f"{head} | {' '.join(clean)}" if clean else head
@@ -681,6 +686,37 @@ def is_meta_summary_tag(value: str) -> bool:
     """tag นี้พูดถึงตัวการสนทนาเอง (ไม่ใช่ข้อเท็จจริงของใคร) หรือเปล่า"""
     v = value.strip()
     return any(v.startswith(p) for p in _META_TAG_PREFIXES)
+
+
+# คำขอ "เฉพาะครั้ง" ที่ไม่ใช่ความชอบถาวร — ไม่ควรเก็บลงความจำ
+#
+# 🚨 วัดกับความจำจริง: user_pref 40 อัน มี **35% (14 อัน) เป็นคำขอเฉพาะครั้ง**
+#     "ต้องการคำกล่าวขอบคุณ" · "ขอความเห็นเรื่องการอ่านหนังสือ" · "ต้องการคำอธิบายเพิ่มเติม"
+# พวกนี้คือสิ่งที่ผู้ใช้ขอใน *เทิร์นนั้น* ไม่ใช่ความชอบของคน เก็บไว้แล้วรกเปล่าๆ
+# และจะสะสมทุกครั้งที่ผู้ใช้ขอให้ช่วยอะไรสักอย่าง
+#
+# ตรงกับกรอบ LTM ข้อ 2 (Salience filtering): "ต้องมีเกณฑ์ว่าอะไรคือข้อมูลที่จะยังมีค่า
+# ในอีก 3 เดือน" — คำขอเฉพาะครั้งไม่ผ่านเกณฑ์นั้น
+#
+# ⚠️ จุดยากคือแยก "ต้องการคำพูดเป็นทางการ" (procedural ถาวร — อยากให้พูดแบบนี้ทุกครั้ง)
+# ออกจาก "ต้องการคำอธิบายเพิ่มเติม" (ขอครั้งเดียว) ทั้งคู่ขึ้นต้นด้วย "ต้องการ" เหมือนกัน
+# ตัวแยกคือ **สิ่งที่ขอ**: ขอ "รูปแบบ/น้ำเสียง" = ถาวร · ขอ "ชิ้นงาน/เนื้อหา" = ครั้งเดียว
+_TRANSIENT_REQUEST_HEADS = ("ต้องการ", "ขอความเห็น", "ขอคำ", "อยากได้", "ขอให้ช่วย")
+
+# สิ่งที่ถ้าขอ = เป็นความต้องการถาวรเรื่อง *วิธีสื่อสาร* (procedural) ไม่ใช่คำขอครั้งเดียว
+_DURABLE_REQUEST_OBJECTS = (
+    "เป็นทางการ", "ทางการ", "สุภาพ", "ภาษาไทย", "ภาษาอังกฤษ", "ชัดเจน", "สั้น", "กระชับ",
+    "ละเอียด", "เป็นกันเอง", "น้ำเสียง", "รูปแบบ",
+)
+
+
+def is_transient_request(value: str) -> bool:
+    """tag นี้เป็นคำขอเฉพาะครั้ง (ไม่ใช่ความชอบถาวร) หรือเปล่า"""
+    v = value.strip()
+    if not any(v.startswith(h) for h in _TRANSIENT_REQUEST_HEADS):
+        return False
+    # ขอเรื่อง "วิธีสื่อสาร" = ถาวร ไม่ใช่คำขอครั้งเดียว
+    return not any(o in v for o in _DURABLE_REQUEST_OBJECTS)
 
 
 def _is_leaked_example(tag: str) -> bool:
@@ -927,7 +963,49 @@ def is_social_pleasantry(text: str) -> bool:
     return bool(_SOCIAL_ONLY_RE.match(text.strip()))
 
 
-def recall_summaries(mem, user_message: str, top_k: int = 5) -> list:
+# ── decay ตามอายุ: จัดอันดับตอนค้น ไม่ใช่ลบข้อมูล ──────────────────────────────
+#
+# กรอบ LTM ข้อ 5 ระบุว่า decay/TTL เป็นส่วนที่คนมองข้ามที่สุด และตรวจแล้วว่า Roste ไม่มีเลย
+#
+# ออกแบบตามที่ mem0 ทำจริง (introducing-memory-decay) เพราะเป็นวิธีที่ *ปลอดภัยที่สุด*:
+#   - **search-time only** — "Nothing gets hidden, nothing gets deleted"
+#     ไม่แตะข้อมูล ไม่ต้อง migrate ปิดได้ทุกเมื่อถ้าวัดแล้วไม่ดี
+#   - ตัวคูณอยู่ในช่วง 0.3x - 1.5x (5x spread) **ไม่ใช่ 0 - 1**
+#     floor 0.3x กันของเก่าที่ตรงที่สุดหายไป ("Strong matches still win even when they're old")
+#   - พารามิเตอร์เป็น half-life (mem0 ใช้ time_decay_half_life_days)
+# Generative Agents ใช้ exponential decay 0.995/ชม. เป็นต้นแบบของแนวคิดนี้
+#
+# ⚠️ ยังไม่มี last_accessed ในข้อมูล — ใช้ "วันที่บันทึก" แทนไปก่อน
+#    ถ้าจะทำแบบ mem0 เต็มรูป (นับ access ล่าสุด) ต้องเพิ่ม field แล้ว migrate ซึ่งเสี่ยงกว่า
+DECAY_ENABLED = True
+DECAY_HALF_LIFE_DAYS = 45     # ครึ่งชีวิต — 45 วันคือจุดกึ่งกลางระหว่าง boost กับ floor
+DECAY_MAX_BOOST = 1.5         # ของวันนี้
+DECAY_MIN_FACTOR = 0.3        # พื้น — ของเก่ามากก็ยังมีสิทธิ์โผล่ถ้าตรงจริง
+
+
+def recency_factor(when, now=None) -> float:
+    """ตัวคูณคะแนนตามอายุ — คืนค่าในช่วง DECAY_MIN_FACTOR..DECAY_MAX_BOOST
+
+    when/now เป็นสตริง ISO (YYYY-MM-DD) — รับ `now` เข้ามาได้เพื่อให้เทสไม่ต้องรอเวลาจริง
+    (แนวเดียวกับที่ระบบอื่นทำ: inject clock แทนการ freeze เวลาทั้งกระบวนการ)
+
+    ⚠️ fail-safe: ไม่มีวันที่/รูปแบบเพี้ยน → คืน 1.0 (กลางๆ ไม่ได้เปรียบไม่เสียเปรียบ)
+    ข้อมูลจริงมี fact แบบเก่าที่เป็น str ล้วนไม่มี created — ห้ามทำให้มันหาย
+    """
+    from datetime import date
+    if not when:
+        return 1.0
+    try:
+        d0 = date.fromisoformat(str(when)[:10])
+        d1 = date.fromisoformat(str(now)[:10]) if now else date.today()
+    except Exception:
+        return 1.0
+    age = max(0, (d1 - d0).days)          # วันที่อนาคต (นาฬิกาเพี้ยน) → ถือว่าอายุ 0
+    span = DECAY_MAX_BOOST - DECAY_MIN_FACTOR
+    return DECAY_MIN_FACTOR + span * (0.5 ** (age / DECAY_HALF_LIFE_DAYS))
+
+
+def recall_summaries(mem, user_message: str, top_k: int = 5, now=None) -> list:
     """คืน summaries ที่เกี่ยวข้อง — กรองเหลือเฉพาะฝั่งเจ้าของที่ถูกถามแล้ว
 
     ⚠️ เดิมด่านแรกเช็คว่า "มีคำใน PAST_HINTS ไหม ไม่มีก็คืน [] ทันที" — วัดแล้วพบว่าด่านนี้
@@ -979,8 +1057,11 @@ def recall_summaries(mem, user_message: str, top_k: int = 5) -> list:
     if whose in ("user", "me") and not any(_OWNER_TAG_RE.search(t) for t in texts):
         whose = "any"
 
+    # เก็บวันที่คู่กับข้อความไว้ใช้คิด decay (summary แบบเก่าที่เป็น str ล้วนจะไม่มีวันที่)
+    dates = [e.get("date") if isinstance(e, dict) else None for e in summaries]
+
     scored = []
-    for text in texts:
+    for text, when in zip(texts, dates):
         parts = split_owner_tags(text)
         # ถามเจาะจงฝั่ง แต่บรรทัดนี้ไม่มีฝั่งนั้น → ข้าม (กันตอบผิดเจ้าของ)
         if whose in ("user", "me") and not parts[whose]:
@@ -989,6 +1070,10 @@ def recall_summaries(mem, user_message: str, top_k: int = 5) -> list:
                if whose in ("user", "me") else text)
         score = sum(1 for w in words if w in hay)
         if score > 0:
+            # decay = *จัดอันดับ* ไม่ใช่ตัดทิ้ง — คูณคะแนนด้วยตัวคูณตามอายุ (0.3x-1.5x)
+            # ของเก่าที่ตรงมากยังชนะของใหม่ที่ตรงน้อยได้ เพราะมี floor 0.3x
+            if DECAY_ENABLED:
+                score *= recency_factor(when, now)
             scored.append((score, text))
 
     if not scored:

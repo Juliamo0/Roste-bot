@@ -1345,3 +1345,169 @@ class TestOwnerSeparatedMemory:
         """parse ไม่ได้ = ทิ้งรอบนั้น ไม่เก็บข้อความดิบที่กรองฝั่งไม่ได้"""
         assert memory.parse_summary_json("สรุปเป็นข้อความธรรมดา") == ""
         assert memory.parse_summary_json("") == ""
+
+
+class TestRecencyDecay:
+    """decay ตามอายุ — เป็น **การจัดอันดับตอนค้น** ไม่ใช่การลบข้อมูล
+
+    ที่มา: กรอบ LTM ข้อ 5 ระบุว่า decay/TTL คือส่วนที่คนมองข้ามที่สุด และตรวจแล้วว่า
+    Roste ไม่มีเลย (`grep ttl|decay|expire` = 0 hit)
+
+    ออกแบบตามที่ mem0 ทำจริง (introducing-memory-decay):
+      - **search-time only** "Nothing gets hidden, nothing gets deleted"
+        -> ไม่ลบข้อมูล ไม่ต้อง migrate ไม่ต้อง reindex ปิดได้ทุกเมื่อ
+      - ตัวคูณอยู่ในช่วง **0.3x - 1.5x** (5x spread) ไม่ใช่ 0 - 1
+        -> มี **floor 0.3x** กันของเก่าที่ "ตรงที่สุด" หายไป
+        ("Strong matches still win even when they're old")
+      - พารามิเตอร์เป็น **half-life** (mem0 ใช้ time_decay_half_life_days)
+    และ Generative Agents ใช้ exponential decay 0.995/ชม. เป็นต้นแบบ
+
+    ⚠️ เทสใช้ **clock ที่ inject ได้** ไม่รอเวลาจริง — ส่งวันที่ปัจจุบันเข้าไปตรงๆ
+    """
+
+    def test_fresh_memory_gets_boost(self):
+        """ของวันนี้ต้องได้ตัวคูณสูงสุด"""
+        f = memory.recency_factor("2026-08-11", now="2026-08-11")
+        assert f == memory.DECAY_MAX_BOOST
+
+    def test_old_memory_damped_not_zero(self):
+        """ของเก่ามากต้องถูกลดคะแนน แต่ **ไม่เป็นศูนย์** (floor 0.3x)"""
+        # exponential เข้าใกล้ floor แบบ asymptote — ไม่แตะพอดี (จึงเทียบแบบ approx)
+        f = memory.recency_factor("2020-01-01", now="2026-08-11")
+        assert abs(f - memory.DECAY_MIN_FACTOR) < 1e-6
+        assert f > 0, "ห้ามเป็น 0 — ของเก่าที่ตรงที่สุดต้องยังโผล่ได้"
+
+    def test_half_life_midpoint(self):
+        """ที่ half-life พอดี ตัวคูณต้องอยู่กึ่งกลางระหว่าง floor กับ boost"""
+        from datetime import date, timedelta
+        now = date(2026, 8, 11)
+        old = now - timedelta(days=memory.DECAY_HALF_LIFE_DAYS)
+        f = memory.recency_factor(old.isoformat(), now=now.isoformat())
+        mid = memory.DECAY_MIN_FACTOR + (memory.DECAY_MAX_BOOST - memory.DECAY_MIN_FACTOR) / 2
+        assert abs(f - mid) < 0.05, f"ที่ half-life ควรได้ ~{mid:.2f} แต่ได้ {f:.2f}"
+
+    def test_monotonic_decreasing(self):
+        """ยิ่งเก่ายิ่งคะแนนน้อยลง ไม่มีสวิงกลับ"""
+        from datetime import date, timedelta
+        now = date(2026, 8, 11)
+        prev = 99.0
+        for d in (0, 1, 7, 30, 90, 365, 3650):
+            f = memory.recency_factor((now - timedelta(days=d)).isoformat(), now=now.isoformat())
+            assert f <= prev + 1e-9, f"อายุ {d} วันได้ {f} ซึ่งมากกว่าอันก่อนหน้า"
+            prev = f
+
+    def test_missing_or_bad_date_is_neutral(self):
+        """⚠️ fail-safe: ไม่มีวันที่/รูปแบบเพี้ยน ต้องได้ตัวคูณกลาง ไม่ใช่ 0
+
+        ข้อมูลจริงมี fact แบบเก่าที่เป็น str ล้วน (ไม่มี created) — ห้ามทำให้มันหาย
+        """
+        for bad in (None, "", "ไม่ใช่วันที่", "2026-13-99"):
+            assert memory.recency_factor(bad, now="2026-08-11") == 1.0
+
+    def test_future_date_clamped(self):
+        """วันที่อนาคต (นาฬิกาเครื่องเพี้ยน) ต้องไม่ได้คะแนนเกิน boost"""
+        assert memory.recency_factor("2030-01-01", now="2026-08-11") <= memory.DECAY_MAX_BOOST
+
+
+class TestDecayAppliedToRecall:
+    """decay ต้องมีผลกับการจัดอันดับจริง แต่ไม่ทำให้ของหาย"""
+
+    SUMMARIES = [
+        {"date": "2026-01-01", "text": "1 ม.ค.: คุยเรื่องหนังสือ | user_pref:ชอบนิยายสืบสวน"},
+        {"date": "2026-08-10", "text": "10 ส.ค.: คุยเรื่องหนังสือ | user_pref:ชอบนิยายไซไฟ"},
+    ]
+
+    def test_recent_ranked_first(self):
+        """คำถามเดียวกัน ของใหม่ควรมาก่อนของเก่า"""
+        got = memory.recall_summaries({"summaries": self.SUMMARIES}, "ผมชอบนิยายแนวไหน",
+                                      now="2026-08-11")
+        assert got, "ต้องยังคืนของ"
+        assert "ไซไฟ" in got[0], f"ของใหม่ควรมาก่อน แต่ได้ {got[0]!r}"
+
+    def test_old_memory_still_returned(self):
+        """⚠️ ของเก่าต้องไม่หาย — decay จัดอันดับ ไม่ได้ลบ"""
+        got = memory.recall_summaries({"summaries": self.SUMMARIES}, "ผมชอบนิยายแนวไหน",
+                                      now="2026-08-11")
+        assert any("สืบสวน" in s for s in got), "ของเก่าต้องยังอยู่ในผลลัพธ์"
+
+    def test_strong_old_match_beats_weak_new(self):
+        """ของเก่าที่ตรงกว่าต้องชนะของใหม่ที่ตรงน้อยกว่า (floor 0.3x ทำงาน)"""
+        summaries = [
+            {"date": "2026-01-01",
+             "text": "1 ม.ค.: คุยเรื่องแมว | user_fact:เลี้ยงแมวชื่อโมจิ user_pref:ชอบแมวมาก"},
+            {"date": "2026-08-10", "text": "10 ส.ค.: คุยเรื่องอาหาร | user_pref:ชอบส้มตำ"},
+        ]
+        got = memory.recall_summaries({"summaries": summaries}, "แมวชื่ออะไร",
+                                      now="2026-08-11")
+        assert got and "โมจิ" in got[0], f"ของเก่าที่ตรงกว่าต้องชนะ แต่ได้ {got}"
+
+    def test_decay_can_be_disabled(self):
+        """ปิด decay ได้ -> กลับไปเรียงแบบเดิม (กันกรณีวัดแล้วไม่ดี)"""
+        old = memory.DECAY_ENABLED
+        try:
+            memory.DECAY_ENABLED = False
+            got = memory.recall_summaries({"summaries": self.SUMMARIES},
+                                          "ผมชอบนิยายแนวไหน", now="2026-08-11")
+            assert got
+        finally:
+            memory.DECAY_ENABLED = old
+
+
+class TestTransientRequestNotStored:
+    """คำขอเฉพาะครั้ง ไม่ใช่ "ความชอบถาวร" — ไม่ควรเก็บลงความจำ
+
+    🚨 วัดกับความจำจริง: user_pref ทั้งหมด 40 อัน แบ่งได้ 3 กลุ่ม
+        35% (14 อัน) = ขอเฉพาะครั้ง  <- ไม่ควรเก็บเลย
+        22% ( 9 อัน) = procedural จริง (วิธีที่อยากให้ทำงาน)
+        42% (17 อัน) = semantic (ข้อเท็จจริง/ความชอบถาวร)
+
+    ตัวอย่างกลุ่มที่ไม่ควรเก็บ — เป็นคำขอของ *เทิร์นนั้น* ไม่ใช่ความชอบของคน:
+        "ต้องการคำกล่าวขอบคุณ"        (ขอให้ช่วยเขียนครั้งเดียว)
+        "ขอความเห็นเรื่องการอ่านหนังสือ"
+        "ต้องการคำอธิบายเพิ่มเติม"
+        "ต้องการคำแนะนำ"
+    ต่างจาก procedural จริงที่เป็นวิธีทำงานถาวร ("ต้องการคำพูดเป็นทางการ" = ทุกครั้ง)
+
+    ตรงกับกรอบ LTM ข้อ 2: "Salience filtering — ต้องมีเกณฑ์ว่าอะไรคือข้อมูลที่จะยังมีค่า
+    ในอีก 3 เดือน" — คำขอเฉพาะครั้งไม่ผ่านเกณฑ์นั้น
+    """
+
+    @pytest.mark.parametrize("value", [
+        "ต้องการคำกล่าวขอบคุณ",
+        "ต้องการคำอธิบายเพิ่มเติม",
+        "ต้องการคำแนะนำ",
+        "ขอความเห็นเรื่องการอ่านหนังสือ",
+        "ขอความเห็นเรื่องการทำงานหนัก",
+    ])
+    def test_transient_request_detected(self, value):
+        assert memory.is_transient_request(value), f"{value!r} เป็นคำขอเฉพาะครั้ง"
+
+    @pytest.mark.parametrize("value", [
+        "ต้องการคำพูดเป็นทางการ",       # procedural จริง — วิธีทำงานถาวร
+        "ชอบตอบแบบสุภาพ",
+        "ชอบพูดภาษาไทย",
+        # ⚠️ เคสก้ำกึ่ง: อ่านได้ทั้ง "ขอตัวอย่างครั้งเดียว" และ "อยากได้คำพูดทางการเสมอ"
+        # เลือกเก็บ — ผิดทางเก็บเกินแค่รก แต่ผิดทางตัดคือข้อมูลผู้ใช้หาย
+        "ต้องการตัวอย่างคำพูดเป็นทางการ",
+        "ชอบของหวาน",                    # semantic
+        "สนใจเรื่องเทคโนโลยี",
+        "ชอบเล่นเกมยิงปืน",
+        "เบื่อการอ่าน",
+    ])
+    def test_durable_preference_kept(self, value):
+        """⚠️ regression guard: ความชอบถาวรต้องไม่โดนตัด"""
+        assert not memory.is_transient_request(value)
+
+    def test_parse_drops_transient_tag(self):
+        """ด่านตอน parse — ตัด tag ที่เป็นคำขอเฉพาะครั้ง ที่เหลือต้องอยู่ครบ"""
+        raw = ('{"summary":"คุยเรื่องงาน",'
+               '"tags":["user_pref:ต้องการคำอธิบายเพิ่มเติม",'
+               '"user_fact:ทำงานเป็นช่างซ่อมแอร์"]}')
+        out = memory.parse_summary_json(raw)
+        assert "ทำงานเป็นช่างซ่อมแอร์" in out
+        assert "ต้องการคำอธิบายเพิ่มเติม" not in out
+
+    def test_procedural_tag_survives_parse(self):
+        """⚠️ procedural จริงต้องไม่ถูกตัดตอน parse"""
+        raw = '{"summary":"คุยเรื่องภาษา","tags":["user_pref:ต้องการคำพูดเป็นทางการ"]}'
+        assert "ต้องการคำพูดเป็นทางการ" in memory.parse_summary_json(raw)
