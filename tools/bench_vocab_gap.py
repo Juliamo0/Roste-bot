@@ -35,7 +35,10 @@ import vectormemory  # noqa: E402
 
 logging.disable(logging.CRITICAL)
 
-REAL_UID = 434893254576701450
+# uid ที่ใช้วัดกับความจำจริง — อ่านจาก env ไม่ฮาร์ดโค้ด
+# (repo เป็น public — Discord user ID เป็นข้อมูลระบุตัวตน ไม่ควรติดมากับโค้ด)
+# ตั้งใน .env: BENCH_REAL_UID=<discord user id>
+REAL_UID = int(os.getenv("BENCH_REAL_UID") or 0)
 TEST_UID = 999900000000000004
 
 # ── เคสคำพ้อง: สร้างจากเนื้อหา summary จริงของผู้ใช้ ───────────────────────────

@@ -36,6 +36,20 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "stop_voice",
+            "description": (
+                "หยุดเสียงที่รอสเต้กำลังส่งอยู่ (ร้องเพลง/พูด) ทันที "
+                "ใช้เมื่อผู้ใช้สื่อว่าอยากให้หยุด เงียบ พอ เลิก หุบปาก ไม่เอาแล้ว "
+                "ข้ามเพลง หรือขอให้เบาเสียงลง — ไม่ว่าจะพูดตรงๆ หรืออ้อมๆ "
+                "เครื่องมือนี้ยื่นให้เฉพาะตอนรอสเต้กำลังส่งเสียงอยู่จริงเท่านั้น "
+                "ห้ามใช้เมื่อผู้ใช้ *ขอ* ให้ร้องเพลง ถามคำถาม หรือชมว่าเพราะ"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_current_time",
             "description": (
                 "บอกเวลา/วันที่ปัจจุบันจริงในไทย ใช้เมื่อผู้ใช้ถาม 'ตอนนี้กี่โมง' 'วันนี้วันที่เท่าไหร่' "
@@ -249,7 +263,8 @@ TOOLS_BY_NAME = {t["function"]["name"]: t for t in TOOLS}
 ALWAYS_OFFER_SEARCH_WEB = False
 
 
-def select_tools(user_message: str, *, always_web: bool | None = None) -> list:
+def select_tools(user_message: str, *, always_web: bool | None = None,
+                 is_speaking: bool = False) -> list:
     """คืนเฉพาะ tool ที่เกี่ยวกับคำถามนี้ — ยิ่งน้อยยิ่งดีต่อความจำ (ดูคอมเมนต์ข้างบน)
 
     always_web: override ค่า ALWAYS_OFFER_SEARCH_WEB (ใช้ตอน bench เทียบสองแบบ)
@@ -262,6 +277,11 @@ def select_tools(user_message: str, *, always_web: bool | None = None) -> list:
     names = [n for n, kws in TOOL_HINTS.items() if any(k in user_message for k in kws)]
     if always_web and "search_web" not in names:
         names.append("search_web")
+    # stop_voice ยื่นตาม **สถานะ** ไม่ใช่ keyword — ลิสต์คำครอบสำนวนไทยไม่มีวันครบ
+    # (วัดได้: ลิสต์คำจับได้ 6/35 สำนวนที่ผู้ใช้น่าจะพิมพ์) ให้โมเดลตัดสินแทน
+    # ยื่นเฉพาะตอนกำลังส่งเสียงอยู่จริง -> ตอนคุยปกติไม่เปลือง context เลย
+    if is_speaking:
+        names.insert(0, "stop_voice")
     return [TOOLS_BY_NAME[n] for n in names]
 
 
@@ -456,7 +476,20 @@ async def _tool_search_web(args: dict, mem: dict) -> str:
 
 
 # ต่อ tool ใหม่ (IoT, reminder, ...) แค่เพิ่ม function ที่นี่ + ประกาศใน TOOLS + เพิ่มเข้า dict นี้
+async def _tool_stop_voice(args: dict) -> str:
+    """หยุดเสียงที่กำลังเล่นอยู่ — ตัวหยุดจริงอยู่ที่ bot.py (ที่นี่ไม่มี voice client)
+
+    ตั้งธงให้ bot.py อ่านหลังโมเดลตอบเสร็จ แล้วสั่ง vc.stop() ให้
+    (llm_tools ไม่ import discord/bot เพื่อไม่ให้เกิด circular import และเทสรันได้โดยไม่ต้องมี Discord)
+    """
+    import music
+    music.stop_requested = True
+    return ("[ระบบ: หยุดเสียงให้แล้ว ให้รอสเต้ตอบสั้นๆ ว่าหยุดแล้ว "
+            "ด้วยน้ำเสียงตัวเอง ไม่ต้องอธิบายอะไรเพิ่ม]")
+
+
 TOOL_HANDLERS = {
+    "stop_voice": _tool_stop_voice,
     "get_current_time": _tool_get_current_time,
     "get_weather": _tool_get_weather,
     "get_power_outage": _tool_get_power_outage,

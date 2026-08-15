@@ -86,3 +86,5 @@ tools/thai_cases_generated.json
 backup_restart_*/
 bot_restart.log
 bot_restart.err
+memory/*.bak
+memory/*.bak2

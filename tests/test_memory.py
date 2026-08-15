@@ -1535,6 +1535,129 @@ class TestAskAndSuggestTags:
         assert memory.filter_by_owner([old], "user")[0].endswith("ชอบสืบสวน")
 
 
+class TestProceduralMemory:
+    """แยก "อยากให้ตอบยังไง" (procedural) ออกจาก "สนใจเรื่องอะไร" (semantic)
+
+    ที่มา: กรอบ LTM ข้อ 1 — สองอย่างนี้ถูกเก็บใน tag เดียวกันและผ่าน recall เส้นเดียวกัน
+    วัดได้: ถาม "วันนี้เหนื่อยจัง" recall คืน 0 อัน -> procedural ไม่ถึง context เลย
+    ส่วนคำถามอื่นได้มาเพราะ *บังเอิญ* อยู่บรรทัดเดียวกับเรื่องที่ถาม
+    """
+
+    @pytest.mark.parametrize("v", [
+        "ต้องการคำพูดเป็นทางการ", "ชอบตอบแบบสุภาพ", "ต้องการความชัดเจน",
+        "อยากให้ตอบสั้นๆ", "ใช้ภาษาไทย",
+    ])
+    def test_procedural_detected(self, v):
+        assert memory.is_procedural(v)
+
+    @pytest.mark.parametrize("v", [
+        "ชอบนิยายสืบสวน", "ทำงานหนัก", "เลี้ยงแมวชื่อโมจิ",
+        "สนใจเรื่องเทคโนโลยี", "ชอบฟังเพลงร็อค",
+    ])
+    def test_semantic_not_procedural(self, v):
+        """ความชอบเรื่องเนื้อหาต้องไม่ถูกนับเป็น procedural — ไม่งั้นยัดเข้าทุกเทิร์นมั่ว"""
+        assert not memory.is_procedural(v)
+
+    def test_collect_returns_newest_first(self):
+        mem = {"summaries": [
+            {"text": "1 ส.ค.: ห | user_pref:ต้องการความเป็นทางการ", "date": "2026-08-01"},
+            {"text": "9 ส.ค.: ห | user_pref:ชอบตอบแบบสุภาพ", "date": "2026-08-09"},
+        ]}
+        assert memory.collect_procedural(mem)[0] == "ชอบตอบแบบสุภาพ"
+
+    def test_collect_collapses_same_meaning(self):
+        """หลายสำนวนที่ชี้เรื่องเดียวกันเก็บอันเดียว (วัดจริง: 8 อัน -> 3)"""
+        mem = {"summaries": [
+            {"text": "1 ส.ค.: ห | user_pref:ต้องการคำพูดเป็นทางการ", "date": "2026-08-01"},
+            {"text": "2 ส.ค.: ห | user_pref:ต้องการความเป็นทางการ", "date": "2026-08-02"},
+            {"text": "3 ส.ค.: ห | user_pref:ต้องการคำกล่าวเป็นทางการ", "date": "2026-08-03"},
+        ]}
+        assert len(memory.collect_procedural(mem)) == 1
+
+    def test_collect_respects_cap(self):
+        mem = {"summaries": [
+            {"text": f"{i} ส.ค.: ห | user_pref:{v}", "date": f"2026-08-0{i}"}
+            for i, v in enumerate(
+                ["ต้องการความเป็นทางการ", "ชอบตอบแบบสุภาพ", "ต้องการความชัดเจน",
+                 "อยากให้ตอบสั้นๆ", "ใช้ภาษาไทย"], start=1)
+        ]}
+        assert len(memory.collect_procedural(mem)) <= memory.MAX_PROCEDURAL
+
+    def test_collect_ignores_semantic(self):
+        mem = {"summaries": [
+            {"text": "1 ส.ค.: ห | user_pref:ชอบนิยายสืบสวน", "date": "2026-08-01"}]}
+        assert memory.collect_procedural(mem) == []
+
+    def test_collect_side_separation(self):
+        """ของรอสเต้ต้องไม่ปนมาเป็น procedural ของผู้ใช้"""
+        mem = {"summaries": [
+            {"text": "1 ส.ค.: ห | me_pref:ชอบตอบแบบสุภาพ", "date": "2026-08-01"}]}
+        assert memory.collect_procedural(mem, "user") == []
+
+    def test_empty_memory_safe(self):
+        assert memory.collect_procedural({}) == []
+
+
+class TestSensitiveDataPolicy:
+    """กรอบ LTM ข้อ 6: บางอย่างไม่ควรเขียนลง memory เลย
+
+    กันตอน *เขียน* เพราะ summary ถูก inject เข้า system prompt ทุกครั้งที่ recall ตรง
+    และเก็บข้ามเซสชัน — หลุดครั้งเดียวคือส่งซ้ำไปเรื่อยๆ
+
+    ⚠️ ครึ่งหนึ่งของเทสคือ **ของที่ต้องไม่โดน** — ตัวเลขทั่วไป (อายุ/ราคา/จำนวน)
+    ต้องผ่านได้ ไม่งั้นความจำปกติจะหายไปด้วย
+    """
+
+    @pytest.mark.parametrize("text,kind", [
+        ("เบอร์ผม 0812345678", "เบอร์โทร"),
+        ("โทร 081-234-5678", "เบอร์โทร"),
+        ("เลขบัตรประชาชน 1234567890123", "เลขบัตร/บัญชี"),
+        ("บัตร 4111 1111 1111 1111", "เลขบัตร/บัญชี"),
+        ("อีเมล test@example.com", "อีเมล"),
+        ("รหัสผ่านคือ abc123", "รหัสผ่าน/OTP"),
+        ("otp 123456", "รหัสผ่าน/OTP"),
+    ])
+    def test_detects_sensitive(self, text, kind):
+        assert memory.find_sensitive(text) == kind
+
+    @pytest.mark.parametrize("text", [
+        "ผมอายุ 25 ปี", "ราคา 60000 บาท", "เงินเดือน 60,000 บาท",
+        "ทำงาน 8 ชั่วโมง", "ชอบอ่านหนังสือ", "ปี 2026",
+        "วิ่ง 5 กิโลทุกเช้า", "เทคนิค Pomodoro 25 นาที", "ผมมีแมว 2 ตัว",
+    ])
+    def test_normal_text_not_flagged(self, text):
+        """ข้อมูลปกติต้องไม่โดน — ยืนยันกับความจำจริง 79 summary ได้ 0 false positive"""
+        assert memory.find_sensitive(text) == ""
+
+    def test_strips_only_the_bad_tag(self):
+        """ตัดเฉพาะ tag ที่มีของอ่อนไหว ไม่ทิ้งทั้งบรรทัด"""
+        out, dropped = memory.strip_sensitive_tags(
+            "6 ส.ค.: ห | user_fact:เบอร์โทร 0812345678 user_pref:ชอบอ่านหนังสือ")
+        assert "ชอบอ่านหนังสือ" in out and "0812345678" not in out
+        assert dropped == ["เบอร์โทร"]
+
+    def test_drops_whole_summary_if_headline_sensitive(self):
+        """หัวเรื่องมีของอ่อนไหว = ทิ้งทั้งอัน (fail-conservative)"""
+        out, dropped = memory.strip_sensitive_tags(
+            "6 ส.ค.: เบอร์ผมคือ 0812345678 | user_pref:ชอบอ่าน")
+        assert out == "" and dropped
+
+    def test_clean_summary_untouched(self):
+        t = "6 ส.ค.: ห | user_pref:ชอบอ่านหนังสือ me_pref:ชอบแฟนตาซี"
+        assert memory.strip_sensitive_tags(t) == (t, [])
+
+    def test_add_fact_rejects_sensitive(self):
+        mem = {"facts": [], "summaries": [], "history": []}
+        assert memory.add_fact(mem, "เบอร์โทร 0812345678") is False
+        assert memory.add_fact(mem, "อีเมล a@b.com") is False
+        assert mem["facts"] == []
+
+    def test_add_fact_keeps_normal(self):
+        mem = {"facts": [], "summaries": [], "history": []}
+        assert memory.add_fact(mem, "ชอบอ่านหนังสือ") is True
+        assert len(mem["facts"]) == 1
+
+
 class TestFixOwnerSlips:
     """validation layer — ตรวจ tag ที่ 4B ติดผิดเจ้าของแล้วย้ายกลับ
 

@@ -211,6 +211,11 @@ def add_fact(mem, text, category=None):
     text = text.strip()
     if not text:
         return False
+    # นโยบายข้อมูลอ่อนไหว — กันที่นี่เพราะเป็นทางเข้าเดียวของ facts
+    # (ครอบทั้งเส้นสกัดอัตโนมัติ chat.py:158 และคำสั่ง "จำไว้ว่า…" memory.py:1441)
+    if find_sensitive(text):
+        logger.info("   🔒 ไม่เก็บ fact ที่มีข้อมูลอ่อนไหว")
+        return False
     # หมวดเปิด — รับชื่อหมวดที่โมเดลตั้งเองได้ (เดิมทิ้งทุกหมวดนอก closed set)
     # แต่ **เฉพาะ SINGLE_VALUE_CATEGORIES เท่านั้นที่ supersede ของเก่าได้** (ดู add_fact ข้างล่าง)
     # หมวดอิสระจึงสะสมได้อย่างเดียว ไม่ลบอะไรทิ้ง — ปลอดภัยไว้ก่อน เพราะเราไม่รู้ล่วงหน้า
@@ -621,6 +626,137 @@ def build_summary_prompt(pairs: list) -> str:
 
 
 # ── แปลงผล JSON จาก build_summary_prompt เป็นบรรทัดเดียวสำหรับเก็บ ──────────────
+
+# ── procedural memory: "อยากให้ตอบยังไง" ต่างจาก "สนใจเรื่องอะไร" ─────────────
+#
+# กรอบ LTM ข้อ 1: procedural/preferences ถูกเก็บปนกับ episodic/semantic ใน tag เดียวกัน
+#   user_pref:ต้องการคำพูดเป็นทางการ   <- procedural: ควรมีผล **ทุกเทิร์น**
+#   user_pref:ชอบนิยายสืบสวน          <- semantic:   ดึงมาเมื่อเกี่ยวข้อง
+# ทั้งคู่ผ่าน recall_summaries เส้นเดียวกัน = procedural มาถึงก็ต่อเมื่อ "บังเอิญ" ตรงคำถาม
+#
+# วัดกับความจำจริง (55 summary): procedural 8 · semantic 30
+#   ถาม "วันนี้เหนื่อยจัง" -> recall 0 อัน -> procedural **ไม่มาเลย**
+#   ถาม "เล่าเรื่องสนุกๆ"  -> procedural มาเพราะบังเอิญอยู่บรรทัดเดียวกับเรื่องหุ่นยนต์
+#   = ได้ผลถูกด้วยความบังเอิญ ไม่ใช่เพราะระบบตั้งใจส่ง
+#
+# ⚠️ จับที่ *ใจความ* ไม่ใช่ประธาน+กริยา (§4: กริยาไม่มีวันครบ) — คำพวกนี้อธิบาย
+#    "รูปแบบการตอบ" ซึ่งเป็นเซ็ตปิดกว่ามาก ต่างจากหัวข้อที่ผู้ใช้สนใจซึ่งไม่มีที่สิ้นสุด
+_PROCEDURAL_HINTS = (
+    "เป็นทางการ", "สุภาพ", "ชัดเจน", "กันเอง", "สั้นๆ", "สั้น ๆ",
+    "ละเอียด", "ตอบแบบ", "พูดแบบ", "ใช้ภาษา", "ภาษาไทย", "ภาษาอังกฤษ",
+    "ไม่ต้องยาว", "ตรงประเด็น",
+)
+
+
+# เพดานจำนวน procedural ที่ส่งเข้า context ทุกเทิร์น — คุมโควตา attention cliff 3,700c
+MAX_PROCEDURAL = 3
+
+
+def is_procedural(value: str) -> bool:
+    """tag นี้บอก *วิธีที่อยากให้ตอบ* หรือเปล่า (ไม่ใช่ *เรื่องที่สนใจ*)"""
+    return any(h in (value or "") for h in _PROCEDURAL_HINTS)
+
+
+def collect_procedural(mem, whose: str = "user") -> list:
+    """รวม procedural preference ทั้งหมดของฝั่งที่ระบุ — ไม่ขึ้นกับคำถาม
+
+    ใช้กับบล็อกโปรไฟล์ที่ส่งเข้า context **ทุกเทิร์น** (chat.py) ไม่ใช่เส้น recall
+    เพราะ "อยากให้ตอบเป็นทางการ" ต้องมีผลแม้ถามเรื่องที่ไม่เกี่ยวกับความเป็นทางการ
+
+    คืนของใหม่สุดก่อน และตัดซ้ำ — ผู้ใช้เปลี่ยนใจได้ ของใหม่ควรมาก่อน
+    (ไม่ลบของเก่าตามหลัก ADD-only ที่ใช้ทั้งโปรเจกต์)
+
+    ⚠️ ตัดของที่ "พูดเรื่องเดียวกัน" ออกด้วย แล้วคุมเพดานที่ MAX_PROCEDURAL
+    วัดกับความจำจริง: ได้ 8 อัน แต่ 6 อันคือ "เป็นทางการ" ที่เขียนคนละสำนวน
+    (ต้องการคำพูดเป็นทางการ / ต้องการความเป็นทางการ / ต้องการคำกล่าวเป็นทางการ ...)
+    ยัดทั้งหมด = 213c ทุกเทิร์นโดยได้ข้อมูลเพิ่มแค่ 2 อย่าง — ไม่คุ้มกับ attention cliff
+    """
+    summaries = mem.get("summaries") or []
+    out, seen_hint = [], set()
+    for e in reversed(summaries):          # ใหม่ -> เก่า
+        text = e["text"] if isinstance(e, dict) else e
+        parts = split_owner_tags(text)
+        for v in parts.get(f"{whose}_pref") or []:
+            if not is_procedural(v):
+                continue
+            # ยุบตามใจความ: อันที่ชี้เรื่องเดียวกันเก็บอันแรก (= ใหม่สุด) พอ
+            hint = next((h for h in _PROCEDURAL_HINTS if h in v), v)
+            if hint in seen_hint:
+                continue
+            seen_hint.add(hint)
+            out.append(v)
+            if len(out) >= MAX_PROCEDURAL:
+                return out
+    return out
+
+
+# ── นโยบายข้อมูลอ่อนไหว: บางอย่างไม่ควรเขียนลงความจำถาวรเลย ────────────────────
+#
+# กรอบ LTM ข้อ 6 (Governance): "Sensitive data — บางอย่างไม่ควรเขียนลง memory เลย"
+# audit เดิมระบุว่าโปรเจกต์มีวินัย PII ฝั่ง *log* ครบ (bot.py:741, chat.py:161)
+# แต่ **ไม่มีอะไรกันฝั่ง memory เลย**
+#
+# ทำไมต้องกันตอนเขียน ไม่ใช่ตอนอ่าน: summary ถูก inject เข้า system prompt ทุกครั้งที่
+# recall ตรง และเก็บถาวรข้ามเซสชัน ถ้าเบอร์โทร/เลขบัญชีหลุดเข้าไปครั้งเดียว
+# มันจะถูกส่งเข้าโมเดลซ้ำไปเรื่อยๆ และต้องไล่ลบย้อนหลังซึ่งยากกว่ามาก
+#
+# ✅ สแกนความจำจริงทุกไฟล์แล้ว (79 summary): ยังไม่มีของอ่อนไหวติดอยู่
+#    = กันไว้ก่อนเกิด ไม่ใช่ตามแก้ทีหลัง
+#
+# ⚠️ ตั้งใจให้จับเฉพาะรูปแบบที่ **ชัดเจนและเสียหายจริง** ไม่ใช่ blacklist คำกว้างๆ
+#    ตัวเลขทั่วไป (อายุ, ราคา, จำนวน) ต้องไม่โดน — ไม่งั้นความจำปกติจะหายไปด้วย
+_SENSITIVE_PATTERNS = (
+    # เบอร์มือถือไทย 10 หลัก (06/08/09 ขึ้นต้น) — เว้นวรรค/ขีดคั่นได้
+    (re.compile(r"0[689][\d\-\s]{8,12}"), "เบอร์โทร"),
+    # เลขบัตรประชาชน 13 หลัก
+    (re.compile(r"\b\d[\d\-\s]{12,17}\b"), "เลขบัตร/บัญชี"),
+    # เลขบัตรเครดิต 16 หลัก
+    (re.compile(r"\b\d{4}[\-\s]?\d{4}[\-\s]?\d{4}[\-\s]?\d{4}\b"), "บัตรเครดิต"),
+    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"), "อีเมล"),
+    # คำที่บ่งชี้ความลับ + มีค่าตามหลัง
+    (re.compile(r"(รหัสผ่าน|พาสเวิร์ด|password|passwd|pwd|otp|pin)\s*[:=]?\s*\S+",
+                re.I), "รหัสผ่าน/OTP"),
+    (re.compile(r"(เลขบัญชี|บัญชีธนาคาร|account\s*(no|number))", re.I), "เลขบัญชี"),
+)
+
+
+def find_sensitive(text: str) -> str:
+    """คืนชื่อชนิดข้อมูลอ่อนไหวที่เจอ ("" ถ้าไม่เจอ) — ใช้กันตอนเขียนความจำ"""
+    for pat, label in _SENSITIVE_PATTERNS:
+        if pat.search(text or ""):
+            return label
+    return ""
+
+
+def strip_sensitive_tags(summary: str) -> tuple:
+    """ตัด tag ที่มีข้อมูลอ่อนไหวออกจาก summary — คืน (บรรทัดใหม่, [ชนิดที่ตัด])
+
+    ตัดเฉพาะ *tag ที่มีของอ่อนไหว* ไม่ทิ้งทั้งบรรทัด — หัวเรื่องกับ tag อื่นยังมีค่า
+    (หลักการเดียวกับ dedupe_tags_against และ clean_leaked_tags)
+
+    ถ้าหัวเรื่องเองมีของอ่อนไหว คืน "" = ทิ้งสรุปรอบนั้นทั้งอัน (fail-conservative
+    แบบเดียวกับตอน parse ไม่ได้ — ไม่เก็บดีกว่าเก็บของที่ไม่ควรเก็บ)
+    """
+    marks = list(_OWNER_TAG_RE.finditer(summary))
+    head = summary[:marks[0].start()].rstrip(" |") if marks else summary
+    if find_sensitive(head):
+        return "", [find_sensitive(head)]
+    if not marks:
+        return summary, []
+
+    keep, dropped = [], []
+    for i, mk in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(summary)
+        val = summary[mk.end():end].strip(" |,")
+        if not val:
+            continue
+        label = find_sensitive(val)
+        if label:
+            dropped.append(label)
+            continue
+        keep.append(f"{mk.group(1).rstrip(':')}:{val}")
+    return (f"{head} | {' '.join(keep)}" if keep else head), dropped
+
 
 def _unbracket(val) -> str:
     """ตัดวงเล็บ <> ที่โมเดลลอกมาจาก placeholder ใน prompt ("<สิ่งที่ผู้ใช้ชอบ>")"""

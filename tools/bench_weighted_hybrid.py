@@ -38,7 +38,10 @@ from bench_vector_lme import cosine, embed_many, keyword_rank  # noqa: E402
 logging.disable(logging.CRITICAL)
 
 LME = "tools/data/longmemeval_s.json"
-REAL_UID = 434893254576701450
+# uid ที่ใช้วัดกับความจำจริง — อ่านจาก env ไม่ฮาร์ดโค้ด
+# (repo เป็น public — Discord user ID เป็นข้อมูลระบุตัวตน ไม่ควรติดมากับโค้ด)
+# ตั้งใน .env: BENCH_REAL_UID=<discord user id>
+REAL_UID = int(os.getenv("BENCH_REAL_UID") or 0)
 RRF_K = 60
 
 

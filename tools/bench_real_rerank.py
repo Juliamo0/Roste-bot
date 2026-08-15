@@ -41,7 +41,10 @@ from thai_recall_cases import load as load_thai  # noqa: E402
 
 logging.disable(logging.CRITICAL)
 
-REAL_UID = 434893254576701450
+# uid ที่ใช้วัดกับความจำจริง — อ่านจาก env ไม่ฮาร์ดโค้ด
+# (repo เป็น public — Discord user ID เป็นข้อมูลระบุตัวตน ไม่ควรติดมากับโค้ด)
+# ตั้งใน .env: BENCH_REAL_UID=<discord user id>
+REAL_UID = int(os.getenv("BENCH_REAL_UID") or 0)
 TOP_K = 5           # production ใช้ 5 ในชั้น keyword
 RERANK_N = 3        # production ใช้ top_n=3 ในชั้น rerank
 MODES = ["bm25", "cosine", "cosine+rerank", "hybrid+rerank"]
