@@ -1266,6 +1266,36 @@ class TestOwnerSeparatedMemory:
         assert memory.guess_owner("เราสองคนชอบกินอะไรต่างกันบ้าง") == "any"
 
     # ── filter_by_owner ──
+    def test_marks_latest_when_conflict(self):
+        """มีหลายบรรทัด = มาร์กอันที่วันที่ใหม่สุด
+
+        วัดแล้วเป็นโหมดที่พังหนักสุด: โมเดล **เอาค่าเก่ากับใหม่มารวมกัน** 10/20
+        (ไม่ใช่เลือกผิด — ตอบค่าเก่าแค่ 1/20) มาร์กแล้ว ถูก 2/20 -> 18/20 · ปนกัน 10 -> 0
+        """
+        got = memory.filter_by_owner(
+            ["1 ส.ค.: คุยที่อยู่ | user_fact:อยู่เชียงใหม่",
+             "10 ส.ค.: คุยที่อยู่ | user_fact:อยู่กรุงเทพ"], "user")
+        assert "ล่าสุด" in got[1] and "กรุงเทพ" in got[1]
+        assert "ล่าสุด" not in got[0], "บรรทัดเก่าต้องไม่ถูกมาร์ก"
+        assert "เชียงใหม่" in got[0], "ห้ามทิ้งของเก่า — ยังต้องตอบ 'เมื่อก่อน' ได้"
+
+    def test_no_mark_for_single_line(self):
+        got = memory.filter_by_owner(
+            ["10 ส.ค.: คุยที่อยู่ | user_fact:อยู่กรุงเทพ"], "user")
+        assert "ล่าสุด" not in got[0]
+
+    def test_marks_latest_across_months(self):
+        got = memory.filter_by_owner(
+            ["28 ก.ค.: ห | user_fact:อยู่ขอนแก่น",
+             "3 ส.ค.: ห | user_fact:อยู่ภูเก็ต"], "user")
+        assert "ล่าสุด" in got[1], "ข้ามเดือนต้องเทียบถูก (3 ส.ค. ใหม่กว่า 28 ก.ค.)"
+
+    def test_no_mark_when_date_unreadable(self):
+        """อ่านวันที่ไม่ได้ = ไม่มาร์ก ดีกว่ามาร์กผิดบรรทัด"""
+        got = memory.filter_by_owner(
+            ["ห | user_fact:อยู่เชียงใหม่", "ห | user_fact:อยู่กรุงเทพ"], "user")
+        assert all("ล่าสุด" not in g for g in got)
+
     def test_rendered_as_full_sentence(self):
         """บรรทัดที่ inject ต้องเป็น *ประโยค* ไม่ใช่บันทึกย่อ
 
