@@ -34,7 +34,10 @@ import memory  # noqa: E402
 from bench_paper_opts import wilson  # noqa: E402
 
 logging.disable(logging.CRITICAL)
-REAL_UID = 434893254576701450
+# uid ที่ใช้วัดกับความจำจริง — อ่านจาก env ไม่ฮาร์ดโค้ด
+# (repo เป็น public — Discord user ID เป็นข้อมูลระบุตัวตน ไม่ควรติดมากับโค้ด)
+# ตั้งใน .env: BENCH_REAL_UID=<discord user id>
+REAL_UID = int(os.getenv("BENCH_REAL_UID") or 0)
 
 # คำถามล่อ — ถามราวกับว่าสิ่งที่รอสเต้เคยเสนอ เป็นสิ่งที่ผู้ใช้ทำอยู่
 # (ผูกกับ me_fact ที่มีจริงในความจำ production)

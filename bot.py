@@ -627,6 +627,15 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
         logger.info("   🎵 karaoke skip — voice_lock ถูกจอง")
         return
 
+    # ธงว่า "ถูกผู้ใช้สั่งหยุด" — ตั้งโดย on_message ตอนเจอคำสั่งหยุด
+    # เคลียร์ตอนเริ่มเพลงใหม่ กันธงค้างจากเพลงก่อนหน้า
+    _gid = message.guild.id if message.guild else None
+    if _gid is not None:
+        music.stopped_guilds.discard(_gid)
+
+    def stopped_by_user() -> bool:
+        return _gid is not None and _gid in music.stopped_guilds
+
     async with music.voice_lock:
         try:
             if intro_wav and bot_vc.is_connected():
@@ -654,7 +663,9 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
                 bot_vc.stop()
 
             # 🎤 พูดปิดท้ายก่อนออกจากห้อง — เดิม disconnect ทันทีไม่พูดอะไรเลย รู้สึกห้วน
-            outro_wav = await _generate_tts(
+            # ⚠️ ข้ามถ้าถูกสั่งหยุดกลางเพลง — ผู้ใช้เพิ่งสั่งให้เงียบ การพูดต่อ
+            #    "ร้องจบแล้วค่ะ เพราะไหม~" คือการไม่ฟังคำสั่ง
+            outro_wav = None if stopped_by_user() else await _generate_tts(
                 f"ร้องเพลง {pretty_name} จบแล้วค่ะ เป็นไงบ้างคะ เพราะไหม~", message.author.id)
             if outro_wav and bot_vc.is_connected():
                 await _play_wav(bot_vc, outro_wav)
@@ -671,6 +682,10 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
             await bot_vc.disconnect()
     except Exception:
         pass
+    if stopped_by_user():
+        music.stopped_guilds.discard(_gid)
+        logger.info("   🔇 karaoke ถูกสั่งหยุดกลางเพลง — ไม่ส่งข้อความปิดท้าย")
+        return
     await message.channel.send(
         f"{message.author.mention} ร้องจบแล้วค่ะ เป็นไงบ้างคะ เพราะไหม~ 🎶")
 
@@ -826,6 +841,31 @@ async def on_message(message):
         await printing.start_print_request(message, user_id, user_name, pdf_attach, user_message)
         return
 
+    # ===== 🔇 สั่งหยุดร้อง/หยุดพูด =====
+    # ต้องเช็ค **ก่อน** ด่าน voice_lock ของ karaoke — ไม่งั้นคำสั่งหยุดจะโดนเด้ง
+    # "รอแป๊บนึงแล้วลองใหม่นะคะ" ซึ่งเป็นตอนที่ผู้ใช้ต้องการใช้มันที่สุดพอดี
+    #
+    # vc.stop() ทำให้ callback `after` ของ discord.py ยิงทันที -> done.set() ->
+    # _play_karaoke/_play_wav ที่ await อยู่เดินต่อจนจบและคืน voice_lock เอง
+    # จึงไม่ต้องแย่ง lock และไม่มี task ค้าง
+    # ทางลัด keyword — เฉพาะคำสั่งหยุด **ล้วนๆ** ที่ชัดเจน ("เงียบหน่อย" "พอแล้ว")
+    # ตอบทันทีโดยไม่ต้องยิงโมเดล = เร็วกว่าและแน่นอนกว่า
+    #
+    # ส่วนสำนวนที่กว้างกว่านี้ **ไม่ไล่เก็บคำเอง** — ยื่น tool stop_voice ให้โมเดลตัดสินแทน
+    # (§4: "กริยาไม่มีวันครบ" · วัดได้ว่าลิสต์คำจับได้แค่ 6/35 สำนวนที่ผู้ใช้น่าจะพิมพ์)
+    _vc = message.guild.voice_client if message.guild else None
+    _is_speaking = bool(_vc and (_vc.is_playing() or _vc.is_paused()))
+    if music.looks_like_pure_stop(user_message):
+        if _is_speaking:
+            if message.guild:
+                music.stopped_guilds.add(message.guild.id)
+            _vc.stop()
+            logger.info(f"   🔇 หยุดเสียงตามคำสั่งของ {user_name}")
+            await message.reply("ค่ะ รอสเต้หยุดแล้วนะคะ~")
+        else:
+            await message.reply("ตอนนี้รอสเต้ไม่ได้ส่งเสียงอยู่นะคะ~")
+        return
+
     # ===== 🎵 ระบบเพลง karaoke =====
     wants_song = ("เพลง" in user_message and
                   any(w in user_message for w in ("ร้อง", "เปิด", "เล่น", "ขอ")))
@@ -868,8 +908,19 @@ async def on_message(message):
     # แสดงสถานะ "กำลังพิมพ์..." ระหว่างรอโมเดลคิด
     async with message.channel.typing():
         try:
-            reply = await chat.ask_ollama(user_id, user_name, user_message)
+            music.stop_requested = False   # เคลียร์ธงก่อนถาม กันค้างจากเทิร์นก่อน
+            reply = await chat.ask_ollama(user_id, user_name, user_message,
+                                          is_speaking=_is_speaking)
             logger.info(f"   ↳ ได้คำตอบแล้ว ({len(reply)} ตัวอักษร)")
+            # โมเดลเรียก tool stop_voice — ตัวหยุดจริงอยู่ที่นี่ (llm_tools ไม่มี voice client)
+            if music.stop_requested:
+                music.stop_requested = False
+                _vc2 = message.guild.voice_client if message.guild else None
+                if _vc2 and (_vc2.is_playing() or _vc2.is_paused()):
+                    if message.guild:
+                        music.stopped_guilds.add(message.guild.id)
+                    _vc2.stop()
+                    logger.info(f"   🔇 หยุดเสียง (โมเดลตัดสินใจ) ตามคำขอของ {user_name}")
         except Exception as e:
             err = f"{type(e).__name__}: {e}"
             if "Timeout" in type(e).__name__:

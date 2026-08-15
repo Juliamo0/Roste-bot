@@ -482,6 +482,17 @@ async def summarize_and_verify(user_id: int, pairs: list):
             logger.info("   🔧 แก้ tag ที่ติดผิดเจ้าของก่อนเก็บ")
             summary_text = fixed
 
+        # ─ นโยบายข้อมูลอ่อนไหว: บางอย่างไม่ควรเขียนลงความจำถาวรเลย ─
+        # กันตอน *เขียน* เพราะ summary ถูก inject เข้า system prompt ทุกครั้งที่ recall ตรง
+        # และเก็บข้ามเซสชัน — หลุดครั้งเดียวคือส่งซ้ำไปเรื่อยๆ และต้องไล่ลบย้อนหลัง
+        # log แค่ *ชนิด* ไม่ log ค่า (ตามวินัย PII ของโปรเจกต์)
+        summary_text, dropped = memory.strip_sensitive_tags(summary_text)
+        if dropped:
+            logger.info(f"   🔒 ไม่เก็บข้อมูลอ่อนไหวลงความจำ: {', '.join(sorted(set(dropped)))}")
+        if not summary_text:
+            logger.info("   🔒 สรุปรอบนี้มีข้อมูลอ่อนไหวในหัวเรื่อง — ไม่เก็บทั้งอัน")
+            return
+
         # ─ ขั้นที่ 2: ตรวจ hallucinate — ถ้าสรุปแต่งรายละเอียด แก้หรือทิ้ง ─
         verify_prompt = memory.build_verify_prompt(pairs, summary_text)
         verify_payload = {
@@ -567,7 +578,8 @@ async def flush_all_users() -> None:
         await flush_user_history(uid)
 
 
-async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
+async def ask_ollama(user_id: int, user_name: str, user_message: str,
+                     is_speaking: bool = False) -> str:
     """ส่งข้อความไปให้ Ollama โดยใช้ความจำของผู้ใช้คนนี้ + ค้นเว็บได้ถ้าจำเป็น
 
     ถือ get_user_lock(user_id) ครอบทั้งฟังก์ชัน (ไม่ใช่แค่ตอน save ท้ายสุด) — กัน race เมื่อ
@@ -577,7 +589,7 @@ async def ask_ollama(user_id: int, user_name: str, user_message: str) -> str:
     การ serialize ต่อ user ไม่กระทบอะไรสำหรับบอทที่คุยกันไม่กี่คนพร้อมกัน"""
     _stats_token = stats.start_message("llm")
     try:
-        return await _ask_ollama_impl(user_id, user_name, user_message)
+        return await _ask_ollama_impl(user_id, user_name, user_message, is_speaking)
     finally:
         stats.finish_message(_stats_token)
 
@@ -614,7 +626,8 @@ _PREFILL_PREFIX = "รอสเต้ค่ะ "
 _INTRO_MAX_LEN = 40
 
 
-async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> str:
+async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str,
+                           is_speaking: bool = False) -> str:
     async with get_user_lock(user_id):
         mem = load_memory(user_id)
         if user_name:
@@ -638,6 +651,13 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
             profile_lines.append(f"- ชื่อเรียก: {display_name}")
         for fact in memory.recall_facts(mem, user_message):
             profile_lines.append(f"- {fact}")
+        # procedural preference ("อยากให้ตอบเป็นทางการ") ต้องมีผล **ทุกเทิร์น**
+        # ไม่ใช่มาถึงก็ต่อเมื่อบังเอิญตรงคำถาม — จึงอยู่ในบล็อกโปรไฟล์ ไม่ใช่เส้น recall
+        # วัดได้: ถาม "วันนี้เหนื่อยจัง" recall คืน 0 อัน -> procedural ไม่มาเลย
+        # ส่วนคำถามอื่นมาได้เพราะบังเอิญอยู่บรรทัดเดียวกับเรื่องที่ถาม (ไม่ใช่ตั้งใจ)
+        # คุมที่ MAX_PROCEDURAL=3 และยุบสำนวนซ้ำ -> 213c เหลือ 79c
+        for pref in memory.collect_procedural(mem):
+            profile_lines.append(f"- อยากให้ตอบแบบ: {pref}")
 
         system_text = SYSTEM_PROMPT
         if profile_lines:
@@ -863,7 +883,8 @@ async def _ask_ollama_impl(user_id: int, user_name: str, user_message: str) -> s
             # เห็น summary ใน system prompt หรือไม่ (ยื่นครบ = 4,292c → ตอบว่าไม่เคยคุย 75%
             # ของรอบ ทั้งที่ summary อยู่ครบ) วัดด้วย pass^40: คัดแล้วความจำ 25%→100% โดย
             # tool accuracy ไม่ตก (100/100 เท่ากัน) — ดู llm_tools.select_tools
-            turn_tools = [] if got_primary else select_tools(user_message)
+            turn_tools = [] if got_primary else select_tools(
+                user_message, is_speaking=is_speaking)
             with stats.stage("main_llm"):
                 msg = await _chat_once(messages, temperature=reply_temp, tools=turn_tools)
             tool_calls = msg.get("tool_calls")

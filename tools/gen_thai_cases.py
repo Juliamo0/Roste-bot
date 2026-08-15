@@ -30,7 +30,10 @@ sys.path.insert(0, str(ROOT))
 
 import memory  # noqa: E402
 
-REAL_UID = 434893254576701450
+# uid ที่ใช้วัดกับความจำจริง — อ่านจาก env ไม่ฮาร์ดโค้ด
+# (repo เป็น public — Discord user ID เป็นข้อมูลระบุตัวตน ไม่ควรติดมากับโค้ด)
+# ตั้งใน .env: BENCH_REAL_UID=<discord user id>
+REAL_UID = int(os.getenv("BENCH_REAL_UID") or 0)
 
 # template ตายตัว — คำถามจึงมาจาก *ข้อมูล* ไม่ใช่จากที่ผมเลือกถาม
 # แต่ละชนิด tag มีสำนวนถามต่างกันตามธรรมชาติของภาษา

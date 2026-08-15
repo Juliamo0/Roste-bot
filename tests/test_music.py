@@ -4,6 +4,8 @@ Run: pytest test_music.py -v
 """
 import json
 
+import pytest
+
 import music
 
 
@@ -83,3 +85,43 @@ class TestExtractSongQuery:
                              lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
         result = music.extract_song_query("ร้องเพลง Monster หน่อย")
         assert "Monster" in result
+
+
+class TestLooksLikePureStop:
+    """คำสั่งหยุด **ล้วนๆ** — ทางลัด keyword ที่ตอบได้เลยโดยไม่ต้องยิงโมเดล
+
+    ⚠️ ตั้งใจให้ **แคบ** เพราะสำนวนที่กว้างกว่านี้ให้ tool stop_voice จัดการแทน
+    (§4: "กริยาไม่มีวันครบ" · วัดได้ว่าลิสต์คำจับได้แค่ 6/35 สำนวนที่ผู้ใช้น่าจะพิมพ์
+    -> เลิกไล่เก็บคำ เปลี่ยนไปให้โมเดลตัดสิน)
+
+    ครึ่งหนึ่งของเทสคือ **ของที่ต้องไม่โดน** — ตีความผิดตอนคุยปกติเสียหายจริง
+    (บอทหยุดเสียงและตอบ "หยุดแล้วนะคะ" แทนที่จะตอบคำถามที่ถาม)
+    """
+
+    @pytest.mark.parametrize("text", [
+        "เงียบหน่อย", "พอแล้ว", "หยุดก่อน", "หยุดเลย", "เงียบๆ",
+        "เลิกร้อง", "ไม่ต้องร้อง", "ไม่ต้องพูด",
+        "หยุด", "พอ", "เงียบ",
+        "stop", "shut up",
+    ])
+    def test_detects_pure_stop(self, text):
+        assert music.looks_like_pure_stop(text)
+
+    @pytest.mark.parametrize("text", [
+        "ร้องเพลงให้ฟังหน่อย",       # ขอเพลง ไม่ใช่สั่งหยุด
+        "ขอเพลง monster",
+        "วันนี้หยุดงานไหม",           # "หยุด" คนละความหมาย
+        "รถหยุดตรงไหน",
+        "วันหยุดนี้ไปไหนดี",
+        "เพลงนี้เพราะจัง",
+        "ผมชอบฟังเพลงร็อค",
+        "เพลงนี้ชื่ออะไร",
+        "ผมเลิกงานแล้วเมื่อกี้นี้เอง",
+        "ช่วยอธิบายเรื่องการหยุดพักสมองระหว่างทำงานหน่อยว่าควรทำยังไง",
+    ])
+    def test_normal_message_not_pure_stop(self, text):
+        assert not music.looks_like_pure_stop(text)
+
+    def test_empty_safe(self):
+        assert not music.looks_like_pure_stop("")
+        assert not music.looks_like_pure_stop(None)
