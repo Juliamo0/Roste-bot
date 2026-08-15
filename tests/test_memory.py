@@ -1266,6 +1266,19 @@ class TestOwnerSeparatedMemory:
         assert memory.guess_owner("เราสองคนชอบกินอะไรต่างกันบ้าง") == "any"
 
     # ── filter_by_owner ──
+    def test_rendered_as_full_sentence(self):
+        """บรรทัดที่ inject ต้องเป็น *ประโยค* ไม่ใช่บันทึกย่อ
+
+        วัดกับ qwen3:8b (ป้อน context ถูกต้องตรงๆ ตัดตัวแปร retrieval ออก):
+            "— ผู้ใช้: อยู่กรุงเทพ"       -> ตอบถูก 0/3 (ถามกลับแทน)
+            "— ผู้ใช้บอกว่าอยู่กรุงเทพ"   -> ตอบถูก 3/3
+        รูปบันทึกย่อทำให้โมเดลไม่ถือเป็นข้อเท็จจริงที่ยืนยันแล้ว = ปัญหา utilization
+        """
+        got = memory.filter_by_owner(
+            ["10 ส.ค.: คุยเรื่องที่อยู่ | user_fact:อยู่กรุงเทพ"], "user")[0]
+        assert "ผู้ใช้บอกว่า" in got
+        assert "ผู้ใช้: " not in got, "รูปบันทึกย่อทำให้โมเดลไม่หยิบไปใช้"
+
     def test_filter_keeps_only_asked_side(self):
         got = memory.filter_by_owner(
             [s["text"] for s in self.SUMMARIES], "user")
