@@ -1009,6 +1009,26 @@ def _strip_roste_subject(val: str) -> str:
     return val
 
 
+# schema บังคับรูปร่างของสรุปบท — ใช้คู่กับ build_summary_prompt
+#
+# ⚠️ บทเรียนที่เจอ 3 ครั้งในโปรเจกต์นี้: "ขอด้วยข้อความ" ไม่พอ ต้อง "บังคับด้วยโครงสร้าง"
+#   1. format:"json" ไม่บังคับรูปร่าง -> 4B คืน tag เป็น object -> tag หายหมด (recall 3/6)
+#   2. ขอ array ในข้อความ -> สกัดได้อันเดียว -> แก้ด้วย EXTRACT_JSON_SCHEMA (49 -> 79/80)
+#   3. ขอ N คะแนนในข้อความ -> qwen3.5 นับพลาด 30% -> แก้ด้วย format schema ใน rerank
+#
+# วัดแล้วทั้ง qwen3:8b และ qwen3.5:9b: ไม่ใส่ format -> ผิดรูป 3/3 · ใส่ -> ตรง 3/3
+# (ตรงกับที่ Ollama/Qwen แนะนำเองว่าให้ส่ง schema ผ่าน format ไม่ใช่ขอในข้อความ
+#  เพราะ Ollama แปลงเป็น GBNF grammar บังคับที่ระดับ token = โมเดลผลิตรูปแบบผิดไม่ได้เลย)
+SUMMARY_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "tags"],
+}
+
+
 def build_verify_prompt(pairs: list, summary: str) -> str:
     """สร้าง prompt ให้โมเดลตรวจว่าสรุปมีข้อมูลที่ไม่ได้อยู่ในบทสนทนาจริงไหม"""
     convo = "\n".join(

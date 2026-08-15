@@ -462,6 +462,10 @@ async def summarize_and_verify(user_id: int, pairs: list):
             "model": MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False, "think": False,
+            # บังคับรูปร่าง {"summary": str, "tags": [str]} ที่ parse_summary_json คาดหวัง
+            # เดิมขอไว้ในข้อความอย่างเดียว -> โมเดลคืนรูปอื่นได้ (บทเรียนที่เจอ 3 ครั้ง
+            # ดู memory.SUMMARY_JSON_SCHEMA) วัดแล้วไม่ใส่ผิดรูป 3/3 ใส่แล้วตรง 3/3
+            "format": memory.SUMMARY_JSON_SCHEMA,
             "options": {"temperature": 0.1},
         }
         data = await _get_json_post(payload, timeout=120)
