@@ -101,6 +101,21 @@ async def rerank_with_llm(query: str, candidates: list, top_n: int = 3) -> list:
         "model": RERANK_MODEL,
         "messages": [{"role": "user", "content": _build_rerank_prompt(query, candidates)}],
         "stream": False, "think": False,
+        # บังคับ **รูปร่าง** ของคำตอบ ไม่ใช่แค่ขอในข้อความ
+        #
+        # ⚠️ ต้นเหตุที่เจอจริง: qwen3.5:9b คืนคะแนนไม่ครบจำนวน candidate 30% ของครั้ง
+        # (ส่ง 5 อัน คืน [10,9,9,9] แค่ 4 ตัว) -> เช็ค len ข้างล่างไม่ผ่าน -> ทิ้งทั้งชุด
+        # -> "ไม่ inject" พุ่งจาก 0 เป็น 16/37 และ recall ตกจาก 32/37 เหลือ 18/37
+        #
+        # ใส่ schema แล้ววัดซ้ำ: qwen3.5:9b นับพลาด 30% -> **0%** · qwen3:8b คง 0% เท่าเดิม
+        # เป็นบั๊กตระกูลเดียวกับที่แก้ไปแล้วฝั่งสกัด (EXTRACT_JSON_SCHEMA บังคับ array)
+        # และตรงกับที่เอกสาร Qwen แนะนำเองว่าให้ใช้ JSON schema ไม่ใช่ขอในข้อความเปล่าๆ
+        "format": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0, "maximum": 10},
+            "minItems": len(candidates),
+            "maxItems": len(candidates),
+        },
         # temperature 0 (ไม่ใช่ 0.1 เหมือนจุดอื่นในโปรเจกต์) — rerank ต้องการผลนิ่งที่สุดเท่าที่จะทำได้
         # เพราะเคสก้ำกึ่ง (เช่น distance ต่างกันแค่ 0.005) ต้องได้คะแนนเดิมทุกครั้งที่ query ซ้ำ
         # ไม่งั้นผลอาจสลับข้ามไปมาระหว่างรัน ต่างจาก distance เดิมที่นิ่งเสมอ
