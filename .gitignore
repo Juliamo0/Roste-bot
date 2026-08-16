@@ -88,3 +88,4 @@ bot_restart.log
 bot_restart.err
 memory/*.bak
 memory/*.bak2
+memory/*.bak3

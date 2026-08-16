@@ -1641,6 +1641,66 @@ class TestProceduralMemory:
         assert memory.collect_procedural({}) == []
 
 
+class TestNegationSupersedes:
+    """ผู้ใช้ปฏิเสธข้อมูลเดิม -> ของเก่าต้องถูก mark superseded
+
+    🚨 เจอจริงจาก Discord: บอทบอก "มีลูกสาว 2 คน" ผู้ใช้แก้ว่า "ผมไม่ได้มีลูกสาว 2 คนนะ"
+    -> เก็บ "ไม่มีลูกสาว 2 คน" เพิ่ม โดยของเดิมยังอยู่ = ความจำขัดแย้งกันเอง
+    เพราะ "ครอบครัว" ไม่อยู่ใน SINGLE_VALUE_CATEGORIES จึงไม่ supersede
+
+    ⚠️ ครึ่งหนึ่งของเทสคือเคสที่ **ห้าม supersede** — เดาผิดแล้วลบของจริงทิ้ง
+    แย่กว่าเก็บซ้ำ (บทเรียนเดียวกับ category_matches_text)
+    """
+
+    def _mem(self):
+        return {"facts": [], "summaries": [], "history": []}
+
+    def test_negation_supersedes_original(self):
+        mem = self._mem()
+        memory.add_fact(mem, "มีลูกสาว 2 คน", "ครอบครัว")
+        memory.add_fact(mem, "ไม่มีลูกสาว 2 คน", "ครอบครัว")
+        old = [f for f in mem["facts"] if f["text"] == "มีลูกสาว 2 คน"][0]
+        assert old["superseded"] is True
+        assert old["superseded_by"] == "ไม่มีลูกสาว 2 คน"
+
+    def test_superseded_not_recalled(self):
+        mem = self._mem()
+        memory.add_fact(mem, "มีลูกสาว 2 คน", "ครอบครัว")
+        memory.add_fact(mem, "ไม่มีลูกสาว 2 คน", "ครอบครัว")
+        got = " ".join(memory.recall_facts(mem, "ผมมีลูกไหม"))
+        assert "ไม่มีลูกสาว" in got
+        assert got.count("ลูกสาว") == 1, "ของเก่าต้องไม่ถูกดึงมาพร้อมของใหม่"
+
+    def test_works_across_categories(self):
+        """ไม่ใช่แค่ single-value — การปฏิเสธเป็นสัญญาณว่าอันเดิมผิด ไม่ว่าหมวดไหน"""
+        mem = self._mem()
+        memory.add_fact(mem, "ทำงานที่ธนาคาร", "อาชีพเสริม")
+        memory.add_fact(mem, "ไม่ได้ทำงานที่ธนาคาร", "อาชีพเสริม")
+        assert mem["facts"][0]["superseded"] is True
+
+    def test_unrelated_negation_does_not_supersede(self):
+        """ปฏิเสธคนละเรื่อง ต้องไม่ไปลบของที่ไม่เกี่ยว"""
+        mem = self._mem()
+        memory.add_fact(mem, "ชอบกินเผ็ด", "ความชอบ")
+        memory.add_fact(mem, "ไม่ชอบกินหวาน", "ความชอบ")
+        assert all(not f["superseded"] for f in mem["facts"])
+
+    def test_plain_fact_is_not_negation(self):
+        assert memory._negated_fact_text("ชอบอ่านหนังสือ") == ""
+        assert memory._negated_fact_text("มีลูกสาว 2 คน") == ""
+
+    def test_negation_forms(self):
+        assert memory._negated_fact_text("ไม่มีลูกสาว 2 คน") == "ลูกสาว 2 คน"
+        assert memory._negated_fact_text("ไม่ได้ทำงานที่ธนาคาร") == "ทำงานที่ธนาคาร"
+
+    def test_partial_match_does_not_supersede(self):
+        """เทียบแบบตรงเป๊ะเท่านั้น — ห้ามเดาความหมายใกล้เคียงแล้วลบผิดตัว"""
+        mem = self._mem()
+        memory.add_fact(mem, "มีลูกสาว 2 คน ชื่อแป้งกับข้าว", "ครอบครัว")
+        memory.add_fact(mem, "ไม่มีลูกสาว 2 คน", "ครอบครัว")
+        assert mem["facts"][0]["superseded"] is False
+
+
 class TestSensitiveDataPolicy:
     """กรอบ LTM ข้อ 6: บางอย่างไม่ควรเขียนลง memory เลย
 

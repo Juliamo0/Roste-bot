@@ -197,6 +197,26 @@ def category_matches_text(category, text: str) -> bool:
     return any(h in text for h in _CATEGORY_REQUIRED_HINTS[category])
 
 
+# คำปฏิเสธที่ขึ้นต้น fact — ใช้จับว่าผู้ใช้กำลัง "แก้ข้อมูลเดิม" ไม่ใช่บอกเรื่องใหม่
+_NEGATION_PREFIXES = ("ไม่ได้", "ไม่มี", "ไม่ใช่", "ไม่", "เลิก")
+
+
+def _negated_fact_text(text: str) -> str:
+    """ถ้า text เป็นการปฏิเสธ คืน "ข้อความเดิมที่ถูกปฏิเสธ" (ไม่ใช่ก็คืน "")
+
+    "ไม่มีลูกสาว 2 คน" -> "มีลูกสาว 2 คน"
+    "ไม่ได้ทำงานที่ธนาคาร" -> "ทำงานที่ธนาคาร"
+    "ชอบอ่านหนังสือ" -> ""  (ไม่ใช่การปฏิเสธ)
+    """
+    t = (text or "").strip()
+    for p in _NEGATION_PREFIXES:
+        if t.startswith(p):
+            rest = t[len(p):].strip()
+            # "ไม่มีX" ปฏิเสธ "มีX" ด้วย — คืนทั้งสองรูปให้ผู้เรียกเทียบ
+            return rest if rest else ""
+    return ""
+
+
 def add_fact(mem, text, category=None):
     """เพิ่ม fact เข้าความจำ พร้อมกันซ้ำ + คุมเพดาน
 
@@ -246,6 +266,33 @@ def add_fact(mem, text, category=None):
                 f["superseded"] = True
                 f["superseded_at"] = now_iso
                 f["superseded_by"] = text
+
+    # ── ผู้ใช้ปฏิเสธข้อมูลเดิม -> supersede อันนั้นทิ้ง (ทุกหมวด ไม่ใช่แค่ single-value) ──
+    #
+    # 🚨 เจอจริงจาก Discord: บอทบอก "มีลูกสาว 2 คน" ผู้ใช้แก้ว่า "ผมไม่ได้มีลูกสาว 2 คนนะ"
+    #    -> เก็บ [ครอบครัว]"ไม่มีลูกสาว 2 คน" **เพิ่ม** โดยของเดิมยังอยู่
+    #    -> ความจำมีทั้ง "มีลูกสาว 2 คน" และ "ไม่มีลูกสาว 2 คน" พร้อมกัน
+    #    เพราะ "ครอบครัว" ไม่ได้อยู่ใน SINGLE_VALUE_CATEGORIES จึงไม่ supersede
+    #
+    # การเพิ่ม "ครอบครัว" เข้า single-value แก้ไม่ตรงจุด — คนมีสมาชิกครอบครัวหลายคนได้
+    # (พ่อ/แม่/พี่/น้อง) แต่ "การปฏิเสธ" เป็นสัญญาณตรงๆ ว่า *อันเดิมผิด* ไม่ว่าหมวดไหน
+    #
+    # ⚠️ เทียบที่ **เนื้อความหลังคำปฏิเสธ** ไม่ใช่ทั้งประโยค และต้องตรงเป๊ะ
+    #    ("ไม่มีลูกสาว 2 คน" -> หา fact ที่ข้อความคือ "มีลูกสาว 2 คน")
+    #    ไม่เดาความหมายใกล้เคียง — การเดาผิดแล้วลบของจริงทิ้งแย่กว่าเก็บซ้ำ
+    #    (บทเรียนเดียวกับ category_matches_text)
+    neg = _negated_fact_text(text)
+    if neg:
+        # "ไม่มีลูกสาว 2 คน" -> ตัดคำปฏิเสธได้ "ลูกสาว 2 คน" แต่ fact เดิมเก็บว่า
+        # "**มี**ลูกสาว 2 คน" — เทียบทั้งรูปที่ตัดแล้วและรูปที่เติม "มี" กลับ
+        cands = {neg, "มี" + neg}
+        for f in facts:
+            if (isinstance(f, dict) and not f.get("superseded")
+                    and _fact_text(f) in cands):
+                f["superseded"] = True
+                f["superseded_at"] = now_iso
+                f["superseded_by"] = text
+                logger.info("   ↩️ ผู้ใช้แก้ข้อมูลเดิม — mark fact เก่าเป็น superseded")
 
     facts.append({
         "category": category,
