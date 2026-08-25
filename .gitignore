@@ -89,3 +89,16 @@ bot_restart.err
 memory/*.bak
 memory/*.bak2
 memory/*.bak3
+
+# ox_alpha (OpenRouter) — คำตอบดิบ + conversation state ของ tools/ox.py
+out/
+.ox_sessions/
+
+# ===== Typhoon ASR (venv แยก — NeMo + torch ชุดใหญ่) =====
+typhoon_asr_venv/
+
+# โมเดล CTranslate2 ที่แปลงไว้ใช้เอง (ดาวน์โหลด/แปลงใหม่ได้ ไม่ควรอยู่ใน git)
+ct2_models/
+
+# ไฟล์สำรองตอนแก้ใหญ่ — ชั่วคราวเสมอ ไม่ควรติดขึ้น repo
+*.pre_stream.bak
