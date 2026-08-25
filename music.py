@@ -32,7 +32,11 @@ SONG_EXTS = (".mp3", ".wav", ".m4a", ".flac", ".ogg")
 # คำขึ้นต้น/คำเสริม ที่ตัดออกเพื่อให้เหลือ "ชื่อเพลง"
 SONG_STRIP = ("ร้องเพลง", "เปิดเพลง", "เล่นเพลง", "ขอเพลง", "เปิดให้ฟัง",
               "ร้อง", "เปิด", "เล่น", "ขอ", "เพลง", "หน่อย", "ให้", "ที",
-              "ด้วย", "นะ", "คะ", "ครับ", "ค่ะ", "ฟัง")
+              "ด้วย", "นะ", "คะ", "ครับ", "ค่ะ", "ฟัง",
+              # ชื่อบอท — ในแชทผู้ใช้ @mention (discord ตัดให้แล้ว) แต่ทาง *เสียง* ต้อง
+              # พูดชื่อออกมาเพื่อให้บอทรู้ว่าเรียกมัน ชื่อจึงติดมากับ query ค้นเพลงด้วย
+              # ("รอสเต้ร้องเพลงวาฬเกยตื้น" -> query เหลือ "รอสเต้วาฬเกยตื้น" หาไม่เจอ)
+              "รอสเต้", "รอสเต", "roste")
 
 def _normalize_song(s):
     """ตัดช่องว่าง/ขีด/ตัวพิมพ์ เพื่อเทียบชื่อเพลงแบบหลวมๆ"""
@@ -109,20 +113,43 @@ def extract_song_query(text):
     return re.sub(r"\s+", " ", " ".join(kept)).strip()
 
 
+_FUZZY_CUTOFF = 0.75   # ต้องคล้ายอย่างน้อย 75% — ต่ำกว่านี้เริ่มจับคนละเพลง
+
+
 def find_karaoke(query: str):
-    """หาไฟล์ใน karaoke/ ที่ match query (บางส่วน ไม่สนตัวพิมพ์) คืน (path, stem) หรือ None"""
+    """หาไฟล์ใน karaoke/ ที่ match query (บางส่วน ไม่สนตัวพิมพ์) คืน (path, stem) หรือ None
+
+    สองชั้น: substring ตรงตัวก่อน (แม่นสุด) ถ้าไม่เจอค่อย fuzzy — จำเป็นตั้งแต่มี STT
+    เพราะ ASR สะกดชื่อเพลงเพี้ยนได้เสมอ (เจอจริง: ขอ "วาฬเกยตื้น" แต่ถอดได้ "วานเกยตื้น"
+    ต่างกันตัวเดียว หาไม่เจอ ผู้ใช้เลยคิดว่าฟีเจอร์ร้องเพลงพัง) วิธีเดียวกับที่
+    datasources.fuzzy_match_province แก้ปัญหาพิมพ์ชื่อจังหวัดผิด
+    """
     if not query or not os.path.isdir(KARAOKE_DIR):
         return None
     # แยก query เป็นคำๆ ก่อน normalize — กัน "รอสเต้ monster" จับคำว่า "monster" ได้ถูก
     words = [_normalize_song(w) for w in query.split() if len(_normalize_song(w)) >= 2]
     if not words:
         return None
+
+    songs = []          # [(stem, normalized, filename)] — เก็บไว้ใช้ซ้ำในรอบ fuzzy
     for f in os.listdir(KARAOKE_DIR):
         if not f.lower().endswith(SONG_EXTS):
             continue
         stem = os.path.splitext(f)[0]
         sn = _normalize_song(stem)
         if sn and any(w in sn for w in words):
+            return os.path.join(KARAOKE_DIR, f), stem      # ชั้น 1: ตรงตัว
+        if sn:
+            songs.append((stem, sn, f))
+
+    # ชั้น 2: fuzzy — เทียบทั้ง query รวบ และทีละคำ เอาตัวที่คล้ายที่สุดที่ผ่าน cutoff
+    if not songs:
+        return None
+    candidates = [sn for _, sn, _ in songs]
+    for probe in ("".join(words), *words):
+        hit = difflib.get_close_matches(probe, candidates, n=1, cutoff=_FUZZY_CUTOFF)
+        if hit:
+            stem, _, f = next(s for s in songs if s[1] == hit[0])
             return os.path.join(KARAOKE_DIR, f), stem
     return None
 

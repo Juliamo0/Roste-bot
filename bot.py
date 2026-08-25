@@ -91,6 +91,9 @@ def _acquire_singleton_lock() -> None:
 import printing   # 🖨️ ระบบพิมพ์ PDF (อยู่ในไฟล์ printing.py)
 import music      # 🎵 ระบบเพลง (อยู่ในไฟล์ music.py)
 import voice      # 🎙️ voice pipeline (edge-tts → ffmpeg → RVC subprocess)
+from discord.ext import voice_recv  # 👂 รับเสียงเข้า — discord.py เปล่าๆ ทำไม่ได้ (ดู stt_listener)
+import stt_client    # 👂 SttWorker — warm subprocess ถอดเสียง (typhoon-asr-realtime)
+import stt_listener  # 👂 AudioSink ตัดประโยคจากเสียงในห้อง → ถอด → callback
 import memory     # 🧠 ระบบความจำ (load/save/facts/recall + คำสั่งจำ-ลืม)
 import vectormemory  # 🔎 ความจำ/ค้นหาเชิงความหมาย (RAG PDF + semantic recall ผ่าน ChromaDB)
 import websearch  # 🔎 ค้นเว็บ/Google Maps ผ่าน SerpApi (มี ddgs สำรอง)
@@ -105,6 +108,9 @@ import monitor  # 📈 เว็บเฝ้าดูสถานะบอท (/
 _voice_worker: voice.RvcWorker | None = None  # RVC warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
 _f5_worker: voice.F5Worker | None = None      # F5 warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
 _voxcpm_worker: "voice.VoxCpmWorker | None" = None  # VoxCPM2 warm worker (TTS หลัก; F5 เป็น fallback)
+_stt_worker: "stt_client.SttWorker | None" = None   # 👂 STT warm worker (None = โหลดไม่เสร็จ/ไม่ได้ → ไม่ฟังเสียง)
+_stt_listener = None   # SttListener ที่ attach อยู่กับ voice client ปัจจุบัน (คนละอายุกับ worker —
+                       # worker อยู่ยาวทั้ง session ส่วน listener ผูกกับการต่อ voice แต่ละครั้ง)
 _ready_once = False  # on_ready ไม่การันตีว่าเรียกครั้งเดียว (fire ใหม่ได้ตอน gateway
                       # re-IDENTIFY หลัง session ขาด) — guard กันสร้าง worker/monitor server ซ้อน
 _tts_lock = asyncio.Lock()                    # serialize TTS — กัน 2 user ยิง convert() พร้อมกัน
@@ -269,6 +275,10 @@ class RosteClient(discord.Client):
             if _voxcpm_worker is not None:
                 _voxcpm_worker.stop()
                 logger.info("   🎙️ VoxCPM2 worker ปิดแล้ว")
+            _stop_listening()   # ก่อน stop worker — listener ยังอาจถือ job ค้างอยู่ในคิว
+            if _stt_worker is not None:
+                _stt_worker.stop()
+                logger.info("   👂 STT worker ปิดแล้ว")
             await _monitor_server.stop()
             await super().close()
 
@@ -276,8 +286,8 @@ class RosteClient(discord.Client):
 client = RosteClient(intents=intents)
 
 # auto_remember, _check_condition_b, _SUMMARY_NOTICE_*, _maybe_append_summary_notice,
-# detect_topic_change, summarize_and_verify, flush_user_history, flush_all_users, ask_ollama
-# — อยู่ใน chat.py — เรียกจาก on_message/on_close ผ่าน chat.xxx แบบเต็มชื่อเสมอ
+# detect_topic_change, summarize_and_verify, flush_user_history, flush_all_users, ask_ollama,
+# ask_ollama_stream — อยู่ใน chat.py — เรียกจาก on_message/on_close ผ่าน chat.xxx แบบเต็มชื่อเสมอ
 
 
 def _worker_status(worker) -> str:
@@ -328,6 +338,21 @@ async def _start_f5_worker() -> None:
     except Exception as e:
         logger.warning(f"⚠️ F5 worker เริ่มไม่ได้ ({type(e).__name__}: {e}) — ใช้ edge-tts แทน")
         _f5_worker = None
+
+
+async def _start_stt_worker() -> None:
+    """โหลด STT worker (typhoon-asr-realtime บน NeMo) ใน thread แยก (~12s boot)
+
+    ล้มเหลว = _stt_worker เป็น None แล้วบอทก็แค่ "ไม่ได้ยิน" — พิมพ์คุยได้ตามปกติ
+    ทุกอย่างที่เหลือไม่พึ่ง STT เลย จึงไม่ต้อง retry/บล็อก startup
+    """
+    global _stt_worker
+    try:
+        await asyncio.to_thread(_stt_worker.start)
+        logger.info(f"👂 STT worker พร้อม — โหลดเสร็จใน {_stt_worker.load_time:.1f}s")
+    except Exception as e:
+        logger.warning(f"⚠️ STT worker เริ่มไม่ได้ ({type(e).__name__}: {e}) — บอทจะไม่ได้ยินเสียงในห้อง")
+        _stt_worker = None
 
 
 async def _start_voxcpm_worker() -> None:
@@ -485,13 +510,18 @@ async def _speak_in_voice(message, reply_text: str) -> None:
         stats.finish_message(_stats_token)
 
 
-async def _speak_in_voice_impl(message, reply_text: str) -> None:
+async def _prepare_voice_speech(message):
+    """โปรลอกก่อนพูดทุกเส้น (เส้นพิมพ์/เส้น stream ใช้ร่วมกัน — เคย copy สองที่ก่อนหน้านี้
+    แล้วเส้นเดียวเผลอแก้ อีกเส้นเหลือพฤติกรรมเก่าเงียบๆ): เช็คว่า user อยู่ voice จริง กันชน
+    music, connect/ย้ายห้อง, เริ่มฟังเสียง, เตรียมเสียงทักทาย
+
+    คืน (bot_vc, greeting_wav) — None = ไม่พูด (เหตุผล log ไว้แล้วทุก branch)"""
     user_vc = getattr(message.author, "voice", None)
     if not user_vc or not user_vc.channel:
-        return
+        return None
     if music.voice_lock.locked():
         logger.info("   🎙️ TTS skip — music กำลังเล่น")
-        return
+        return None
 
     channel = user_vc.channel
     bot_vc  = message.guild.voice_client
@@ -503,26 +533,40 @@ async def _speak_in_voice_impl(message, reply_text: str) -> None:
             if bot_vc is None or not bot_vc.is_connected():
                 if bot_vc is not None:
                     try:
+                        _stop_listening()
                         await bot_vc.disconnect(force=True)
                     except Exception:
                         pass
-                bot_vc = await channel.connect()
+                bot_vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
                 just_joined = True
             elif bot_vc.channel.id != channel.id:
                 await bot_vc.move_to(channel)
                 just_joined = True
     except Exception as e:
         logger.warning(f"   ⚠️ voice connect error ({type(e).__name__}: {e})")
-        return
+        return None
 
     logger.info(f"   🎙️ voice — {'เพิ่งเข้า' if just_joined else 'อยู่แล้ว'} ห้อง {channel.name!r}")
+    # พูดแจ้งว่าเริ่มฟังเฉพาะตอนเพิ่งเข้าห้อง — ไม่งั้นพูดซ้ำทุกครั้งที่คุยด้วยเสียง
+    await _ensure_listening(bot_vc, announce=just_joined)
 
     # ดึง greeting (cache instantaneous ยกเว้นครั้งแรกของ session ~8-10s)
     greeting_wav = await _get_greeting_wav() if just_joined else None
 
     if music.voice_lock.locked():
         logger.info("   🎙️ TTS skip (race) — music เริ่มระหว่างรอ")
+        return None
+
+    return bot_vc, greeting_wav
+
+
+async def _speak_in_voice_impl(message, reply_text: str) -> None:
+    """เส้นพิมพ์/เส้นขอเพลงไม่เจอ — รับ "ข้อความเต็ม" → _generate_tts_stream ตามเดิม
+    (โปรลอกห้องรวมกับเส้น stream ที่ _prepare_voice_speech แล้ว)"""
+    prepared = await _prepare_voice_speech(message)
+    if prepared is None:
         return
+    bot_vc, greeting_wav = prepared
 
     async with music.voice_lock:
         with stats.stage("tts_gen_play"):
@@ -548,7 +592,7 @@ async def _speak_in_voice_impl(message, reply_text: str) -> None:
                             logger.info("   🎙️ skip — user ออก voice แล้ว")
                             break
                         try:
-                            bot_vc = await fresh_vc.channel.connect()
+                            bot_vc = await fresh_vc.channel.connect(cls=voice_recv.VoiceRecvClient)
                         except Exception as e:
                             logger.warning(f"   ⚠️ reconnect error ({type(e).__name__}: {e})")
                             break
@@ -573,10 +617,416 @@ async def _speak_in_voice_impl(message, reply_text: str) -> None:
     # ไม่ disconnect — ค้างห้อง (leave timer ทำ step ต่อไป)
 
 
+async def _aclose_async_gen(gen) -> None:
+    """ปิด async generator อย่างเงียบๆ — ใช้ตอน bail ก่อนเริ่มพูด เพื่อให้ finally ข้างใน
+    (stats.finish_message ของ ask_ollama_stream) วิ่งทันที ไม่ต้องรอ GC มาเก็บ"""
+    try:
+        await gen.aclose()
+    except Exception:
+        pass
+
+
+# ── 🎙️ เส้นเสียงแบบ stream — ประโยคจากโมเดลไหลเข้า TTS/ลำโพงทันทีที่จบประโยค ──────
+
+async def _speak_stream_in_voice(message, sentence_iter) -> None:
+    """พูดคำตอบจาก async iterator ของประโยค (chat.ask_ollama_stream) — เริ่มเจน/เล่นเสียง
+    ประโยคแรกได้ทันทีที่โมเดลเขียนประโยคแรกจบ ไม่ต้องรอคำตอบทั้งก้อน
+
+    เป็นท่อ 3 ชั้น โดยแต่ละชั้นมีผู้เล่น "ตัวเดียว" ลำดับเสียงจึงการันตีด้วยโครงสร้าง
+    (FIFO ของ Queue) ไม่ใช่ด้วยความหวังว่า worker จะเสร็จตามกันเอง:
+      _pump       → ผู้เล่นตัวเดียวของ sentence_iter — ยัดประโยคลง sent_q
+      _tts_worker → ผู้เล่นตัวเดียวของ sent_q — เรียก _generate_tts_stream *ต่อประโยค*
+                    (ข้างในยังเป็น producer thread เดียว + Queue + _tts_lock เหมือนเดิม
+                     แค่ scope ล็อกเปลี่ยนจาก "ครอบทั้งคำตอบ" เป็น "ครอบทีละประโยค" — ยัง
+                     serialize เหมือนเดิมเพราะ worker มีตัวเดียว ไม่มีทางเจนแข่งกันเอง)
+                    แล้วยัด .wav ลง wav_q
+      (ลูปด้านล่าง) → ผู้เล่นตัวเดียวของ wav_q — เล่นทีละ segment รอจบก่อนเล่นถัดไปเสมอ
+
+    วัดจริง (chat.ask_ollama_stream): คุยชิลๆ เสียงแรกพร้อมที่ 1560ms คำตอบเต็ม 3867ms
+    (5 chunks) → เริ่มพูดได้เร็วขึ้น ~2.3 วิ | ส่วนเทิร์น tool ได้ chunk เดียว 3590 ≈ 3591ms
+    = ไม่มีกำไร (ประโยคเดียวไม่มีอะไรให้ pipeline) แต่ก็ไม่เสียอะไร จึงใช้สายเดียวกันทุกเทิร์น
+    """
+    prepared = await _prepare_voice_speech(message)
+    if prepared is None:
+        # ไม่ได้เข้าเส้นพูดเลย (ไม่มีคนอยู่ห้อง/music ชนะแข่ง) — ปิด generator ให้สนิท
+        await _aclose_async_gen(sentence_iter)
+        return
+    bot_vc, greeting_wav = prepared
+
+    uid = message.author.id
+    gid = message.guild.id if message.guild else None
+
+    # เคลียร์ธง "เพิ่งถูกสั่งหยุด" ของเทิร์นก่อน — ไม่งั้นคำตอบใหม่จะโดนยกเลิกทันทีที่เริ่ม
+    # (ธงค้างข้ามเทิร์นได้ pattern เดียวกับ _play_karaoke ที่ discard ก่อนเริ่มเพลง)
+    if gid is not None:
+        music.stopped_guilds.discard(gid)
+
+    def _user_stopped() -> bool:
+        # คำสั่งหยุด ("เงียบหน่อย") ถูกจัดการใน _on_voice_utterance อีก task — สื่อสารกัน
+        # ผ่านธงกลาง music.stopped_guilds ฝั่งเดียวกับเส้น karaoke
+        return gid is not None and gid in music.stopped_guilds
+
+    sent_q: asyncio.Queue = asyncio.Queue()   # ประโยค (str) — ไม่จำกัดคิวตามเส้นเดิมที่ producer เจนนำเสมอ
+    wav_q: asyncio.Queue = asyncio.Queue()    # path .wav พร้อมเล่น เรียงตามลำดับประโยค
+    stop_pipe = asyncio.Event()               # สั่งปิดท่อ (โดนหยุด/เล่นจบ/พัง)
+
+    async def _pump() -> None:
+        # ผู้เล่นตัวเดียวของ sentence_iter — ถ้าถูก cancel ตรง __anext__ CancelledError จะทะลุ
+        # ผ่าน generator ของ chat ทำให้ finally ข้างใน (stats + คืน user lock) วิ่งเอง
+        try:
+            async for piece in sentence_iter:
+                piece = piece.strip()
+                if piece:
+                    await sent_q.put(piece)
+        finally:
+            await sent_q.put(None)   # sentinel ปิดท้ายเสมอ — worker ไม่มีทางรอประโยคค้างตลอด
+
+    async def _tts_worker() -> None:
+        # แปลงประโยคเป็นเสียง "ทีละประโยคตามลำดับ" — จบประโยคนึงค่อยหยิบประโยคถัดไป
+        # ลำดับเสียงจึงตรงกับลำดับประโยคเสมอแม้ประโยคหลังเจนเร็วกว่า
+        while True:
+            sentence = await sent_q.get()
+            if sentence is None or stop_pipe.is_set():
+                break
+            seg_stream = _generate_tts_stream(sentence, uid)
+            try:
+                async for wav in seg_stream:
+                    await wav_q.put(wav)
+            except Exception as e:
+                # ประโยคนี้เจนไม่รอด — ข้ามไปประโยคถัดไปดีกว่าทำทั้งคำตอบร่วง
+                # (ขาดหนึ่งประโยคผู้ฟังยังตามเรื่องได้ เงียบทั้งคำตอบคือพังหนักกว่า)
+                logger.warning(f"   ⚠️ TTS ประโยคนี้พัง ({type(e).__name__}: {e}) — ข้าม")
+            finally:
+                # ปิดทุกครั้ง — finally ข้างในรอ producer thread จบ + เก็บกวาด segment ค้าง
+                # (thread cancel ไม่ได้ ประโยคสั้นจึงปล่อยให้รอบปัจจุบันจบก่อนเสมอ)
+                try:
+                    await seg_stream.aclose()
+                except Exception:
+                    pass
+        await wav_q.put(None)
+
+    pump_task = asyncio.create_task(_pump())
+    tts_task = asyncio.create_task(_tts_worker())
+
+    n_played = 0
+    aborted = False
+    async with music.voice_lock:
+        with stats.stage("tts_gen_play"):
+            try:
+                if greeting_wav:
+                    # เสียงทักทายออกก่อน — ระหว่างเล่น tts_worker เจนประโยคแรกเสร็จไปแล้ว
+                    # (แทนเทคนิค anext-concurrent ของเส้นพิมพ์ เพราะ worker วิ่งนำอยู่แล้ว)
+                    logger.info("   🎙️ เล่นทักทาย")
+                    await _play_wav(bot_vc, greeting_wav)
+
+                while True:
+                    # รอ segment แบบ poll ธงหยุดทุก 0.25s — คำสั่ง "เงียบหน่อย" ต้องตอบสนอง
+                    # ทันทีแม้ตอนนั้น TTS ยังเจนประโยคถัดไปไม่เสร็จ (ไม่งั้นต้องรอเจนจบก่อน
+                    # ถึงจะเช็คธงได้ = หยุดช้ากว่าควร)
+                    try:
+                        wav = await asyncio.wait_for(wav_q.get(), timeout=0.25)
+                    except asyncio.TimeoutError:
+                        if _user_stopped():
+                            aborted = True
+                            break
+                        continue
+                    if wav is None:
+                        break                      # ประโยคหมด — คำตอบจบปกติ
+                    if _user_stopped():
+                        aborted = True
+                        break
+                    # Re-check connection ก่อนเล่นทุก segment (bot_vc อาจหลุดระหว่าง TTS)
+                    if not bot_vc.is_connected():
+                        logger.info("   🎙️ reconnect — bot_vc หลุดระหว่าง TTS")
+                        fresh_vc = getattr(message.author, "voice", None)
+                        if not fresh_vc or not fresh_vc.channel:
+                            logger.info("   🎙️ skip — user ออก voice แล้ว")
+                            break
+                        try:
+                            bot_vc = await fresh_vc.channel.connect(cls=voice_recv.VoiceRecvClient)
+                        except Exception as e:
+                            logger.warning(f"   ⚠️ reconnect error ({type(e).__name__}: {e})")
+                            break
+
+                    n_played += 1
+                    logger.info(f"   🎙️ เล่น segment {n_played}")
+                    await _play_wav(bot_vc, wav)
+                    try:
+                        os.remove(wav)
+                    except OSError:
+                        pass
+
+            except Exception as e:
+                logger.warning(f"   ⚠️ voice play error ({type(e).__name__}: {e})")
+            finally:
+                # ── ปิดท่อให้สนิททั้งสองกรณี (เล่นจบเอง / โดนสั่งหยุดกลางคัน) ──
+                # ลำดับสำคัญ: ตั้งธง → ปลุก worker → หยุด pump → รอ worker เก็บงานจบ → กวาดไฟล์
+                # ห้าม cancel tts_task ทิ้งเปล่า เพราะ thread generate ที่วิ่งอยู่ข้างใน cancel
+                # ไม่ได้ — ปล่อยให้จบ "ประโยคปัจจุบัน" (สั้น ไม่กี่วินาที) แล้วมันออกเองที่เช็คธง
+                stop_pipe.set()
+                sent_q.put_nowait(None)          # ปลุก worker ที่อาจรอประโยคอยู่ (คิวไม่มีขอบเขต ไม่มีทาง raise)
+                pump_task.cancel()               # หยุดดึงประโยคจากโมเดลทันที — ไม่ปล่อยให้เขียนต่อเปล่าๆ
+                try:
+                    await pump_task
+                except asyncio.CancelledError:
+                    pass
+                # จับ error ของ pump ไว้ก่อน (อย่าปล่อยทิ้ง) — ถ้าสาย streaming พังจริง ๆ
+                # ต้อง throw ต่อให้ _on_voice_utterance ถอยไปเส้น non-streaming
+                pump_exc = None if pump_task.cancelled() else pump_task.exception()
+                await tts_task
+                # เก็บกวาด .wav ที่เจนล่วงหน้าไว้แล้วแต่ไม่มีวันได้เล่น (โดนสั่งหยุด/ข้ามประโยค)
+                while not wav_q.empty():
+                    leftover = wav_q.get_nowait()
+                    if leftover:
+                        try:
+                            os.remove(leftover)
+                        except OSError:
+                            pass
+
+    # throw หลังปล่อย voice_lock แล้วเท่านั้น — fail-safe ฝั่งผู้เรียกจะได้เข้ามา take over
+    # โดยไม่ต้องมาแย่งล็อกกับงานที่กำลังจะตาย
+    if pump_exc is not None:
+        raise pump_exc
+    logger.info(f"   🎙️ พูดจบ ({n_played} segments{' — โดนสั่งหยุดกลางคัน' if aborted else ''})")
+
+
 # ── leave timer helpers ────────────────────────────────────────────────────────
 
 def _human_count_in_channel(channel: discord.VoiceChannel) -> int:
     return sum(1 for m in channel.members if not m.bot)
+
+
+# ── 👂 ฟังเสียงในห้อง (STT) ────────────────────────────────────────────────────
+
+# บอทตอบเฉพาะประโยคที่เรียกชื่อมัน — stt_listener แก้ตัวสะกดที่ ASR เขียนเพี้ยนให้เป็น
+# "รอสเต้" ก่อนส่งมาถึงตรงนี้แล้ว (ดู _NAME_FIXES) แต่ยังเผื่อ variant ไว้ด้วย เพราะ
+# ASR อาจเพี้ยนแบบใหม่ที่ยังไม่มีในตาราง — พลาดแล้วบอทเงียบ ผู้ใช้ไม่รู้ว่าทำไม
+_BOT_NAME_RE = re.compile(r"รอสเต|ลอสเต|ล็อตเต|ลอตเต|roste", re.IGNORECASE)
+
+class _VoiceMessage:
+    """shim ให้เสียงพูดใช้เส้นทางเดียวกับข้อความพิมพ์ได้
+
+    _speak_in_voice_impl() แตะแค่ .author.voice / .guild / .author.display_name —
+    ไม่ได้ใช้ .content, .reply(), .channel.typing() ฯลฯ ที่มีเฉพาะ Message จริง
+    จึงห่อ member ให้พอดีกับที่มันใช้ ดีกว่าแยกเขียน TTS path ที่สองมาให้ต่างกันเงียบๆ
+    """
+
+    __slots__ = ("author", "guild")
+
+    def __init__(self, member: discord.Member):
+        self.author = member
+        self.guild = member.guild
+
+
+async def _on_voice_utterance(member: discord.Member, text: str) -> None:
+    """คนในห้องพูดจบหนึ่งประโยค → ป้อนเข้า chat pipeline เหมือนพิมพ์ แล้วตอบด้วยเสียง
+
+    เรียกจาก SttListener บน event loop ของบอท (มัน schedule มาให้แล้ว — ดู
+    stt_listener._dispatch_callback) จึง await ได้ตามปกติ
+    """
+    if not text.strip():
+        return
+    # ต้องเรียกชื่อบอทก่อน — ห้อง voice มีคนคุยกันเองตลอด ถ้าตอบทุกประโยคที่ได้ยิน
+    # บอทจะแทรกบทสนทนาคนอื่นและเปลือง LLM ทุกครั้ง (ตรรกะเดียวกับที่แชตต้อง @ ก่อน)
+    if _BOT_NAME_RE.search(text) is None:
+        logger.debug(f"   👂 ข้าม (ไม่ได้เรียกชื่อ) — {member.display_name}: {text}")
+        return
+
+    logger.info(f"   👂 {member.display_name} พูดว่า: {text}")
+
+    # แสดง transcript ทันทีที่ได้ยิน — ต้องอยู่ *ก่อน* ทุก branch ที่ return ออกไป (สั่งหยุด/
+    # ขอเพลง) ไม่งั้นคำสั่งพวกนั้นจะเงียบไม่มี feedback เลย ทั้งที่เป็นตอนที่ผู้ใช้อยากรู้
+    # ที่สุดว่าบอทได้ยินถูกไหม (ASR สะกดชื่อเพลงเพี้ยนบ่อย — เห็น transcript แล้วรู้ทันทีว่า
+    # ทำไมได้เพลงผิด) ส่ง fire-and-forget ไม่ให้ไปหน่วงการเล่นเพลง/หยุดเสียง
+    text_channel = _find_text_channel(member)
+    if text_channel:
+        asyncio.create_task(_safe_send(text_channel, f"🎙️ **{member.display_name}:** {text}"))
+
+    # ===== 🔇 สั่งหยุด — ต้องมาก่อนทุกอย่าง =====
+    # เหตุผลเดียวกับเส้นทางแชต: คนสั่งหยุดตอนบอทกำลังส่งเสียงอยู่ ถ้าไปเข้าคิว LLM ก่อน
+    # จะรออีก 6 วินาทีกว่าจะหยุด — ซึ่งนานเกินจนคนต้องตะโกนซ้ำ (เจอจริง: พูด "เงียบหน่อย"
+    # สองรอบติด บอทตอบเป็นข้อความยาวทั้งสองรอบแทนที่จะหยุด)
+    vc = member.guild.voice_client if member.guild else None
+    if music.looks_like_pure_stop(text):
+        if vc and (vc.is_playing() or vc.is_paused()):
+            if member.guild:
+                music.stopped_guilds.add(member.guild.id)
+            vc.stop()
+            logger.info(f"   🔇 หยุดเสียงตามคำสั่งเสียงของ {member.display_name}")
+        return                     # ไม่ต้องพูดตอบ — คนขอให้เงียบ การพูดตอบคือสิ่งที่เขาไม่อยากได้
+
+    # ขอเพลง — ต้องเช็คก่อนเรียก LLM เหมือนเส้นทางแชต (on_message) ไม่งั้นโมเดลจะตอบเป็น
+    # ข้อความว่า "ได้ค่ะเดี๋ยวร้องให้" แล้วไม่ร้องจริง (เจอจริง: ขอทางเสียงแล้วบอทพูดตอบ
+    # 160 ตัวอักษรแต่ไม่เคยเข้า _play_karaoke เลย)
+    if await _handle_voice_song_request(member, text):
+        return
+
+    # 🎙️ ตอบเป็นเสียงแบบ stream — ประโยคไหนของโมเดลเขียนจบก่อน ประโยคนั้นเข้า TTS/ลำโพงก่อน
+    # ไม่ต้องรอคำตอบทั้งก้อน (วัดจริง: คุยชิลๆ เริ่มพูดได้เร็วขึ้น ~2.3 วิ; เทิร์น tool ได้
+    # คำตอบประโยคเดียวจึงเท่าเดิม — ไม่มีกำไรแต่ไม่เสีย ยอมรับไว้)
+    # ตั้งใจให้มี fallback สองชั้น: ask_ollama_stream ถอยไป ask_ollama เองได้ข้างในแล้ว
+    # รอดมาถึงตรงนี้ = fallback ข้างในพังซ้ำ หรือท่อ TTS/เล่นเสียงเองมีปัญหา — ชั้นนี้จึง
+    # ย้อนกลับไปพฤติกรรมเดิม "รอคำตอบเต็มแล้วค่อยพูด" คนรอเสียงต้องไม่มีวันเจอความเงียบ
+    try:
+        stream = chat.ask_ollama_stream(member.id, member.display_name, text)
+        await _speak_stream_in_voice(_VoiceMessage(member), stream)
+        return
+    except Exception as e:
+        logger.warning(f"   👂 ↳ streaming พัง ({type(e).__name__}: {e}) — ถอยไปเส้นรอคำตอบเต็ม")
+
+    try:
+        # voice_reply=True — คำตอบจะถูกพูดอย่างเดียว สั่งให้สั้นลง (ดู persona.build_author_note)
+        reply = await chat.ask_ollama(member.id, member.display_name, text,
+                                      is_speaking=False, voice_reply=True)
+    except Exception as e:
+        logger.error(f"   👂 ❌ ตอบเสียงไม่ได้ ({type(e).__name__}: {e})")
+        return
+
+    logger.info(f"   👂 ↳ ตอบ ({len(reply)} ตัวอักษร)")
+    # ตอบเป็นเสียงอย่างเดียว — คนพูดอยู่ในห้อง voice ไม่ได้จ้องแชต การส่งข้อความด้วย
+    # จะกลายเป็นสแปมห้องแชตทุกครั้งที่คุยด้วยเสียง
+    await _speak_in_voice(_VoiceMessage(member), reply)
+
+
+# ประโยคที่รอสเต้พูดตอนเริ่มฟังเสียงได้แล้ว — cache เหมือน _GREETING_WAV เพราะข้อความคงที่
+# TTS ใช้เวลา ~7s ทุกครั้งถ้าไม่ cache ซึ่งช้าเกินสำหรับสัญญาณ "พร้อมแล้ว"
+_LISTEN_READY_TEXT = "รอสเต้เข้ามาแล้วนะคะ ฟังอยู่ค่ะ เรียกชื่อรอสเต้แล้วพูดได้เลย"
+_LISTEN_READY_WAV: str | None = None
+
+
+async def _get_listen_ready_wav() -> str | None:
+    global _LISTEN_READY_WAV
+    if _LISTEN_READY_WAV is None:
+        _LISTEN_READY_WAV = await _generate_tts(_LISTEN_READY_TEXT, 0)
+    return _LISTEN_READY_WAV
+
+
+def _find_text_channel(member: discord.Member):
+    """ห้องที่ควรโพสต์ transcript ของคนที่พูด — คืน None ถ้าไม่มีที่ส่ง
+
+    ใช้ห้อง voice ที่เขาอยู่เป็นหลัก: discord.py 2.x รองรับ text-in-voice (VoiceChannel
+    เป็น Messageable) ข้อความจึงไปอยู่ในห้องเดียวกับที่กำลังคุยด้วยเสียงพอดี — ไม่ต้องเดา
+    ว่าห้องแชตไหนเกี่ยวข้อง และคนที่ไม่ได้อยู่ในห้องก็ไม่โดนสแปม
+    """
+    vc = getattr(member, "voice", None)
+    return vc.channel if vc and vc.channel else None
+
+
+async def _safe_send(channel, content: str) -> None:
+    """ส่งข้อความแบบไม่ให้ error ทำงานอื่นพัง — transcript หายไม่ใช่เรื่องคอขาดบาดตาย
+    (ห้องอาจปิดสิทธิ์ส่งข้อความ / rate limit / ห้องถูกลบระหว่างนั้น)"""
+    try:
+        await channel.send(content[:2000])
+    except Exception as e:
+        logger.debug(f"   👂 ส่ง transcript ไม่ได้ ({type(e).__name__}: {e})")
+
+
+async def _handle_voice_song_request(member: discord.Member, text: str) -> bool:
+    """ขอเพลงทางเสียง — คืน True ถ้าจัดการแล้ว (ผู้เรียกต้องไม่ไปเรียก LLM ต่อ)
+
+    เงื่อนไขตรวจจับเดียวกับเส้นทางแชตใน on_message ตั้งใจ — สองทางต้องเข้าใจ "ขอเพลง"
+    เหมือนกัน ไม่งั้นผู้ใช้เจอพฤติกรรมต่างกันโดยไม่มีเหตุผลที่อธิบายได้
+    ตอบกลับเป็นเสียงอย่างเดียว (คนพูดอยู่ในห้อง voice ไม่ได้จ้องแชต)
+    """
+    if not ("เพลง" in text and any(w in text for w in ("ร้อง", "เปิด", "เล่น", "ขอ"))):
+        return False
+
+    msg = _VoiceMessage(member)
+    if music.voice_lock.locked():
+        await _speak_in_voice(msg, "ตอนนี้รอสเต้กำลังใช้เสียงอยู่ค่ะ รอแป๊บนึงนะคะ")
+        return True
+
+    user_vc = getattr(member, "voice", None)
+    if not user_vc or not user_vc.channel:
+        return True          # ไม่ได้อยู่ในห้อง = ไม่มีทางได้ยินอยู่แล้ว
+
+    query = music.extract_song_query(text)
+    result = music.find_karaoke(query) if query else music.get_random_karaoke()
+    music.log_song_request(member.display_name, query or "(สุ่ม)", found=bool(result))
+    if result:
+        song_path, stem = result
+        pretty = music.prettify_song_name(stem)
+        logger.info(f"   🎵 karaoke (เสียง): {pretty!r} (ขอโดย {member.display_name})")
+        # บอกว่าได้เพลงอะไร — ASR สะกดชื่อเพลงเพี้ยนบ่อย (fuzzy match ช่วยหาเจอ แต่ผู้ใช้
+        # ควรเห็นว่ามันเลือกเพลงไหน ไม่ใช่รอฟังแล้วค่อยรู้ว่าผิด)
+        ch = _find_text_channel(member)
+        if ch:
+            asyncio.create_task(_safe_send(ch, f"🎵 กำลังร้อง **{pretty}** ให้ฟังค่ะ~"))
+        asyncio.create_task(_play_karaoke(msg, song_path, pretty))
+    else:
+        not_found = ("รอสเต้ไม่เคยฟังเพลงนั้นมาก่อนเลยค่ะ เดี๋ยวไปหัดร้องก่อนนะคะ~"
+                     if query else "รอสเต้ยังไม่มีเพลงในคลังเลยค่ะ ยังต้องเตรียมให้ค่ะ~")
+        logger.info(f"   🎵 karaoke (เสียง) ไม่เจอ: {query!r}")
+        await _speak_in_voice(msg, not_found)
+    return True
+
+
+async def _ensure_listening(vc, announce: bool = False) -> None:
+    """เริ่มฟังเสียงในห้องถ้ายังไม่ได้ฟัง — idempotent เรียกทุกครั้งที่ต่อ/ย้ายห้องได้
+
+    announce: ให้รอสเต้ *พูดออกเสียง* ว่าเริ่มฟังแล้ว — ผู้ใช้อยู่ในห้อง voice ไม่ได้จ้อง
+    แชตหรือ log จึงไม่มีทางรู้ว่าบอทฟังอยู่ไหม (เจอจริงตอนทดสอบ: พูดใส่ไปแล้วเงียบ
+    โดยไม่รู้ว่าเพราะยังไม่เริ่มฟัง หรือฟังแล้วแต่ถอดเสียงไม่ออก) เสียงบอกได้ตรงจุดกว่า
+    """
+    global _stt_listener
+    if _stt_worker is None or not _stt_worker.alive:
+        return          # ไม่พูดอะไร — บอทเข้าห้องมาทักทายตามปกติอยู่แล้ว แค่ไม่ได้ยิน
+    if _stt_listener is not None and vc.is_connected():
+        return                    # ฟังอยู่แล้วกับ client ตัวนี้
+    try:
+        _stt_listener = await stt_listener.start_listening(
+            vc, _stt_worker, _on_voice_utterance, on_speech_start=_barge_in)
+        logger.info("   👂 เริ่มฟังเสียงในห้องแล้ว")
+    except Exception as e:
+        logger.warning(f"   ⚠️ เริ่มฟังเสียงไม่ได้ ({type(e).__name__}: {e})")
+        _stt_listener = None
+        return
+
+    if not announce:
+        return
+    # เล่นหลัง listener พร้อมแล้วเท่านั้น — ถ้าพูดก่อนจะโกหกผู้ใช้ว่าฟังอยู่ทั้งที่ยัง
+    # fire-and-forget: ไม่ให้การทักทายไปหน่วง TTS คำตอบจริงที่กำลังจะตามมา
+    async def _announce():
+        try:
+            wav = await _get_listen_ready_wav()
+            if wav and vc.is_connected():
+                async with music.voice_lock:
+                    await _play_wav(vc, wav)
+        except Exception:
+            logger.debug("   👂 พูดแจ้งเริ่มฟังไม่สำเร็จ", exc_info=True)
+
+    asyncio.create_task(_announce())
+
+
+def _stop_listening() -> None:
+    """หยุดฟัง — ต้องเรียกก่อน vc.disconnect() ทุกครั้ง ไม่งั้น thread ของ listener
+    ค้างอ้างอิง voice client ที่ตายแล้ว"""
+    global _stt_listener
+    if _stt_listener is None:
+        return
+    try:
+        _stt_listener.cleanup()
+    except Exception:
+        logger.debug("   👂 cleanup listener มีปัญหา", exc_info=True)
+    _stt_listener = None
+
+
+def _barge_in(member: discord.Member) -> None:
+    """มีคนเริ่มพูดขณะบอทกำลังพูด → หยุดเสียงบอททันที (barge-in)
+
+    เรียกจาก sink thread ผ่าน loop.call_soon_threadsafe — vc.stop() แตะ state ของ
+    discord.py จึงต้องรันบน event loop เท่านั้น
+
+    ไม่แตะตอน karaoke/เพลง (music.voice_lock) — คนสั่งให้ร้องแล้วบังเอิญคุยกันต่อ
+    ไม่ควรทำให้เพลงหยุดกลางคัน ต่างจาก TTS ที่การพูดขัดคือเจตนาชัดเจน
+    """
+    vc = member.guild.voice_client if member.guild else None
+    if vc is None or not vc.is_playing():
+        return
+    if music.voice_lock.locked():
+        return
+    vc.stop()
+    logger.info(f"   ✋ {member.display_name} พูดขัด — หยุดเสียงบอท")
 
 
 async def _leave_after_idle(vc: discord.VoiceClient) -> None:
@@ -596,6 +1046,7 @@ async def _leave_after_idle(vc: discord.VoiceClient) -> None:
     if _human_count_in_channel(channel) > 0:
         return
     logger.info(f"   🎙️ ว่างมา {LEAVE_IDLE_SEC}s — disconnect จากห้อง {channel.name!r}")
+    _stop_listening()
     await vc.disconnect()
 
 
@@ -613,7 +1064,7 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
                     await bot_vc.disconnect(force=True)
                 except Exception:
                     pass
-            bot_vc = await channel.connect()
+            bot_vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
         elif bot_vc.channel.id != channel.id:
             await bot_vc.move_to(channel)
     except Exception as e:
@@ -647,7 +1098,7 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
                     pass
             if not bot_vc.is_connected():
                 try:
-                    bot_vc = await channel.connect()
+                    bot_vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
                 except Exception:
                     return
             loop = asyncio.get_running_loop()
@@ -679,6 +1130,7 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
 
     try:
         if bot_vc.is_connected():
+            _stop_listening()
             await bot_vc.disconnect()
     except Exception:
         pass
@@ -692,7 +1144,7 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
 
 @client.event
 async def on_ready():
-    global _voice_worker, _f5_worker, _voxcpm_worker, _ready_once
+    global _voice_worker, _f5_worker, _voxcpm_worker, _stt_worker, _ready_once
     logger.info(f"✅ ล็อกอินสำเร็จในชื่อ: {client.user}")
     chat._ensure_bg_worker()   # เริ่ม background queue worker (idempotent อยู่แล้ว — เรียกซ้ำได้)
 
@@ -707,9 +1159,11 @@ async def on_ready():
     _voice_worker = voice.RvcWorker()
     _f5_worker = voice.F5Worker()
     _voxcpm_worker = voice.VoxCpmWorker()
+    _stt_worker = stt_client.SttWorker()
     asyncio.create_task(_start_voice_worker())   # โหลด RVC เบื้องหลัง ไม่บล็อก startup
     asyncio.create_task(_start_f5_worker())      # โหลด F5 เบื้องหลัง ไม่บล็อก startup
     asyncio.create_task(_start_voxcpm_worker())  # โหลด VoxCPM2 เบื้องหลัง (ช้าสุด ~60-75s)
+    asyncio.create_task(_start_stt_worker())     # โหลด STT เบื้องหลัง (~12s)
     await _monitor_server.start()
     logger.info(f"🖨️ ระบบพิมพ์: {'โหมดจริง' if printing.PRINT_REAL_MODE else 'โหมดจำลอง (ยังไม่สั่งเครื่องจริง)'}")
     logger.info("🎙️ workers กำลังโหลดในเบื้องหลัง (RVC ~8s, F5 ~14s, VoxCPM2 ~60-75s)...")
@@ -764,7 +1218,7 @@ async def on_message(message):
         logger.info(f"   ↳ ข้าม: guild {message.guild.id} ไม่อยู่ใน allowlist")
         return
 
-    # กัน DM ที่ไม่ได้รับอนุญาต (ถ้าไม่ตั้ง DM_ALLOWED_USER_IDS ไว้ = เปิดรับ DM ทุกคน เหมือนเดิม)
+    # กัน DM ที่ไม่ได้รับอนุญาต (ถ้าไม่ตั้ง DM_ALLOWED_USER_IDS ไว้ = ตอบทุกคน (เดิม ไม่กระทบของเก่า))
     if not _dm_allowed(message.author.id, is_dm):
         logger.info(f"   ↳ ข้าม: DM จาก {message.author.id} ไม่อยู่ใน allowlist")
         return
@@ -888,7 +1342,7 @@ async def on_message(message):
             song_path, stem = result
             pretty = music.prettify_song_name(stem)
             logger.info(f"   🎵 karaoke: {pretty!r} (ขอโดย {user_name})")
-            await message.reply(f"🎵 รอสเต้จะร้องเพลง \"{pretty}\" ให้ฟังนะคะ~")
+            await message.reply(f'🎵 รอสเต้จะร้องเพลง "{pretty}" ให้ฟังนะคะ~')
             asyncio.create_task(_play_karaoke(message, song_path, pretty))
         else:
             not_found = ("รอสเต้ไม่เคยฟังเพลงนั้นมาก่อนเลยค่ะ เดี๋ยวไปหัดร้องก่อนนะคะ~"
@@ -936,6 +1390,7 @@ async def on_message(message):
     await message.reply(reply)
 
     # 🎙️ TTS — join voice + ทักทาย (ถ้าเพิ่งเข้า) + เล่นคำตอบ + ค้างห้อง
+    # (เส้นพิมพ์ยังใช้ข้อความเต็มตามเดิม — เฉพาะเส้นเสียงเท่านั้นที่ใช้ streaming)
     asyncio.create_task(_speak_in_voice(message, reply))
 
     # 🪄 จำเอง — ทำเบื้องหลังหลังตอบไปแล้ว (ไม่บล็อก ผู้ใช้ไม่ต้องรอ)
