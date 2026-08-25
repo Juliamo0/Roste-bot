@@ -1,0 +1,1332 @@
+[
+  {
+    "label": "silence-800",
+    "kind": "A",
+    "threshold_ms": 800,
+    "semantic_idle_giveup_ms": null,
+    "summary": {
+      "n": 14,
+      "success": 7,
+      "whole": 5,
+      "split": 9,
+      "none": 0,
+      "cer_joined": 0.03266913065283649,
+      "cer_when_whole": 0.025375,
+      "delay_first_ms": -1602.142857142857,
+      "delay_final_ms": 790.7142857142857
+    },
+    "by_group": {
+      "core": {
+        "n": 4,
+        "success": 1
+      },
+      "connective": {
+        "n": 3,
+        "success": 0
+      },
+      "done_then_add": {
+        "n": 2,
+        "success": 2
+      },
+      "control": {
+        "n": 4,
+        "success": 4
+      },
+      "list": {
+        "n": 1,
+        "success": 0
+      }
+    },
+    "rows": [
+      {
+        "id": "core01_p500",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046875,
+        "cer_single": 0.046875,
+        "delay_first_ms": 820,
+        "delay_final_ms": 820,
+        "utts": [
+          {
+            "start": 360,
+            "end": 5800,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่นรอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core02_p900",
+        "group": "core",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.046875,
+        "cer_single": null,
+        "delay_first_ms": -1980,
+        "delay_final_ms": 820,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3400,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่น"
+          },
+          {
+            "start": 3600,
+            "end": 6200,
+            "text": "รอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core03_p1600",
+        "group": "core",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.046875,
+        "cer_single": null,
+        "delay_first_ms": -2680,
+        "delay_final_ms": 820,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3400,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่น"
+          },
+          {
+            "start": 4300,
+            "end": 6900,
+            "text": "รอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core04_trip900",
+        "group": "core",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.0,
+        "cer_single": null,
+        "delay_first_ms": -2800,
+        "delay_final_ms": 800,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3400,
+            "text": "เมื่อคืนผมลองเขียนแผนทริปไปเชียงใหม่ดูนะ"
+          },
+          {
+            "start": 3620,
+            "end": 7000,
+            "text": "รอสเต้ช่วยเช็คสภาพอากาศช่วงนั้นให้ทีไหม"
+          }
+        ]
+      },
+      {
+        "id": "conn01_laewgor",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.0425531914893617,
+        "cer_single": null,
+        "delay_first_ms": -3400,
+        "delay_final_ms": 800,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3500,
+            "text": "พรุ่งนี้ผมจะไปส่งของที่แถวอารีแล้วก็"
+          },
+          {
+            "start": 3680,
+            "end": 7700,
+            "text": "แวะกินข้าวกับเพื่อนรอสเตย์ช่วยตั้งปลุกเก้าโมงเช้าให้หน่อย"
+          }
+        ]
+      },
+      {
+        "id": "conn02_kue",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.05813953488372093,
+        "cer_single": null,
+        "delay_first_ms": -3450,
+        "delay_final_ms": 750,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3400,
+            "text": "เมื่อวานดูซีรีส์รถสามตอนต่อกันคือ"
+          },
+          {
+            "start": 3680,
+            "end": 7600,
+            "text": "มันดันเล่าเรื่องย้อนหลังสงั้นดรอสเต้ว่าผมควรดูต่อไหม"
+          }
+        ]
+      },
+      {
+        "id": "conn03_pramanwa",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.05263157894736842,
+        "cer_single": null,
+        "delay_first_ms": -2860,
+        "delay_final_ms": 740,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3500,
+            "text": "กําลังคิดจะซื้อกาดจอรุ่นใหม่ประมาณว่า"
+          },
+          {
+            "start": 3880,
+            "end": 7100,
+            "text": "งบสิบห้าพันบาทรอสเต้ว่ามันคุ้มไหมเนี่ย"
+          }
+        ]
+      },
+      {
+        "id": "add01_song",
+        "group": "done_then_add",
+        "expect": "split",
+        "produced": "split",
+        "success": true,
+        "n_utt": 2,
+        "cer_joined": 0.0684931506849315,
+        "cer_single": null,
+        "delay_first_ms": -3080,
+        "delay_final_ms": 820,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2800,
+            "text": "รอสเตย์เปิดเพลงให้ฟังหน่อยสิ"
+          },
+          {
+            "start": 3060,
+            "end": 6700,
+            "text": "แล้วก็อีกอย่างพรุ่งนี้เตือนผมไปรับพัสดุด้วย"
+          }
+        ]
+      },
+      {
+        "id": "add02_rain",
+        "group": "done_then_add",
+        "expect": "split",
+        "produced": "split",
+        "success": true,
+        "n_utt": 2,
+        "cer_joined": 0.014925373134328358,
+        "cer_single": null,
+        "delay_first_ms": -3180,
+        "delay_final_ms": 820,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2600,
+            "text": "วันนี้ฝนตกหนักจังเลย"
+          },
+          {
+            "start": 2920,
+            "end": 6600,
+            "text": "เออลืมบอกไปช่วยสั่งกาแฟเย็นเปิดให้ผลแก้วหนึ่งนะ"
+          }
+        ]
+      },
+      {
+        "id": "ctrl01_time",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 760,
+        "delay_final_ms": 760,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2700,
+            "text": "ตอนนี้กี่โมงแล้วรอสเต้"
+          }
+        ]
+      },
+      {
+        "id": "ctrl02_music",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 780,
+        "delay_final_ms": 780,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2400,
+            "text": "ช่วยเปิดเพลงให้หน่อยสิ"
+          }
+        ]
+      },
+      {
+        "id": "ctrl03_weather",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 820,
+        "delay_final_ms": 820,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2500,
+            "text": "พรุ่งนี้ฝนจะตกไหม"
+          }
+        ]
+      },
+      {
+        "id": "ctrl04_tired",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.08,
+        "cer_single": 0.08,
+        "delay_first_ms": 760,
+        "delay_final_ms": 760,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2700,
+            "text": "วันนี้เหนื่อยมากเลยรอสเตย์"
+          }
+        ]
+      },
+      {
+        "id": "list01_two",
+        "group": "list",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.0,
+        "cer_single": null,
+        "delay_first_ms": -2940,
+        "delay_final_ms": 760,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3500,
+            "text": "ช่วยสองอย่างนะอย่างแรกคือเปิดแอร์ห้องนอน"
+          },
+          {
+            "start": 3820,
+            "end": 7200,
+            "text": "อย่างที่สองคือปิดไฟกับทีวีในห้องครัวด้วย"
+          }
+        ]
+      }
+    ],
+    "meta": {
+      "constants_source": "stt_listener (import จริง)",
+      "silence_rms": 150,
+      "min_utterance_ms": 400,
+      "max_utterance_ms": 30000,
+      "chunk_ms": 20,
+      "check_interval_sec": 0.1
+    }
+  },
+  {
+    "label": "silence-1200",
+    "kind": "B",
+    "threshold_ms": 1200,
+    "semantic_idle_giveup_ms": null,
+    "summary": {
+      "n": 14,
+      "success": 11,
+      "whole": 13,
+      "split": 1,
+      "none": 0,
+      "cer_joined": 0.036607735175545476,
+      "cer_when_whole": 0.03581794557366436,
+      "delay_first_ms": 940.7142857142857,
+      "delay_final_ms": 1190.7142857142858
+    },
+    "by_group": {
+      "core": {
+        "n": 4,
+        "success": 3
+      },
+      "connective": {
+        "n": 3,
+        "success": 3
+      },
+      "done_then_add": {
+        "n": 2,
+        "success": 0
+      },
+      "control": {
+        "n": 4,
+        "success": 4
+      },
+      "list": {
+        "n": 1,
+        "success": 1
+      }
+    },
+    "rows": [
+      {
+        "id": "core01_p500",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046875,
+        "cer_single": 0.046875,
+        "delay_first_ms": 1220,
+        "delay_final_ms": 1220,
+        "utts": [
+          {
+            "start": 360,
+            "end": 6200,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่นรอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core02_p900",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046875,
+        "cer_single": 0.046875,
+        "delay_first_ms": 1220,
+        "delay_final_ms": 1220,
+        "utts": [
+          {
+            "start": 360,
+            "end": 6600,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่นรอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core03_p1600",
+        "group": "core",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.046875,
+        "cer_single": null,
+        "delay_first_ms": -2280,
+        "delay_final_ms": 1220,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3800,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่น"
+          },
+          {
+            "start": 4300,
+            "end": 7300,
+            "text": "รอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core04_trip900",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0759493670886076,
+        "cer_single": 0.0759493670886076,
+        "delay_first_ms": 1200,
+        "delay_final_ms": 1200,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7400,
+            "text": "เมื่อคืนผมลองเขียนแผนทริปไปเชียงใหม่ดูนะ Roste ช่วยเช็คสภาพอากาศช่วงนั้นให้ทีไหม"
+          }
+        ]
+      },
+      {
+        "id": "conn01_laewgor",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.07446808510638298,
+        "cer_single": 0.07446808510638298,
+        "delay_first_ms": 1200,
+        "delay_final_ms": 1200,
+        "utts": [
+          {
+            "start": 360,
+            "end": 8100,
+            "text": "พรุ่งนี้ผมจะไปส่งของที่แถวอารีแล้วก็ แวะกินข้าวกับเพื่อน รอสเตย์ ช่วยตั้งกลุ่มเก้าโมงเช้าให้หน่อย"
+          }
+        ]
+      },
+      {
+        "id": "conn02_kue",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046511627906976744,
+        "cer_single": 0.046511627906976744,
+        "delay_first_ms": 1150,
+        "delay_final_ms": 1150,
+        "utts": [
+          {
+            "start": 360,
+            "end": 8000,
+            "text": "เมื่อวานดูซีรีส์รถสามตอนต่อกันคือ มันดันเล่าเรื่องย้อนหลังสงั้น รอสเต้ว่าผมควรดูต่อไหม"
+          }
+        ]
+      },
+      {
+        "id": "conn03_pramanwa",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.05263157894736842,
+        "cer_single": 0.05263157894736842,
+        "delay_first_ms": 1140,
+        "delay_final_ms": 1140,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7500,
+            "text": "กําลังคิดจะซื้อกาดจอรุ่นใหม่ประมาณว่างบสิบห้าพันบาทรอสเต้ว่ามันคุ้มไหมเนี่ย"
+          }
+        ]
+      },
+      {
+        "id": "add01_song",
+        "group": "done_then_add",
+        "expect": "split",
+        "produced": "whole",
+        "success": false,
+        "n_utt": 1,
+        "cer_joined": 0.0273972602739726,
+        "cer_single": 0.0273972602739726,
+        "delay_first_ms": 1220,
+        "delay_final_ms": 1220,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7100,
+            "text": "รอสเตย์เปิดเพลงให้ฟังหน่อยสิ อ๋อแล้วก็อีกอย่างพรุ่งนี้เตือนผมไปรับพัสดุด้วย"
+          }
+        ]
+      },
+      {
+        "id": "add02_rain",
+        "group": "done_then_add",
+        "expect": "split",
+        "produced": "whole",
+        "success": false,
+        "n_utt": 1,
+        "cer_joined": 0.014925373134328358,
+        "cer_single": 0.014925373134328358,
+        "delay_first_ms": 1220,
+        "delay_final_ms": 1220,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7000,
+            "text": "วันนี้ฝนตกหนักจังเลย เออลืมบอกไปช่วยสั่งกาแฟเย็นเปิดให้ผลแก้วหนึ่งนะ"
+          }
+        ]
+      },
+      {
+        "id": "ctrl01_time",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 1160,
+        "delay_final_ms": 1160,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3100,
+            "text": "ตอนนี้กี่โมงแล้วรอสเต้"
+          }
+        ]
+      },
+      {
+        "id": "ctrl02_music",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 1180,
+        "delay_final_ms": 1180,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2800,
+            "text": "ช่วยเปิดเพลงให้หน่อยสิ"
+          }
+        ]
+      },
+      {
+        "id": "ctrl03_weather",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 1220,
+        "delay_final_ms": 1220,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2900,
+            "text": "พรุ่งนี้ฝนจะตกไหม"
+          }
+        ]
+      },
+      {
+        "id": "ctrl04_tired",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.08,
+        "cer_single": 0.08,
+        "delay_first_ms": 1160,
+        "delay_final_ms": 1160,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3100,
+            "text": "วันนี้เหนื่อยมากเลยรอสเตย์"
+          }
+        ]
+      },
+      {
+        "id": "list01_two",
+        "group": "list",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 1160,
+        "delay_final_ms": 1160,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7600,
+            "text": "ช่วยสองอย่างนะอย่างแรกคือเปิดแอร์ห้องนอนอย่างที่สองคือปิดไฟกับทีวีในห้องครัวด้วย"
+          }
+        ]
+      }
+    ],
+    "meta": {
+      "constants_source": "stt_listener (import จริง)",
+      "silence_rms": 150,
+      "min_utterance_ms": 400,
+      "max_utterance_ms": 30000,
+      "chunk_ms": 20,
+      "check_interval_sec": 0.1
+    }
+  },
+  {
+    "label": "silence-1500",
+    "kind": "B",
+    "threshold_ms": 1500,
+    "semantic_idle_giveup_ms": null,
+    "summary": {
+      "n": 14,
+      "success": 11,
+      "whole": 13,
+      "split": 1,
+      "none": 0,
+      "cer_joined": 0.036607735175545476,
+      "cer_when_whole": 0.03581794557366436,
+      "delay_first_ms": 1240.7142857142858,
+      "delay_final_ms": 1490.7142857142858
+    },
+    "by_group": {
+      "core": {
+        "n": 4,
+        "success": 3
+      },
+      "connective": {
+        "n": 3,
+        "success": 3
+      },
+      "done_then_add": {
+        "n": 2,
+        "success": 0
+      },
+      "control": {
+        "n": 4,
+        "success": 4
+      },
+      "list": {
+        "n": 1,
+        "success": 1
+      }
+    },
+    "rows": [
+      {
+        "id": "core01_p500",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046875,
+        "cer_single": 0.046875,
+        "delay_first_ms": 1520,
+        "delay_final_ms": 1520,
+        "utts": [
+          {
+            "start": 360,
+            "end": 6500,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่นรอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core02_p900",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046875,
+        "cer_single": 0.046875,
+        "delay_first_ms": 1520,
+        "delay_final_ms": 1520,
+        "utts": [
+          {
+            "start": 360,
+            "end": 6900,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่นรอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core03_p1600",
+        "group": "core",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.046875,
+        "cer_single": null,
+        "delay_first_ms": -1980,
+        "delay_final_ms": 1520,
+        "utts": [
+          {
+            "start": 360,
+            "end": 4100,
+            "text": "คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่น"
+          },
+          {
+            "start": 4300,
+            "end": 7600,
+            "text": "รอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core04_trip900",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0759493670886076,
+        "cer_single": 0.0759493670886076,
+        "delay_first_ms": 1500,
+        "delay_final_ms": 1500,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7700,
+            "text": "เมื่อคืนผมลองเขียนแผนทริปไปเชียงใหม่ดูนะ Roste ช่วยเช็คสภาพอากาศช่วงนั้นให้ทีไหม"
+          }
+        ]
+      },
+      {
+        "id": "conn01_laewgor",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.07446808510638298,
+        "cer_single": 0.07446808510638298,
+        "delay_first_ms": 1500,
+        "delay_final_ms": 1500,
+        "utts": [
+          {
+            "start": 360,
+            "end": 8400,
+            "text": "พรุ่งนี้ผมจะไปส่งของที่แถวอารีแล้วก็ แวะกินข้าวกับเพื่อน รอสเตย์ ช่วยตั้งกลุ่มเก้าโมงเช้าให้หน่อย"
+          }
+        ]
+      },
+      {
+        "id": "conn02_kue",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046511627906976744,
+        "cer_single": 0.046511627906976744,
+        "delay_first_ms": 1450,
+        "delay_final_ms": 1450,
+        "utts": [
+          {
+            "start": 360,
+            "end": 8300,
+            "text": "เมื่อวานดูซีรีส์รถสามตอนต่อกันคือ มันดันเล่าเรื่องย้อนหลังสงั้น รอสเต้ว่าผมควรดูต่อไหม"
+          }
+        ]
+      },
+      {
+        "id": "conn03_pramanwa",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.05263157894736842,
+        "cer_single": 0.05263157894736842,
+        "delay_first_ms": 1440,
+        "delay_final_ms": 1440,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7800,
+            "text": "กําลังคิดจะซื้อกาดจอรุ่นใหม่ประมาณว่างบสิบห้าพันบาทรอสเต้ว่ามันคุ้มไหมเนี่ย"
+          }
+        ]
+      },
+      {
+        "id": "add01_song",
+        "group": "done_then_add",
+        "expect": "split",
+        "produced": "whole",
+        "success": false,
+        "n_utt": 1,
+        "cer_joined": 0.0273972602739726,
+        "cer_single": 0.0273972602739726,
+        "delay_first_ms": 1520,
+        "delay_final_ms": 1520,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7400,
+            "text": "รอสเตย์เปิดเพลงให้ฟังหน่อยสิ อ๋อแล้วก็อีกอย่างพรุ่งนี้เตือนผมไปรับพัสดุด้วย"
+          }
+        ]
+      },
+      {
+        "id": "add02_rain",
+        "group": "done_then_add",
+        "expect": "split",
+        "produced": "whole",
+        "success": false,
+        "n_utt": 1,
+        "cer_joined": 0.014925373134328358,
+        "cer_single": 0.014925373134328358,
+        "delay_first_ms": 1520,
+        "delay_final_ms": 1520,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7300,
+            "text": "วันนี้ฝนตกหนักจังเลย เออลืมบอกไปช่วยสั่งกาแฟเย็นเปิดให้ผลแก้วหนึ่งนะ"
+          }
+        ]
+      },
+      {
+        "id": "ctrl01_time",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 1460,
+        "delay_final_ms": 1460,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3400,
+            "text": "ตอนนี้กี่โมงแล้วรอสเต้"
+          }
+        ]
+      },
+      {
+        "id": "ctrl02_music",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 1480,
+        "delay_final_ms": 1480,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3100,
+            "text": "ช่วยเปิดเพลงให้หน่อยสิ"
+          }
+        ]
+      },
+      {
+        "id": "ctrl03_weather",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 1520,
+        "delay_final_ms": 1520,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3200,
+            "text": "พรุ่งนี้ฝนจะตกไหม"
+          }
+        ]
+      },
+      {
+        "id": "ctrl04_tired",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.08,
+        "cer_single": 0.08,
+        "delay_first_ms": 1460,
+        "delay_final_ms": 1460,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3400,
+            "text": "วันนี้เหนื่อยมากเลยรอสเตย์"
+          }
+        ]
+      },
+      {
+        "id": "list01_two",
+        "group": "list",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 1460,
+        "delay_final_ms": 1460,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7900,
+            "text": "ช่วยสองอย่างนะอย่างแรกคือเปิดแอร์ห้องนอนอย่างที่สองคือปิดไฟกับทีวีในห้องครัวด้วย"
+          }
+        ]
+      }
+    ],
+    "meta": {
+      "constants_source": "stt_listener (import จริง)",
+      "silence_rms": 150,
+      "min_utterance_ms": 400,
+      "max_utterance_ms": 30000,
+      "chunk_ms": 20,
+      "check_interval_sec": 0.1
+    }
+  },
+  {
+    "label": "semantic-800",
+    "kind": "C",
+    "threshold_ms": 800,
+    "semantic_idle_giveup_ms": 1500,
+    "summary": {
+      "n": 14,
+      "success": 13,
+      "whole": 11,
+      "split": 3,
+      "none": 0,
+      "cer_joined": 0.03266913065283649,
+      "cer_when_whole": 0.033995391392768276,
+      "delay_first_ms": 310.7142857142857,
+      "delay_final_ms": 1132.142857142857
+    },
+    "by_group": {
+      "core": {
+        "n": 4,
+        "success": 3
+      },
+      "connective": {
+        "n": 3,
+        "success": 3
+      },
+      "done_then_add": {
+        "n": 2,
+        "success": 2
+      },
+      "control": {
+        "n": 4,
+        "success": 4
+      },
+      "list": {
+        "n": 1,
+        "success": 1
+      }
+    },
+    "rows": [
+      {
+        "id": "core01_p500",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046875,
+        "cer_single": 0.046875,
+        "delay_first_ms": 2000,
+        "delay_final_ms": 2000,
+        "utts": [
+          {
+            "start": 360,
+            "end": 6980,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่นรอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core02_p900",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046875,
+        "cer_single": 0.046875,
+        "delay_first_ms": 2000,
+        "delay_final_ms": 2000,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7380,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่น รอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core03_p1600",
+        "group": "core",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.046875,
+        "cer_single": 0.046875,
+        "delay_first_ms": 2000,
+        "delay_final_ms": 2000,
+        "utts": [
+          {
+            "start": 360,
+            "end": 8080,
+            "text": "ก็คือเมื่อวานผมไปดูโน้ตบุ๊กมาสองรุ่น รอสเต้คิดว่าอันไหนดีกว่ากัน"
+          }
+        ]
+      },
+      {
+        "id": "core04_trip900",
+        "group": "core",
+        "expect": "whole",
+        "produced": "split",
+        "success": false,
+        "n_utt": 2,
+        "cer_joined": 0.0,
+        "cer_single": null,
+        "delay_first_ms": -2800,
+        "delay_final_ms": 800,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3400,
+            "text": "เมื่อคืนผมลองเขียนแผนทริปไปเชียงใหม่ดูนะ"
+          },
+          {
+            "start": 3620,
+            "end": 7000,
+            "text": "รอสเต้ช่วยเช็คสภาพอากาศช่วงนั้นให้ทีไหม"
+          }
+        ]
+      },
+      {
+        "id": "conn01_laewgor",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0425531914893617,
+        "cer_single": 0.0425531914893617,
+        "delay_first_ms": 800,
+        "delay_final_ms": 800,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7700,
+            "text": "พรุ่งนี้ผมจะไปส่งของที่แถวอารีแล้วก็ แวะกินข้าวกับเพื่อนรอสเตย์ช่วยตั้งปลุกเก้าโมงเช้าให้หน่อย"
+          }
+        ]
+      },
+      {
+        "id": "conn02_kue",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.05813953488372093,
+        "cer_single": 0.05813953488372093,
+        "delay_first_ms": 750,
+        "delay_final_ms": 750,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7600,
+            "text": "เมื่อวานดูซีรีส์รถสามตอนต่อกันคือ มันดันเล่าเรื่องย้อนหลังสงั้นดรอสเต้ว่าผมควรดูต่อไหม"
+          }
+        ]
+      },
+      {
+        "id": "conn03_pramanwa",
+        "group": "connective",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.05263157894736842,
+        "cer_single": 0.05263157894736842,
+        "delay_first_ms": 740,
+        "delay_final_ms": 740,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7100,
+            "text": "กําลังคิดจะซื้อกาดจอรุ่นใหม่ประมาณว่า งบสิบห้าพันบาทรอสเต้ว่ามันคุ้มไหมเนี่ย"
+          }
+        ]
+      },
+      {
+        "id": "add01_song",
+        "group": "done_then_add",
+        "expect": "split",
+        "produced": "split",
+        "success": true,
+        "n_utt": 2,
+        "cer_joined": 0.0684931506849315,
+        "cer_single": null,
+        "delay_first_ms": -3080,
+        "delay_final_ms": 820,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2800,
+            "text": "รอสเตย์เปิดเพลงให้ฟังหน่อยสิ"
+          },
+          {
+            "start": 3060,
+            "end": 6700,
+            "text": "แล้วก็อีกอย่างพรุ่งนี้เตือนผมไปรับพัสดุด้วย"
+          }
+        ]
+      },
+      {
+        "id": "add02_rain",
+        "group": "done_then_add",
+        "expect": "split",
+        "produced": "split",
+        "success": true,
+        "n_utt": 2,
+        "cer_joined": 0.014925373134328358,
+        "cer_single": null,
+        "delay_first_ms": -3180,
+        "delay_final_ms": 820,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2600,
+            "text": "วันนี้ฝนตกหนักจังเลย"
+          },
+          {
+            "start": 2920,
+            "end": 6600,
+            "text": "เออลืมบอกไปช่วยสั่งกาแฟเย็นเปิดให้ผลแก้วหนึ่งนะ"
+          }
+        ]
+      },
+      {
+        "id": "ctrl01_time",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 2000,
+        "delay_final_ms": 2000,
+        "utts": [
+          {
+            "start": 360,
+            "end": 3940,
+            "text": "ตอนนี้กี่โมงแล้วรอสเต้"
+          }
+        ]
+      },
+      {
+        "id": "ctrl02_music",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 780,
+        "delay_final_ms": 780,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2400,
+            "text": "ช่วยเปิดเพลงให้หน่อยสิ"
+          }
+        ]
+      },
+      {
+        "id": "ctrl03_weather",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 820,
+        "delay_final_ms": 820,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2500,
+            "text": "พรุ่งนี้ฝนจะตกไหม"
+          }
+        ]
+      },
+      {
+        "id": "ctrl04_tired",
+        "group": "control",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.08,
+        "cer_single": 0.08,
+        "delay_first_ms": 760,
+        "delay_final_ms": 760,
+        "utts": [
+          {
+            "start": 360,
+            "end": 2700,
+            "text": "วันนี้เหนื่อยมากเลยรอสเตย์"
+          }
+        ]
+      },
+      {
+        "id": "list01_two",
+        "group": "list",
+        "expect": "whole",
+        "produced": "whole",
+        "success": true,
+        "n_utt": 1,
+        "cer_joined": 0.0,
+        "cer_single": 0.0,
+        "delay_first_ms": 760,
+        "delay_final_ms": 760,
+        "utts": [
+          {
+            "start": 360,
+            "end": 7200,
+            "text": "ช่วยสองอย่างนะอย่างแรกคือเปิดแอร์ห้องนอน อย่างที่สองคือปิดไฟกับทีวีในห้องครัวด้วย"
+          }
+        ]
+      }
+    ],
+    "meta": {
+      "constants_source": "stt_listener (import จริง)",
+      "silence_rms": 150,
+      "min_utterance_ms": 400,
+      "max_utterance_ms": 30000,
+      "chunk_ms": 20,
+      "check_interval_sec": 0.1
+    }
+  }
+]
