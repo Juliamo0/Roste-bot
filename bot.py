@@ -519,8 +519,10 @@ async def _prepare_voice_speech(message):
     user_vc = getattr(message.author, "voice", None)
     if not user_vc or not user_vc.channel:
         return None
-    if music.voice_lock.locked():
-        logger.info("   🎙️ TTS skip — music กำลังเล่น")
+    if music.song_playing:
+        # เพลงเล่นอยู่จริง — ไม่ตัดกลางคัน (คนสั่งให้ร้องยังฟังอยู่) อยากให้หยุดต้องสั่ง
+        # "เงียบหน่อย" ซึ่งมีเส้นทางของมันเองใน _on_voice_utterance
+        logger.info("   🎙️ TTS skip — เพลงกำลังเล่น")
         return None
 
     channel = user_vc.channel
@@ -1097,6 +1099,9 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
         return _gid is not None and _gid in music.stopped_guilds
 
     async with music.voice_lock:
+        # ธงนี้ต่างจาก voice_lock.locked() — บอกว่าเป็น "เพลง" ไม่ใช่บอทพูดตอบ
+        # _prepare_voice_speech ใช้แยกสองกรณี: เพลงห้ามตัดกลางคัน ส่วน TTS รอคิวได้
+        music.song_playing = True
         try:
             if intro_wav and bot_vc.is_connected():
                 await _play_wav(bot_vc, intro_wav)
@@ -1136,6 +1141,9 @@ async def _play_karaoke(message, song_path: str, pretty_name: str) -> None:
                     pass
         except Exception as e:
             logger.warning(f"   🎵 karaoke play error ({type(e).__name__}: {e})")
+        finally:
+            # ต้องปลดเสมอ — ธงค้าง = บอทเงียบถาวรจนกว่าจะรีสตาร์ท (แย่กว่าบั๊กเดิม)
+            music.song_playing = False
 
     try:
         if bot_vc.is_connected():
