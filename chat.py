@@ -695,8 +695,16 @@ async def _prepare_context(user_id: int, user_name: str, user_message: str,
     # ผล vector พร้อมใช้ตั้งแต่ต้น เผื่อภายหลังต้องใช้มันช่วยจัดอันดับฝั่ง keyword
     # (เคยลองจำกัดจำนวน keyword เมื่อ vector มีของแล้ว — วัดแล้วไม่ช่วย เพราะของที่
     #  ขัดแย้งเป็นอันดับ 2 ของคะแนน จึงรอดทุก cap ปัญหาอยู่ที่ *การจัดอันดับ* ไม่ใช่จำนวน)
-    with stats.stage("semantic_recall"):
-        vec_recalled = await vectormemory.query_conversation_memory(user_id, user_message)
+    #
+    # ยิงคู่กับ query_pdf ผ่าน asyncio.gather แทนรอทีละอย่าง (เดิมเรียงกัน) — สอง query นี้
+    # เป็นอิสระต่อกันสนิท (คนละ ChromaDB collection, ไม่มีตัวไหนใช้ผลของอีกตัว) วัดไว้ว่า
+    # main LLM กิน 73.7% ของเวลาทั้งหมด ส่วน vector recall 25.3% — ยิงขนานซ่อนเวลาไปได้
+    # เกือบหมดโดยไม่ต้องตัดฟีเจอร์ (ดู docs/MEMORY_EXPERIMENTS.md หัวข้อ 8)
+    with stats.stage("semantic_recall_and_pdf"):
+        vec_recalled, pdf_chunks = await asyncio.gather(
+            vectormemory.query_conversation_memory(user_id, user_message),
+            vectormemory.query_pdf(user_id, user_message),
+        )
     # ⚠️ ต้องกรองฝั่งเจ้าของเหมือน recall_summaries — vector ไม่รู้จัก tag เลย คืนทั้งบรรทัด
     #    เสมอ ถ้าไม่กรองจะได้ของอีกฝั่งปนมา (วัดได้: vector ดิบ 7/17 → กรองแล้ว 17/17)
     vec_recalled = memory.filter_by_owner(
@@ -753,9 +761,8 @@ async def _prepare_context(user_id: int, user_name: str, user_message: str,
 
     # 📄 RAG PDF — ถ้า user เคยส่ง PDF มาก่อน (ตอนนี้หรือเซสชันก่อนๆ ก็ได้ ข้อมูล persist)
     #    ค้นเนื้อหาที่เกี่ยวข้องกับคำถามนี้มาแปะให้โมเดลตอบ (กรองด้วยระยะห่างความหมายแล้ว)
+    #    pdf_chunks ถูกดึงมาแล้วข้างบนพร้อมกับ vec_recalled (asyncio.gather) — ใช้ต่อตรงนี้เลย
     augmented_message = user_message
-    with stats.stage("pdf_query"):
-        pdf_chunks = await vectormemory.query_pdf(user_id, user_message)
     if pdf_chunks:
         pdf_context = "\n---\n".join(pdf_chunks)
         augmented_message = (
