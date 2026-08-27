@@ -11,6 +11,19 @@ PyNaCl==1.5.0
 # discord.py 2.7 ต้องมี davey (DAVE E2EE voice) ไม่งั้น channel.connect() จะ RuntimeError
 # — บอทไม่ crash แต่ฟีเจอร์เสียงทั้งหมด (TTS/karaoke) เงียบหายทั้งที่ log แค่ warning ตอน start
 davey==0.1.6
+# รับเสียงเข้า (STT) — discord.py เปล่าๆ ส่งเสียงออกได้อย่างเดียว ฟังไม่ได้
+# pin แน่นเพราะยังเป็น alpha (API เปลี่ยนได้ระหว่างเลข build) — bot.py import ตั้งแต่
+# บรรทัดบนสุด ถ้าไม่มีตัวนี้ import bot พังทั้งไฟล์ ไม่ใช่แค่ฟีเจอร์เสียงหาย
+#
+# ⚠️ ตัวเลขนี้ต้องเป็นเวอร์ชันที่ *มีบน PyPI* เท่านั้น — เครื่อง dev บังเอิญมี 0.5.3a181
+# (ติดจาก GitHub) ซึ่ง PyPI ไม่มี ทำให้ CI ติดตั้งไม่ผ่านทั้งที่เครื่องรันได้ปกติ
+# 0.5.2a179 เทสแล้วบน py3.14: AudioSink / VoiceRecvClient / VoiceData ครบตามที่ stt_listener ใช้
+discord-ext-voice-recv==0.5.2a179
+# audioop ถูกถอดออกจาก stdlib ตั้งแต่ Python 3.13 (PEP 594) — stt_listener ใช้
+# rms/tomono/ratecv แปลง 48kHz stereo ของ Discord เป็น 16kHz mono ให้ NeMo
+# แพ็กเกจนี้คือโค้ดเดิมที่ถูกยกออกมา ใช้แทนกันได้ตรงๆ ไม่ต้องแก้ import
+# (เครื่อง dev รัน 3.10 จึงไม่เจอ แต่ CI รัน 3.13 แล้ว import พังทั้งไฟล์)
+audioop-lts==0.2.2; python_version >= "3.13"
 chromadb==1.5.9
 python-dotenv==1.2.2
 # websearch.py (_serpapi_get) ใช้ตรงๆ — เดิมไม่ได้ pin ไว้ รอดมาเพราะติดมากับ dependency อื่นโดยบังเอิญ
@@ -21,6 +34,9 @@ pythainlp==5.3.4
 python-crfsuite==0.9.12
 soundfile==0.14.0
 edge-tts==7.2.8
+# voice.py resample ด้วย np.interp ตอน sample rate ของ F5/RVC ไม่ตรงกับที่ Discord ต้องการ
+# (import อยู่ในฟังก์ชัน ไม่พังตอน import module แต่พังตอนเรียกใช้จริง)
+numpy==2.2.6
 
 # monitor.py — CPU/RAM/disk สำหรับหน้าเฝ้าดูสถานะบอท (GPU ผ่าน nvidia-smi ไม่ต้องลง lib เพิ่ม)
 psutil==7.2.2
