@@ -94,6 +94,9 @@ memory/*.bak3
 out/
 .ox_sessions/
 
+# tools/repl.py — ความจำแยกไม่แตะ memory/ จริง
+tools/_repl_memory/
+
 # ===== Typhoon ASR (venv แยก — NeMo + torch ชุดใหญ่) =====
 typhoon_asr_venv/
 
