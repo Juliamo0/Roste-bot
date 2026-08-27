@@ -97,6 +97,9 @@ out/
 # tools/repl.py — ความจำแยกไม่แตะ memory/ จริง
 tools/_repl_memory/
 
+# tools/eval_roste.py — เช่นกัน
+tools/_eval_memory/
+
 # ===== Typhoon ASR (venv แยก — NeMo + torch ชุดใหญ่) =====
 typhoon_asr_venv/
 
