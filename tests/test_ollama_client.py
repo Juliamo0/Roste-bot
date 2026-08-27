@@ -173,3 +173,12 @@ class TestProbeHealth:
         with patch("aiohttp.ClientSession", _broken_session()):
             asyncio.run(ollama_client.probe_health())
         assert ollama_client._consecutive_failures == 0  # probe ไม่นับเป็นความล้มเหลวของ breaker
+
+    def test_health_url_derived_from_ollama_url_not_hardcoded_localhost(self):
+        # บั๊กเดิม: probe_health hardcode "http://localhost:11434/api/tags" ตรงๆ ทำให้เช็ค
+        # ผิดเครื่องเมื่อผู้ใช้ตั้ง OLLAMA_URL ชี้เครื่องอื่นผ่าน .env (ค่านี้ override ได้จริง
+        # ตาม config.py) ต้อง derive จาก OLLAMA_URL เดียวกับที่ _get_json_post ใช้จริง
+        assert ollama_client._OLLAMA_HEALTH_URL.startswith(
+            ollama_client.OLLAMA_URL.split("/api/")[0]
+        )
+        assert ollama_client._OLLAMA_HEALTH_URL.endswith("/api/tags")

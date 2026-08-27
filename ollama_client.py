@@ -8,6 +8,7 @@
 """
 import json
 import time
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -74,13 +75,21 @@ async def _get_json_post(payload, timeout=90):
     return data
 
 
+# ไว้แปลง OLLAMA_URL (ที่ลงท้าย /api/chat) เป็น /api/tags — เดิม probe_health hardcode
+# localhost ตรงๆ ทำให้เช็คผิดเครื่องเมื่อผู้ใช้ตั้ง OLLAMA_URL ชี้เครื่องอื่นผ่าน .env
+# (ค่านี้ override ได้จริงตาม config.py/.env.example) ต้องอิงจาก OLLAMA_URL เดียวกับ
+# ที่ _get_json_post/_stream_chat_chunks ใช้จริง ไม่ใช่ผูกกับ localhost ตายตัว
+_ollama_parts = urlsplit(OLLAMA_URL)
+_OLLAMA_HEALTH_URL = f"{_ollama_parts.scheme}://{_ollama_parts.netloc}/api/tags"
+
+
 async def probe_health(timeout: float = 3) -> bool:
     """เช็คว่า Ollama ยังมีชีวิตอยู่ไหมแบบเร็วๆ (ping /api/tags) — ไม่ผ่าน breaker เพราะ
     ตัวนี้มีไว้ *เช็คสถานะ* ไม่ใช่คุยจริง ผู้เรียกภายนอก (เช่น bot startup) ใช้ตัดสินใจ
     ไม่ต้อง raise เด็ดขาด คืน False เสมอเมื่อเช็คไม่ผ่านไม่ว่าเหตุผลอะไร"""
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get("http://localhost:11434/api/tags", timeout=timeout) as r:
+            async with s.get(_OLLAMA_HEALTH_URL, timeout=timeout) as r:
                 return r.status == 200
     except (aiohttp.ClientError, TimeoutError, OSError):
         return False
