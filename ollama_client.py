@@ -7,6 +7,7 @@
 ผู้เรียกต้องส่ง tools มาเองเสมอถ้าต้องการให้โมเดลเรียกเครื่องมือได้ (เส้น streaming ก็กฎเดียวกัน)
 """
 import json
+import time
 
 import aiohttp
 
@@ -26,10 +27,63 @@ _THINK_OPEN = "<" + "think" + ">"
 _THINK_CLOSE = "<" + "/" + "think" + ">"
 
 
-async def _get_json_post(payload, timeout=120):
-    async with aiohttp.ClientSession() as s:
-        async with s.post(OLLAMA_URL, json=payload, timeout=timeout) as r:
-            return await r.json()
+class OllamaUnavailable(Exception):
+    """Ollama ไม่พร้อม (ล่ม/ช้าเกิน/breaker เปิด) — ผู้เรียกควรตอบ fallback ทันที ไม่ต้องรอ"""
+
+
+# circuit breaker กันทุกข้อความค้างรอ timeout เต็มเวลาเวลา Ollama ล่ม/กำลังรีสตาร์ท —
+# ล้มติดกันเกิน threshold แล้วเปิด breaker พัก cooldown วิ ก่อนยอมลองยิง HTTP จริงอีกครั้ง
+# คุมทั้ง _chat_once และ _chat_stream (ทั้งคู่ยิง POST ไป OLLAMA_URL เหมือนกัน) ผ่าน
+# _check_breaker/_record_success/_record_failure ร่วมกัน กันเขียน logic ซ้ำสองที่
+_consecutive_failures = 0
+_breaker_open_until = 0.0        # time.monotonic() ที่ breaker จะกลับมาลองใหม่
+_FAILURE_THRESHOLD = 3           # ล้มติดกันกี่ครั้งถึงเปิด breaker
+_BREAKER_COOLDOWN_SEC = 30       # เปิดแล้วพัก 30 วิ ก่อนยอมลองใหม่
+
+
+def _check_breaker() -> None:
+    if time.monotonic() < _breaker_open_until:
+        raise OllamaUnavailable("Ollama breaker เปิดอยู่ (ล้มติดกันเกินเกณฑ์)")
+
+
+def _record_success() -> None:
+    global _consecutive_failures
+    _consecutive_failures = 0
+
+
+def _record_failure() -> None:
+    global _consecutive_failures, _breaker_open_until
+    _consecutive_failures += 1
+    if _consecutive_failures >= _FAILURE_THRESHOLD:
+        _breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SEC
+
+
+async def _get_json_post(payload, timeout=90):
+    # เดิม timeout=300 — การ์ด 4GB คำตอบปกติ <30 วิ, 90 คือเผื่อตอนโหลดโมเดลใหม่ เกินกว่า
+    # นั้นถือว่าผิดปกติ ให้ fail เร็วดีกว่าค้าง (ผู้ใช้เจอจริง: Ollama รีสตาร์ทแล้วทุก
+    # ข้อความค้างรอเต็ม 300 วิก่อนตอบ error)
+    _check_breaker()
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(OLLAMA_URL, json=payload, timeout=timeout) as r:
+                data = await r.json()
+    except (aiohttp.ClientError, TimeoutError, OSError) as e:
+        _record_failure()
+        raise OllamaUnavailable(f"Ollama ไม่ตอบสนอง: {type(e).__name__}: {e}") from e
+    _record_success()
+    return data
+
+
+async def probe_health(timeout: float = 3) -> bool:
+    """เช็คว่า Ollama ยังมีชีวิตอยู่ไหมแบบเร็วๆ (ping /api/tags) — ไม่ผ่าน breaker เพราะ
+    ตัวนี้มีไว้ *เช็คสถานะ* ไม่ใช่คุยจริง ผู้เรียกภายนอก (เช่น bot startup) ใช้ตัดสินใจ
+    ไม่ต้อง raise เด็ดขาด คืน False เสมอเมื่อเช็คไม่ผ่านไม่ว่าเหตุผลอะไร"""
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get("http://localhost:11434/api/tags", timeout=timeout) as r:
+                return r.status == 200
+    except (aiohttp.ClientError, TimeoutError, OSError):
+        return False
 
 
 def _strip_think(text: str) -> str:
@@ -56,7 +110,7 @@ async def _chat_once(messages, temperature: float = 0.8, tools=None):
             "repeat_penalty": 1.12,  # ลดการพูดซ้ำคำ/ประโยคแพทเทิร์นเดิม (กันฟังดูหุ่นยนต์)
         },
     }
-    data = await _get_json_post(payload, timeout=300)
+    data = await _get_json_post(payload, timeout=90)
     return data["message"]
 
 
@@ -78,7 +132,7 @@ def _may_start_tag(buf: str) -> bool:
                for i in range(len(buf)))
 
 
-async def _stream_chat_chunks(payload, timeout=300):
+async def _stream_chat_chunks(payload, timeout=90):
     """transport ล้วน: POST แล้ว yield dict ทีละบรรทัด NDJSON — ไม่รู้จัก business logic
 
     /api/chat เมื่อ stream:true ตอบเป็น JSON บรรทัดละ object: chunk delta ตาม token
@@ -86,13 +140,26 @@ async def _stream_chat_chunks(payload, timeout=300):
     เท่านั้น (aiohttp 3.x ClientResponse ไม่ใช่ async iterator, async for บน response
     ตรงๆ จะ TypeError — เจอจริงตอนพัฒนา)
     timeout เป็น int เหมือน _get_json_post — aiohttp แปลงเป็น ClientTimeout(total=...) เอง
+    เดิม 300 — ลดพร้อมกับ _get_json_post (เหตุผลเดียวกัน: ค้างเกินนี้ผิดปกติ ให้ breaker
+    จับแทนที่จะรอเต็มเวลา)
+
+    ผ่าน breaker เดียวกับ _get_json_post ก่อน yield chunk แรก และเมื่อ connection พังกลาง
+    ทาง (Ollama ล่มระหว่างสตรีมเสียง ต้องล้มเร็วเหมือนเส้นพิมพ์ ไม่ใช่ปล่อยให้ผู้ใช้เงียบ
+    รอจน timeout)
     """
-    async with aiohttp.ClientSession() as s:
-        async with s.post(OLLAMA_URL, json=payload, timeout=timeout) as r:
-            async for raw in r.content:
-                line = raw.strip()
-                if line:  # บรรทัดว่างคั่นกลางเกิดได้ — ข้าม ไม่ใช่ error
-                    yield json.loads(line.decode("utf-8"))
+    _check_breaker()
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(OLLAMA_URL, json=payload, timeout=timeout) as r:
+                async for raw in r.content:
+                    line = raw.strip()
+                    if line:  # บรรทัดว่างคั่นกลางเกิดได้ — ข้าม ไม่ใช่ error
+                        yield json.loads(line.decode("utf-8"))
+    except (aiohttp.ClientError, TimeoutError, OSError) as e:
+        _record_failure()
+        raise OllamaUnavailable(f"Ollama ไม่ตอบสนอง: {type(e).__name__}: {e}") from e
+    else:
+        _record_success()
 
 
 async def _chat_stream(messages, temperature: float = 0.8, tools=None, final=None):

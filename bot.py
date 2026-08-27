@@ -878,6 +878,15 @@ async def _on_voice_utterance(member: discord.Member, text: str) -> None:
         # voice_reply=True — คำตอบจะถูกพูดอย่างเดียว สั่งให้สั้นลง (ดู persona.build_author_note)
         reply = await chat.ask_ollama(member.id, member.display_name, text,
                                       is_speaking=False, voice_reply=True)
+    except ollama_client.OllamaUnavailable as e:
+        # breaker เปิดอยู่ — fallback ชั้นบน (บรรทัด 876) ก็เจอ breaker เดียวกันแล้วถอยลงมา
+        # ที่นี่ ดังนั้นจะซ้ำ raise แบบเดิมแน่ๆ ถ้าปล่อยผ่าน except Exception เฉยๆ ผู้ใช้จะ
+        # เงียบสนิท ขัดกับที่คอมเมนต์ด้านบนตั้งใจไว้ว่า "คนรอเสียงต้องไม่มีวันเจอความเงียบ"
+        # จึงพูดสั้นๆ แทน error เงียบ
+        logger.error(f"   👂 ❌ Ollama ไม่พร้อม: {e}")
+        await _speak_in_voice(_VoiceMessage(member),
+                              "ตอนนี้สมองรอสเต้ยังไม่พร้อมค่ะ รออีกสักครู่แล้วลองใหม่นะคะ")
+        return
     except Exception as e:
         logger.error(f"   👂 ❌ ตอบเสียงไม่ได้ ({type(e).__name__}: {e})")
         return
@@ -1375,6 +1384,10 @@ async def on_message(message):
                         music.stopped_guilds.add(message.guild.id)
                     _vc2.stop()
                     logger.info(f"   🔇 หยุดเสียง (โมเดลตัดสินใจ) ตามคำขอของ {user_name}")
+        except ollama_client.OllamaUnavailable as e:
+            # breaker เปิดอยู่ (Ollama ล่ม/กำลังโหลดโมเดล) — ตอบทันทีแทนรอ timeout เต็ม
+            reply = "ตอนนี้สมองรอสเต้ยังไม่พร้อมค่ะ (กำลังโหลดอยู่หรือเพิ่งรีสตาร์ท) รออีกสักครู่แล้วลองใหม่นะคะ"
+            logger.error(f"   ↳ ❌ Ollama ไม่พร้อม: {e}")
         except Exception as e:
             err = f"{type(e).__name__}: {e}"
             if "Timeout" in type(e).__name__:
