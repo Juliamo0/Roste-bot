@@ -21,6 +21,8 @@ logs/
 # singleton lock ไฟล์ (กันรัน bot.py ซ้อนกันสองตัว) — สร้างใหม่ทุกครั้งที่รัน ไม่ต้อง commit
 bot.lock
 bot.pid
+# tasks.py — SQLite เก็บสถานะงาน (มีเนื้อหา payload/result ของ user จริง คล้าย memory/)
+data/
 
 # ===== ไฟล์ขยะของ Python =====
 __pycache__/
