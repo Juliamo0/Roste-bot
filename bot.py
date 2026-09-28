@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import json
 import random
 import time
 import asyncio
@@ -103,6 +104,12 @@ import llm_tools  # 🛠️ TOOLS schema + tool handlers (tool calling)
 import chat  # 🧠 สมองบทสนทนา — ask_ollama + tool-calling loop (ไม่รู้จัก Discord)
 import stats  # 📊 เก็บสถิติ latency ต่อข้อความ/TTS (ตัวเลขล้วน ไม่มีเนื้อหา/user id)
 import monitor  # 📈 เว็บเฝ้าดูสถานะบอท (/stats.json) — localhost-only by default
+
+# สวิตช์ปิด STT ทั้งระบบ — ปิดไว้ชั่วคราวเพราะยังมีปัญหาอยู่ (รอแก้แล้วค่อยเปิดกลับ)
+# ปิดที่จุดเดียวคือ _start_stt_worker() ทำให้ _stt_worker เป็น None ตลอด session ซึ่ง
+# _ensure_listening() มี early-return รองรับอยู่แล้ว (ไม่ได้ยิน แต่ยัง join/ทักทาย/พูดในห้อง
+# voice ได้ปกติ) — ไม่ต้องแตะจุดอื่น
+STT_ENABLED = False
 
 # state ระบบเสียง
 _voice_worker: voice.RvcWorker | None = None  # RVC warm worker (None = ยังโหลดไม่เสร็จ/โหลดไม่ได้)
@@ -347,6 +354,10 @@ async def _start_stt_worker() -> None:
     ทุกอย่างที่เหลือไม่พึ่ง STT เลย จึงไม่ต้อง retry/บล็อก startup
     """
     global _stt_worker
+    if not STT_ENABLED:
+        logger.info("👂 STT ปิดใช้งาน (STT_ENABLED=False) — บอทจะไม่ได้ยินเสียงในห้อง")
+        _stt_worker = None
+        return
     try:
         await asyncio.to_thread(_stt_worker.start)
         logger.info(f"👂 STT worker พร้อม — โหลดเสร็จใน {_stt_worker.load_time:.1f}s")
@@ -805,6 +816,117 @@ def _human_count_in_channel(channel: discord.VoiceChannel) -> int:
 # ASR อาจเพี้ยนแบบใหม่ที่ยังไม่มีในตาราง — พลาดแล้วบอทเงียบ ผู้ใช้ไม่รู้ว่าทำไม
 _BOT_NAME_RE = re.compile(r"รอสเต|ลอสเต|ล็อตเต|ลอตเต|roste", re.IGNORECASE)
 
+# ── ตัดสิน "นี่คือการเรียกรอสเต้จริงไหม" ด้วย LLM ─────────────────────────────
+#
+# ที่มา: transcript จริงจากห้อง voice (26 ส.ค. 2569) มีข้อความที่ผ่าน _BOT_NAME_RE มาแล้ว
+# (มีคำว่า "รอสเต้"/variant อยู่จริง) แต่ไม่ใช่การเรียกบอทจริงเลย 2 แบบ:
+#   1. ASR hallucinate ทั้งประโยคจาก noise/เสียงพูดเร็ว แล้ว stt_listener._NAME_LOOSE_RE
+#      (หลวมโดยตั้งใจ — ยอมรับ false positive มากกว่า false negative) บิดคำที่ไม่เกี่ยวข้อง
+#      ให้กลายเป็น "รอสเต้": "รอสเต้เขา", "รอสเต้รอตีก็เร็ว", "รอสเต้องออกกันคีกี่ตัวว่า"
+#      — ไม่ใช่ประโยคไทยที่มีความหมาย
+#   2. คนในห้องคุยกันเอง บังเอิญเอ่ยชื่อบอทหรือคุยกับคนอื่นถึงบอท ไม่ได้ตั้งใจสั่งงาน:
+#      "รอสเต้" (เรียกเฉยๆ ไม่มีคำสั่ง/คำถาม), "รอสเต้ได้รับ" (ประโยคบอกเล่า ไม่ใช่คำสั่ง)
+#
+# regex เดิม (มีคำว่า "รอสเต้" = ตอบ) จับ false positive ทั้งสองแบบ เพราะเช็คแค่การมีคำ
+# ไม่เช็คว่าทั้งประโยคสมเหตุสมผล/มุ่งหาบอทจริงไหม — ทั้งสองสัญญาณอยู่ใน *ข้อความที่ถอดแล้ว*
+# เอง ไม่ต้องมีเสียงต้นฉบับมาเทียบ (ตัวอย่างข้างบนตัดสินได้จากตัวหนังสือล้วนๆ)
+#
+# ⚠️ ลองโมเดลเล็ก (OLLAMA_EXTRACT_MODEL = qwen3:4b) ก่อนตามแพทเทิร์นของ
+# stt_listener._ask_llm_finished แล้ว **วัดจริงแล้วพัง**: 3/10 บนชุดเคสจริงจาก transcript
+# ห้อง voice (26 ส.ค. 2569 — 9 เคส false-positive ที่ตั้งใจแก้ + 1 เคสเรียกจริง) พรอมป์ต์
+# เดียวกันเป๊ะยิงกับ MODEL หลัก (qwen3:8b) ได้ 10/10 เต็ม — พิสูจน์ว่าปัญหาไม่ใช่ prompt
+# แต่เป็นความสามารถของโมเดล งานนี้ยากกว่า end-of-turn detection ที่ qwen3:4b ทำได้ 77%
+# (ต้องตัดสิน "สมเหตุสมผล" + "มุ่งหาบอท" พร้อมกัน ไม่ใช่แค่ดู marker ท้ายประโยค) จึงใช้ MODEL
+# หลักแทน แลกกับ latency ที่ต้องแชร์คิวกับงานตอบจริง (ต่างจาก EOT ที่จงใจใช้โมเดลแยกเพื่อ
+# ไม่ให้ p95 พุ่งตอนโมเดลหลักงานยุ่ง — ที่นี่รับ trade-off นี้เพราะความแม่นสำคัญกว่า latency
+# เมื่อผลลัพธ์คือ "ตอบไหม" ไม่ใช่แค่ "หยุดรอนานแค่ไหน")
+#
+# ถ้าจะลองโมเดลเล็กอีกตัว/ปรับ prompt ในอนาคต ต้อง re-run เทียบกับชุดเคสเดียวกันนี้ก่อน
+# เปลี่ยน ห้ามเดาว่าดีขึ้นจากการอ่าน prompt เฉยๆ (บทเรียนซ้ำจากทั้งไฟล์นี้)
+_INTENT_FEWSHOT = (
+    "ข้อความต่อไปนี้เป็น transcript จากการถอดเสียงพูดในห้องแชทเสียง Discord (อาจมีคำผิด/"
+    "ไม่เป็นประโยค เพราะมาจากการถอดเสียงอัตโนมัติ) มีคำว่า \"รอสเต้\" (ชื่อ AI ผู้ช่วย) อยู่ "
+    "จงตัดสินว่าข้อความนี้กำลัง \"เรียก/สั่ง/ถามรอสเต้จริง\" หรือไม่ โดยต้องผ่านทั้ง 2 ข้อ:\n"
+    "1. เป็นประโยคภาษาไทยที่มีความหมายสมเหตุสมผล (ไม่ใช่คำเละที่ถอดเสียงผิดจน noise)\n"
+    "2. ฟังดูเหมือนกำลังพูดคุย/สั่งงาน/ถามรอสเต้ตรงๆ (ไม่ใช่แค่เอ่ยชื่อผ่านๆ หรือคุยกับคนอื่น)\n"
+    "ตอบเป็น JSON รูปแบบ {\"call\": true} หรือ {\"call\": false} เท่านั้น\n\n"
+    'ข้อความ: รอสเต้ตอนนี้กี่โมงแล้ว\n{"call": true}\n\n'
+    'ข้อความ: รอสเต้พรุ่งนี้สภาพอากาศเป็นยังไงบ้าง\n{"call": true}\n\n'
+    'ข้อความ: เฮ้รอสเต้ช่วยเปิดเพลงหน่อย\n{"call": true}\n\n'
+    'ข้อความ: รอสเต้\n{"call": false}\n\n'
+    'ข้อความ: รอสเต้ได้รับ\n{"call": false}\n\n'
+    'ข้อความ: เดี๋ยวรอสเต้ตอบเองแหละ อย่าไปยุ่ง\n{"call": false}\n\n'
+    'ข้อความ: รอสเต้เขา\n{"call": false}\n\n'
+    'ข้อความ: รอสเต้รอตีก็เร็ว\n{"call": false}\n\n'
+    'ข้อความ: รอสเต้องออกกันคีกี่ตัวว่า\n{"call": false}\n\n'
+    "ข้อความ: "
+)
+
+_INTENT_FORMAT_SCHEMA = {
+    "type": "object",
+    "properties": {"call": {"type": "boolean"}},
+    "required": ["call"],
+}
+
+# สวิตช์ปิดได้โดยไม่ต้องแกะโค้ด กลับไปพฤติกรรมเดิม (regex ล้วน) — ในจิตวิญญาณเดียวกับ
+# stt_listener.TURN_LLM
+INTENT_LLM = True
+# ใช้ MODEL หลัก = แทบไม่มี cold start (โมเดลเดียวกับที่ตอบแชต อยู่ใน VRAM ตลอดช่วงคุยด้วย
+# เสียงอยู่แล้ว) วัดจริงตอน warm/ไม่มีคิวรอ: 0.3-0.5s/ครั้ง
+#
+# ⚠️ timeout ต้องกว้างกว่านั้นมาก เพราะ call นี้ยิง MODEL เดียวกับที่ตอบแชต/เสียงจริง —
+# ถ้ามีคำตอบยาวกำลัง generate อยู่ก่อน (วัดไว้ที่อื่นในโปรเจกต์นี้: full answer ~12s,
+# EOT call ของ qwen3:4b ใต้ contention พุ่งจาก 410ms เป็น 5375ms เพราะคิวหลังงานแชต —
+# ดู stt_listener.py comment เหนือ TURN_LLM) intent gate ที่ยิงโมเดลเดียวกับงานแชตเลย
+# (ไม่ใช่โมเดลแยกแบบ EOT) เสี่ยงคิวนานกว่านั้นอีก timeout สั้นเกินจะทำให้ "Ollama ช้าเพราะ
+# กำลังยุ่ง" ถูกนับเป็น "Ollama ตาย" ผิดๆ ผ่าน ollama_client._record_failure() ซึ่งเป็น
+# breaker ระดับ**โมดูล** (คุมทุกการเรียก Ollama ในบอท ไม่ใช่แค่ตัวนี้) — คนพูดชื่อบอทติดกัน
+# 3 คนตอน Ollama ยุ่งอยู่แล้วจะทำให้ breaker เปิดปิดกั้นแชตข้อความ/เสียงทั้งหมด 30 วิ
+# ทั้งที่ Ollama ไม่ได้ล่มจริง จึงตั้งกว้างพอให้คิวผ่านได้จริงแม้มีคำตอบยาวค้างอยู่ก่อน
+INTENT_LLM_TIMEOUT_SEC = 20.0
+
+
+async def _ask_llm_is_call(text: str) -> bool | None:
+    """ถามโมเดลหลักว่า "ข้อความนี้เรียกรอสเต้จริงไหม" — คืน True/False หรือ None ถ้าพลาด
+    (Ollama ล่ม/timeout/breaker เปิด/JSON ผิดรูป) ผู้เรียกต้อง fallback เมื่อได้ None
+    ใช้ ollama_client.MODEL (เดียวกับที่ตอบแชต) ไม่ใช่ OLLAMA_EXTRACT_MODEL — วัดจริงแล้วว่า
+    โมเดลเล็กทำงานนี้ไม่ไหว (ดู comment เหนือ _INTENT_FEWSHOT)"""
+    payload = {
+        "model": ollama_client.MODEL,
+        "messages": [{"role": "user", "content": _INTENT_FEWSHOT + text.strip()}],
+        "stream": False, "think": False,
+        "format": _INTENT_FORMAT_SCHEMA,
+        "options": {"temperature": 0.0},
+    }
+    try:
+        data = await ollama_client._get_json_post(payload, timeout=INTENT_LLM_TIMEOUT_SEC)
+        # _strip_think ตัด <think> ที่หลุดมาปนก่อน parse เสมอ (เหมือนทุกจุดใน chat.py ที่
+        # parse JSON จาก Ollama) — แม้ format+think:False จะบังคับไว้แล้ว โมเดล reasoning
+        # ตระกูล qwen3 เคยพิสูจน์แล้วว่าไม่เคารพ think:False 100% ในบางเงื่อนไข (ดู comment
+        # ใน config.py) ไม่มีต้นทุนเพิ่มถ้าไม่มี tag เลย จึงใส่ไว้กันเหนียว
+        content = ollama_client._strip_think(data["message"]["content"])
+        call = json.loads(content)["call"]
+        return bool(call)
+    except Exception as e:
+        logger.debug(f"   👂 ถาม LLM intent-gate ล้มเหลว: {type(e).__name__}: {e}")
+        return None
+
+
+async def _passes_intent_gate(text: str) -> bool:
+    """True = ควรตอบ (ผ่าน echo เข้าห้องแชต + ป้อนเข้า chat pipeline)
+
+    fail-safe: ถามไม่สำเร็จ (Ollama ล่ม/timeout/breaker เปิด) → คืน True คือถอยไปพฤติกรรม
+    เดิมก่อนมีตัวกรองนี้ (มีคำเรียก = ตอบ) ไม่ใช่เงียบทั้งห้อง — โครงสร้างพัง (Ollama ตาย)
+    ไม่ควรทำให้ทั้งฟีเจอร์ฟังเสียงใช้งานไม่ได้ไปด้วย ต่างจาก "ไม่แน่ใจเพราะเนื้อหากำกวม"
+    (โมเดลตอบมาแล้วว่า False) ซึ่งเชื่อคำตอบนั้นตรงๆ — ผู้เรียกต้องเช็ค _BOT_NAME_RE ก่อน
+    เรียกฟังก์ชันนี้เสมอ (ไม่เช่นนั้นเสีย LLM call กับทุกประโยคที่ไม่มีคำเรียกเลย)"""
+    if not INTENT_LLM:
+        return True
+    verdict = await _ask_llm_is_call(text)
+    if verdict is None:
+        return True
+    return verdict
+
 class _VoiceMessage:
     """shim ให้เสียงพูดใช้เส้นทางเดียวกับข้อความพิมพ์ได้
 
@@ -837,17 +959,21 @@ async def _on_voice_utterance(member: discord.Member, text: str) -> None:
     logger.info(f"   👂 {member.display_name} พูดว่า: {text}")
 
     # แสดง transcript ทันทีที่ได้ยิน — ต้องอยู่ *ก่อน* ทุก branch ที่ return ออกไป (สั่งหยุด/
-    # ขอเพลง) ไม่งั้นคำสั่งพวกนั้นจะเงียบไม่มี feedback เลย ทั้งที่เป็นตอนที่ผู้ใช้อยากรู้
-    # ที่สุดว่าบอทได้ยินถูกไหม (ASR สะกดชื่อเพลงเพี้ยนบ่อย — เห็น transcript แล้วรู้ทันทีว่า
-    # ทำไมได้เพลงผิด) ส่ง fire-and-forget ไม่ให้ไปหน่วงการเล่นเพลง/หยุดเสียง
+    # intent gate/ขอเพลง) ไม่งั้นคำสั่งพวกนั้นจะเงียบไม่มี feedback เลย ทั้งที่เป็นตอนที่ผู้ใช้
+    # อยากรู้ที่สุดว่าบอทได้ยินถูกไหม (ASR สะกดชื่อเพลงเพี้ยนบ่อย — เห็น transcript แล้วรู้ทันที
+    # ว่าทำไมได้เพลงผิด, เห็น transcript ที่ intent gate กรองทิ้งก็ช่วย debug ว่า gate ตัดสิน
+    # ถูกไหม) ส่ง fire-and-forget ไม่ให้ไปหน่วงการเล่นเพลง/หยุดเสียง
     text_channel = _find_text_channel(member)
     if text_channel:
         asyncio.create_task(_safe_send(text_channel, f"🎙️ **{member.display_name}:** {text}"))
 
-    # ===== 🔇 สั่งหยุด — ต้องมาก่อนทุกอย่าง =====
+    # ===== 🔇 สั่งหยุด — ต้องมาก่อนทุกอย่างรวมถึง intent gate ด้านล่าง =====
     # เหตุผลเดียวกับเส้นทางแชต: คนสั่งหยุดตอนบอทกำลังส่งเสียงอยู่ ถ้าไปเข้าคิว LLM ก่อน
     # จะรออีก 6 วินาทีกว่าจะหยุด — ซึ่งนานเกินจนคนต้องตะโกนซ้ำ (เจอจริง: พูด "เงียบหน่อย"
-    # สองรอบติด บอทตอบเป็นข้อความยาวทั้งสองรอบแทนที่จะหยุด)
+    # สองรอบติด บอทตอบเป็นข้อความยาวทั้งสองรอบแทนที่จะหยุด) — ต้องอยู่*ก่อน*_passes_intent_gate
+    # ด้วยเหตุผลเดียวกันเป๊ะ (เคยเผลอวาง gate ไว้ก่อนตอน dev แล้วเจอบั๊กเดิมซ้ำ — ทั้งช้าลง
+    # จากคิว LLM และเสี่ยง gate ตัดสินว่าคำสั่งหยุดสั้นๆ ไม่ใช่การเรียก แล้วทิ้งไปเงียบๆ)
+    # เป็น pure regex ไม่มี LLM เลย จึงไม่มีต้นทุนต้องแลกกับความแม่นของ intent gate
     vc = member.guild.voice_client if member.guild else None
     if music.looks_like_pure_stop(text):
         if vc and (vc.is_playing() or vc.is_paused()):
@@ -856,6 +982,15 @@ async def _on_voice_utterance(member: discord.Member, text: str) -> None:
             vc.stop()
             logger.info(f"   🔇 หยุดเสียงตามคำสั่งเสียงของ {member.display_name}")
         return                     # ไม่ต้องพูดตอบ — คนขอให้เงียบ การพูดตอบคือสิ่งที่เขาไม่อยากได้
+
+    # ด่านสอง — regex เช็คแค่ "มีคำว่ารอสเต้ไหม" ผ่านแล้วไม่ได้แปลว่าถูกเรียกจริง (เจอจริง:
+    # ASR hallucinate ข้อความเละที่มีคำว่ารอสเต้ปนมา / คนอื่นคุยกันเองบังเอิญเอ่ยชื่อ —
+    # ดู comment เหนือ _INTENT_FEWSHOT) ให้ LLM เล็กอ่านทั้งประโยคตัดสินอีกชั้น — ทำงานหลัง
+    # echo เสมอ (transcript ถูกส่งไปแล้วข้างบน) เพื่อให้ debug ได้ว่า gate ตัดสินถูกไหมจากดูคู่
+    # กับข้อความที่เห็นในห้องแชตจริง ไม่ใช่กรอง echo ด้วย
+    if not await _passes_intent_gate(text):
+        logger.debug(f"   👂 ข้าม (LLM ตัดสินว่าไม่ได้เรียก) — {member.display_name}: {text}")
+        return
 
     # ขอเพลง — ต้องเช็คก่อนเรียก LLM เหมือนเส้นทางแชต (on_message) ไม่งั้นโมเดลจะตอบเป็น
     # ข้อความว่า "ได้ค่ะเดี๋ยวร้องให้" แล้วไม่ร้องจริง (เจอจริง: ขอทางเสียงแล้วบอทพูดตอบ

@@ -17,6 +17,7 @@ import chat
 import datasources
 import llm_tools
 import memory
+import ollama_client
 import persona
 import vectormemory
 import websearch
@@ -2204,3 +2205,75 @@ class TestOnReadyIdempotent:
         assert bot._monitor_server.start.call_count == 1
         assert bot._voice_worker is first_voice_worker   # ยังเป็น instance เดิม
         assert bot._f5_worker is first_f5_worker
+
+
+class TestVoiceIntentGate:
+    """_passes_intent_gate / _ask_llm_is_call — ด่านสองหลัง _BOT_NAME_RE เจอคำว่า "รอสเต้"
+    แล้ว ตัดสินว่าทั้งประโยคสมเหตุสมผล+มุ่งหาบอทจริงไหม (ไม่ใช่แค่มีคำนั้นอยู่)
+
+    ที่มา: transcript จริงจากห้อง voice (26 ส.ค. 2569) มี false positive 2 แบบที่ regex
+    เดี่ยวจับไม่ได้ — ASR hallucinate ข้อความเละที่มีคำว่ารอสเต้ปนมา ("รอสเต้เขา") และคนอื่น
+    คุยกันเองบังเอิญเอ่ยชื่อ ("รอสเต้ได้รับ") ดู comment เหนือ _INTENT_FEWSHOT ใน bot.py
+
+    หมายเหตุ: ลองใช้ OLLAMA_EXTRACT_MODEL (qwen3:4b) ตามแพทเทิร์นของ stt_listener ก่อน
+    วัดจริงบนชุดเคสนี้ได้ 3/10 พรอมป์ตัวเดียวกันยิงกับ MODEL หลัก (qwen3:8b) ได้ 10/10 —
+    จึงใช้ ollama_client.MODEL ไม่ใช่โมเดลเล็ก (ดู comment ใน bot.py)"""
+
+    def setup_method(self):
+        ollama_client._consecutive_failures = 0
+        ollama_client._breaker_open_until = 0.0
+
+    def teardown_method(self):
+        ollama_client._consecutive_failures = 0
+        ollama_client._breaker_open_until = 0.0
+
+    def test_call_true_parsed_correctly(self):
+        with patch("aiohttp.ClientSession", make_aiohttp_mock('{"call": true}')):
+            assert asyncio.run(bot._ask_llm_is_call("รอสเต้ตอนนี้กี่โมงแล้ว")) is True
+
+    def test_call_false_parsed_correctly(self):
+        with patch("aiohttp.ClientSession", make_aiohttp_mock('{"call": false}')):
+            assert asyncio.run(bot._ask_llm_is_call("รอสเต้เขา")) is False
+
+    def test_malformed_json_returns_none(self):
+        with patch("aiohttp.ClientSession", make_aiohttp_mock("ไม่ใช่ JSON เลย")):
+            assert asyncio.run(bot._ask_llm_is_call("รอสเต้เขา")) is None
+
+    def test_connection_error_returns_none(self):
+        broken = MagicMock(side_effect=ConnectionError("refused"))
+        with patch("aiohttp.ClientSession", broken):
+            assert asyncio.run(bot._ask_llm_is_call("รอสเต้เขา")) is None
+
+    def test_gate_passes_true_verdict(self):
+        with patch("aiohttp.ClientSession", make_aiohttp_mock('{"call": true}')):
+            assert asyncio.run(bot._passes_intent_gate("รอสเต้ตอนนี้กี่โมงแล้ว")) is True
+
+    def test_gate_blocks_false_verdict(self):
+        with patch("aiohttp.ClientSession", make_aiohttp_mock('{"call": false}')):
+            assert asyncio.run(bot._passes_intent_gate("รอสเต้เขา")) is False
+
+    def test_gate_fails_open_when_ollama_unreachable(self):
+        """breaker เปิด/Ollama ล่ม → คืน True (ถอยไปพฤติกรรมเดิมก่อนมีตัวกรองนี้ ไม่ใช่เงียบ
+        ทั้งห้อง) ต่างจาก "โมเดลตอบ False" ซึ่งเชื่อคำตอบนั้นตรงๆ — ดู docstring
+        bot._passes_intent_gate"""
+        for _ in range(ollama_client._FAILURE_THRESHOLD):
+            ollama_client._record_failure()
+        with patch("aiohttp.ClientSession") as mock_cls:
+            assert asyncio.run(bot._passes_intent_gate("รอสเต้เขา")) is True
+            mock_cls.assert_not_called()   # breaker เปิด = ไม่ยิง HTTP เลย
+
+    def test_gate_disabled_switch_always_passes(self, monkeypatch):
+        monkeypatch.setattr(bot, "INTENT_LLM", False)
+        with patch("aiohttp.ClientSession") as mock_cls:
+            assert asyncio.run(bot._passes_intent_gate("รอสเต้เขา")) is True
+            mock_cls.assert_not_called()   # สวิตช์ปิด = ไม่เรียก LLM เลย
+
+    def test_uses_main_model_not_extract_model(self):
+        """วัดจริงแล้วโมเดลเล็กทำงานนี้ไม่ไหว (3/10) — ต้องยิง ollama_client.MODEL เสมอ
+        กันใครมาลด cost แล้วสลับกลับไปใช้ OLLAMA_EXTRACT_MODEL โดยไม่รู้ตัว"""
+        mock_cls = make_aiohttp_mock('{"call": true}')
+        with patch("aiohttp.ClientSession", mock_cls):
+            asyncio.run(bot._ask_llm_is_call("รอสเต้ตอนนี้กี่โมงแล้ว"))
+        session = mock_cls.return_value.__aenter__.return_value
+        sent_payload = session.post.call_args.kwargs["json"]
+        assert sent_payload["model"] == ollama_client.MODEL
