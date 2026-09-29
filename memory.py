@@ -16,6 +16,7 @@ import os
 import json
 import logging
 import re
+import uuid
 
 # ไม่ต้อง config handler เอง — bot.py ตั้ง root logger ไว้แล้ว (rotating file + console)
 logger = logging.getLogger("roste.memory")
@@ -95,8 +96,30 @@ MAX_FACTS_IN_CONTEXT = 12
 MAX_SUMMARIES = 100
 
 
+# user_id พิเศษสำหรับความจำ "ของรอสเต้เอง" — ใช้ mechanism load/save เดิมทุกอย่าง
+# (ไฟล์ memory/_roste_self.json) แยกจาก user จริงด้วย prefix "_" ซึ่ง Discord user_id
+# (ตัวเลขล้วน) ไม่มีทางชนด้วย — ไม่ต้องสร้าง I/O path ใหม่
+ROSTE_SELF_ID = "_roste_self"
+
+
 def _memory_path(user_id):
     return os.path.join(MEMORY_DIR, f"{user_id}.json")
+
+
+def _migrate_facts_in_place(facts: list) -> None:
+    """เติม id/parent/mentioned_by ให้ fact เก่าที่ยังไม่มี (จากก่อนมี fact hierarchy) —
+    idempotent เรียกได้ทุกครั้งที่ load ไม่เสียข้อมูลเดิม (text/category/created/
+    superseded คงเดิมหมด) fact เก่าที่ไม่เคยมี parent มาก่อน ถือเป็น root (parent=None)
+    — สมเหตุสมผลเพราะระบบเก่าไม่เคยมีแนวคิด hierarchy จึงไม่มีทางรู้ว่าควรเป็นลูกของอะไร
+
+    mentioned_by เติม [] เปล่าให้ทุก fact (แม้ user facts ที่ไม่เคยใช้ field นี้เลย) —
+    ง่ายกว่าเขียน migration แยกสองแบบตามชนิดไฟล์ และไม่กระทบ logic เดิมเพราะไม่มีที่ไหน
+    อ่าน mentioned_by ของ user facts อยู่แล้ว (มีความหมายแค่ใน roste facts)"""
+    for fact in facts:
+        if isinstance(fact, dict):
+            fact.setdefault("id", str(uuid.uuid4()))
+            fact.setdefault("parent", None)
+            fact.setdefault("mentioned_by", [])
 
 
 def load_memory(user_id):
@@ -112,10 +135,22 @@ def load_memory(user_id):
             mem.setdefault("facts", [])
             mem.setdefault("history", [])
             mem.setdefault("summaries", [])
+            _migrate_facts_in_place(mem["facts"])
             return mem
         except Exception as e:
             logger.warning(f"   ↳ อ่านความจำไม่สำเร็จ: {e}")
     return {"name": "", "preferred_name": "", "facts": [], "history": [], "summaries": []}
+
+
+def load_roste_memory():
+    """ความจำของรอสเต้เอง (ไม่ผูกกับ user คนไหน) — ใช้เก็บ me_pref/me_fact ที่เคยพูด
+    ไปแล้วกับ user คนใดก็ตาม เป็น "ตัวตนกลาง" ที่เหมือนกันทุก user (ดู docs/ROADMAP.md
+    หัวข้อค่าความสนิทสนม — มิติความลึก)"""
+    return load_memory(ROSTE_SELF_ID)
+
+
+def save_roste_memory(mem):
+    save_memory(ROSTE_SELF_ID, mem)
 
 
 def save_memory(user_id, mem):
@@ -217,7 +252,120 @@ def _negated_fact_text(text: str) -> str:
     return ""
 
 
-def add_fact(mem, text, category=None):
+# ── fact hierarchy — depth คำนวณจาก parent chain เสมอ ไม่เก็บเป็น field แยก ──────
+#
+# กัน infinite loop ถ้า parent ชี้วนกัน (ไม่ควรเกิดจาก flow ปกติ แต่ไฟล์ json แก้มือ
+# ได้ หรือ LLM สกัด parent ผิดจนเกิด cycle) — เพดาน เดียวกับความลึกสมเหตุสมผลของ
+# หมวดหมู่จริง (หนังสือ→นิยาย→แนว→ตัวละคร ลึกสุดจริงไม่เกิน 4-5 ชั้น) ให้เผื่อ 20 ชั้น
+_MAX_FACT_DEPTH = 20
+
+
+def _fact_by_id(facts: list, fact_id) -> dict | None:
+    for f in facts:
+        if isinstance(f, dict) and f.get("id") == fact_id:
+            return f
+    return None
+
+
+def fact_depth(mem, fact_id) -> int:
+    """ไล่ parent นับความลึก — root (parent=None) = depth 0
+    fact_id ที่หาไม่เจอ หรือวนเป็น cycle → คืน 0 (fail-safe ไปทาง "เป็น root")"""
+    facts = mem.get("facts", [])
+    depth = 0
+    seen = set()
+    current = _fact_by_id(facts, fact_id)
+    while current and current.get("parent") is not None and depth < _MAX_FACT_DEPTH:
+        if current["id"] in seen:
+            logger.warning(f"   ⚠️ fact parent chain วนเป็น cycle ที่ id={current['id']}")
+            break
+        seen.add(current["id"])
+        current = _fact_by_id(facts, current["parent"])
+        depth += 1
+    return depth
+
+
+def fact_root_id(mem, fact_id):
+    """ไล่ parent จนสุดสาย คืน id ของ root — ใช้ตอนสกัด parent ใหม่ (จำกัด scope ให้
+    LLM เห็นแค่ fact ใน category เดียวกัน ไม่ใช่ทุก fact) fact_id ที่หาไม่เจอคืน None"""
+    facts = mem.get("facts", [])
+    seen = set()
+    current = _fact_by_id(facts, fact_id)
+    if current is None:
+        return None
+    depth = 0
+    while current.get("parent") is not None and depth < _MAX_FACT_DEPTH:
+        if current["id"] in seen:
+            break
+        seen.add(current["id"])
+        parent_fact = _fact_by_id(facts, current["parent"])
+        if parent_fact is None:   # parent ชี้ไปหา fact ที่ไม่มีอยู่จริง (ไฟล์เพี้ยน) — หยุดที่นี่
+            break
+        current = parent_fact
+        depth += 1
+    return current["id"]
+
+
+def facts_in_category(mem, category):
+    """fact ที่ยัง valid (ไม่ superseded) ใน category เดียวกัน — ใช้จำกัด scope ตอนขอให้
+    LLM สกัดว่า fact ใหม่เป็นลูกของอันไหน (ดู docs/ROADMAP.md เหตุผลที่จำกัดแค่
+    category เดียวกัน: กันขนาด prompt บวม + กัน LLM hallucinate parent ข้าม category)"""
+    return [f for f in mem.get("facts", [])
+            if isinstance(f, dict) and f.get("category") == category and not f.get("superseded")]
+
+
+PARENT_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {"parent_id": {"type": ["string", "null"]}},
+    "required": ["parent_id"],
+}
+
+
+def build_parent_prompt(new_text: str, existing_facts: list) -> str:
+    """สร้าง prompt ให้ LLM ตัดสินว่า fact ใหม่เป็น "ลูก" (specialization) ของ fact
+    ไหนใน existing_facts ไหม — คืน prompt ล้วน ผู้เรียกส่งไป Ollama เอง (pattern เดียวกับ
+    build_summary_prompt/build_extract_prompt ในไฟล์นี้)
+
+    existing_facts: list ของ fact dict ที่ยัง valid ใน category เดียวกัน (จาก
+    facts_in_category) — จำกัด scope ตรงนี้ ไม่ใช่ใน prompt เอง กันขนาด prompt บวม +
+    กัน LLM เห็น fact ข้าม category แล้ว hallucinate ความเกี่ยวข้องที่ไม่มีจริง
+
+    ตอบ parent_id=null ถ้า new_text เป็นเรื่องใหม่ ไม่ใช่ specialization ของอันไหนเลย
+    (เช่น "ชอบหนังสือ" กับ "ชอบดนตรี" เป็นคนละเรื่อง ไม่ใช่ parent-child กัน)"""
+    if not existing_facts:
+        return ""   # ไม่มีอะไรให้เทียบ — ผู้เรียกควรข้าม LLM call นี้ไปเลย ไม่ใช่ยิงเปล่า
+    listing = "\n".join(f'{f["id"]}: {_fact_text(f)}' for f in existing_facts)
+    return (
+        "ข้อความใหม่ต่อไปนี้อาจเป็น \"เรื่องที่เจาะจงกว่า\" (specialization) ของข้อเท็จจริง"
+        "ที่มีอยู่แล้วข้อใดข้อหนึ่ง หรือเป็นเรื่องใหม่ที่ไม่เกี่ยวกันเลยก็ได้\n\n"
+        f"ข้อความใหม่: {new_text}\n\n"
+        "ข้อเท็จจริงที่มีอยู่แล้ว (รูปแบบ id: ข้อความ):\n"
+        f"{listing}\n\n"
+        "ถ้าข้อความใหม่เจาะจงกว่าข้อใดข้อหนึ่งชัดเจน (เช่น \"ชอบนิยายไซไฟ\" เจาะจงกว่า "
+        "\"ชอบนิยาย\") ตอบ id ของข้อนั้น ถ้าไม่เกี่ยวกับข้อไหนเลย หรือไม่แน่ใจ ตอบ null\n"
+        'ตอบเป็น JSON เท่านั้น: {"parent_id": "<id>"} หรือ {"parent_id": null}'
+    )
+
+
+def parse_parent_response(raw: str, valid_ids: set) -> str | None:
+    """แกะผลตอบจาก build_parent_prompt — คืน parent_id ที่ valid หรือ None
+
+    ตรวจ valid_ids เพราะ LLM hallucinate id ที่ไม่มีจริงได้ (เดาขึ้นมาเองแทนที่จะ
+    copy จาก listing) — id ที่ไม่ตรงกับของจริงเลยถือว่า parse ไม่ผ่าน ให้ผลเป็น
+    None (ปลอดภัยกว่า) ไม่ใช่เดาต่อว่าหมายถึงอันไหน"""
+    try:
+        data = json.loads(raw.strip())
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    parent_id = data.get("parent_id")
+    if parent_id is None:
+        return None
+    if parent_id not in valid_ids:
+        logger.debug(f"   ⚠️ LLM ตอบ parent_id ที่ไม่มีอยู่จริง: {parent_id!r}")
+        return None
+    return parent_id
+
+
+def add_fact(mem, text, category=None, *, allow_supersede=True, parent=None):
     """เพิ่ม fact เข้าความจำ พร้อมกันซ้ำ + คุมเพดาน
 
     ถ้า category อยู่ในกลุ่ม single-value (เช่น "ที่อยู่") และมี fact เดิมหมวดเดียวกันที่ยัง
@@ -226,6 +374,17 @@ def add_fact(mem, text, category=None):
 
     category ที่ไม่อยู่ใน FACT_CATEGORIES (หรือไม่ระบุ) → เก็บเป็น category=None
     fact แบบนี้จะไม่ถูก supersede อัตโนมัติ (ไม่มี key ให้เทียบ) แต่ยัง evict ได้ตาม MAX_FACTS ปกติ
+
+    allow_supersede=False: ปิดทั้ง category-supersede และ negation-supersede ทั้งคู่ —
+    ใช้กับ roste facts (ตัวตนของรอสเต้เอง ผ่าน memory.ROSTE_SELF_ID) เพราะตัดสินใจแล้วว่า
+    "สิ่งที่รอสเต้เคยพูดว่าชอบ/เกลียด ไม่ควรเปลี่ยนแปลงไปตามเวลา" ต่างจาก user facts ที่
+    เปลี่ยนได้ตามชีวิตจริงของผู้ใช้ (ดู docs/ROADMAP.md หัวข้อค่าความสนิทสนม — มิติความลึก)
+    ผลพลอยได้: ปิด supersede แล้ว fact ลูก (parent ชี้มาหา fact นี้) จะไม่มีวันกำพร้า
+    เพราะ root ไม่มีวันถูก mark superseded เลย
+
+    parent: id ของ fact แม่ (ถ้า fact นี้เป็น specialization ของอันที่มีอยู่แล้ว เช่น
+    "ชอบนิยายไซไฟ" เป็นลูกของ "ชอบนิยาย") None = เป็น root ของสายตัวเอง — ไม่ต้อง
+    เก็บ "ความลึก" แยก คำนวณจากการไล่ parent ได้เสมอ (ดู fact_depth/fact_root)
 
     คืน True ถ้าเพิ่มจริง, False ถ้าซ้ำ (ไม่ได้เพิ่ม)"""
     text = text.strip()
@@ -260,7 +419,7 @@ def add_fact(mem, text, category=None):
 
     now_iso = _now_th_iso()
 
-    if category in SINGLE_VALUE_CATEGORIES:
+    if allow_supersede and category in SINGLE_VALUE_CATEGORIES:
         for f in facts:
             if isinstance(f, dict) and f.get("category") == category and not f.get("superseded"):
                 f["superseded"] = True
@@ -282,7 +441,7 @@ def add_fact(mem, text, category=None):
     #    ไม่เดาความหมายใกล้เคียง — การเดาผิดแล้วลบของจริงทิ้งแย่กว่าเก็บซ้ำ
     #    (บทเรียนเดียวกับ category_matches_text)
     neg = _negated_fact_text(text)
-    if neg:
+    if allow_supersede and neg:
         # "ไม่มีลูกสาว 2 คน" -> ตัดคำปฏิเสธได้ "ลูกสาว 2 คน" แต่ fact เดิมเก็บว่า
         # "**มี**ลูกสาว 2 คน" — เทียบทั้งรูปที่ตัดแล้วและรูปที่เติม "มี" กลับ
         cands = {neg, "มี" + neg}
@@ -295,8 +454,10 @@ def add_fact(mem, text, category=None):
                 logger.info("   ↩️ ผู้ใช้แก้ข้อมูลเดิม — mark fact เก่าเป็น superseded")
 
     facts.append({
+        "id": str(uuid.uuid4()),
         "category": category,
         "text": text,
+        "parent": parent,
         "created": now_iso,
         "superseded": False,
         "superseded_at": None,
@@ -307,6 +468,62 @@ def add_fact(mem, text, category=None):
     if len(facts) > MAX_FACTS:
         del facts[: len(facts) - MAX_FACTS]
     return True
+
+
+# credit ที่ user คนหนึ่งได้จาก roste fact หนึ่งอัน — ยิ่งมีคนพูดถึงมาก ยิ่งลดค่าเฉลี่ย
+# ต่อคนลง (ตัดสินใจคุยกับเจ้าของ repo: "คนที่ทำให้ fact นั้นเกิดขึ้นเป็นคนแรกต่างหากที่
+# สำคัญ" — ไม่ใช่หารแต้มเท่ากันทุกคน และไม่ใช่ทุกคนได้เต็ม 100% เท่ากันหมด) มี floor
+# กันไม่ให้ต่ำจนไม่มีความหมายสำหรับ user ที่มาคุยทีหลังมากๆ
+MENTION_CREDIT_FLOOR = 0.2
+
+
+def roste_fact_credit(fact: dict, user_id) -> float:
+    """เครดิตที่ user_id ได้จาก roste fact อันนี้ — 1.0 ถ้าเป็นคนแรกที่ทำให้เกิด fact นี้
+    (mentioned_by[0]) ไม่งั้น 1/จำนวนคนที่เคยพูดถึงทั้งหมด (มี floor กันต่ำเกินไป)
+
+    user_id ที่ไม่เคยอยู่ใน mentioned_by เลย (ยังไม่เคยคุยเรื่องนี้) คืน 0.0 — ใช้กับ
+    intimacy.py ตอนคำนวณ depth_component ของ user คนนั้น (ดู docs/ROADMAP.md)"""
+    mentioned_by = fact.get("mentioned_by") or []
+    if not mentioned_by or user_id not in mentioned_by:
+        return 0.0
+    if user_id == mentioned_by[0]:
+        return 1.0
+    return max(1.0 / len(mentioned_by), MENTION_CREDIT_FLOOR)
+
+
+def add_roste_fact(mem, text, user_id, category=None, *, parent=None) -> bool:
+    """เพิ่ม fact เข้า roste facts (ตัวตนของรอสเต้เอง) พร้อม track ว่า user คนไหนเคย
+    "คุยถึง" fact นี้บ้าง (mentioned_by) — ใช้แทน add_fact() ตรงๆ สำหรับ roste facts
+    เท่านั้น (user facts ไม่มีแนวคิด mentioned_by เพราะ fact เป็นของ user คนนั้นอยู่แล้ว
+    ไม่ต้อง track ว่า "ใครพูดถึง" — แยกฟังก์ชันแทนเพิ่ม param เข้า add_fact() ทั่วไป
+    กันฟังก์ชันเดิมพองด้วย concept ที่ไม่เกี่ยวกับ user facts เลย)
+
+    allow_supersede=False เสมอ (ดู add_fact docstring — ตัวตนไม่เปลี่ยนตามเวลา)
+
+    fact ใหม่ (ไม่เคยมีข้อความนี้มาก่อน) → สร้างพร้อม mentioned_by=[user_id]
+    fact ซ้ำเป๊ะที่ยัง valid → ถ้า user_id ยังไม่เคยอยู่ใน mentioned_by ก็ append เข้าไป
+    (mention_count นับเฉพาะ unique user — user เดิมคุยซ้ำไม่นับเพิ่ม ตามที่ตัดสินใจไว้)
+    คืน True ถ้ามีการเปลี่ยนแปลงจริง (fact ใหม่ หรือ mentioned_by ถูกเพิ่ม), False ถ้าไม่มี
+    อะไรเปลี่ยน (user เดิมพูดเรื่องเดิมซ้ำ)"""
+    text = text.strip()
+    if not text:
+        return False
+    facts = mem.setdefault("facts", [])
+
+    existing = next((f for f in facts
+                      if isinstance(f, dict) and _fact_text(f) == text and not f.get("superseded")),
+                     None)
+    if existing is not None:
+        mentioned_by = existing.setdefault("mentioned_by", [])
+        if user_id in mentioned_by:
+            return False   # user เดิมพูดเรื่องเดิมซ้ำ — ไม่มีอะไรเปลี่ยน
+        mentioned_by.append(user_id)
+        return True
+
+    added = add_fact(mem, text, category, allow_supersede=False, parent=parent)
+    if added:
+        facts[-1]["mentioned_by"] = [user_id]   # fact ที่เพิ่ง append เป็นตัวสุดท้ายเสมอ
+    return added
 
 
 def remove_fact(mem, keyword):
@@ -338,22 +555,30 @@ def recall_facts(mem, user_message):
     words = [w.lower() for w in _keywords(user_message)]
 
     scored = []
-    for f in facts:
+    for i, f in enumerate(facts):
         text = _fact_text(f)
         fl = text.lower()
         score = sum(1 for w in words if w in fl)
-        scored.append((score, text))
+        # tie-breaker ที่ 1: คะแนนเท่ากัน → root (ไม่มี parent) มาก่อน leaf — คำถาม
+        # กว้างๆ ("ชอบหนังสือไหม") ควรได้คำตอบระดับกว้างก่อน ไม่ใช่ leaf ที่เจาะจง
+        # เกินคำถาม (ดู docs/ROADMAP.md หัวข้อค่าความสนิทสนม — มิติความลึก)
+        # tie-breaker ที่ 2 (เดิม): root/score เท่ากันด้วย → ล่าสุดก่อน (recency)
+        # facts เรียงเก่า→ใหม่อยู่แล้ว ใช้ index ตรงๆ เป็นคะแนน recency ได้เลย
+        is_root = isinstance(f, dict) and f.get("parent") is None
+        scored.append((score, is_root, i, text))
 
-    # เรียงตามคะแนน (มากก่อน) — อันที่เกี่ยวข้องขึ้นก่อน
-    scored.sort(key=lambda x: x[0], reverse=True)
+    # เรียงตามคะแนน > root-ก่อน-leaf > ล่าสุดก่อน (ทั้งหมด "มากก่อน"/reverse=True)
+    scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
 
-    # เลือกอันที่มีคะแนน (เกี่ยวข้องจริง) ก่อน
-    relevant = [t for s, t in scored if s > 0][:MAX_FACTS_IN_CONTEXT]
+    # เลือกอันที่มีคะแนน (เกี่ยวข้องจริง) ก่อน — ลำดับใน scored คือลำดับ priority
+    # ที่ถูกต้องแล้ว (score > root > recency) ไม่ต้อง reverse อีกชั้น
+    relevant = [t for s, _, _, t in scored if s > 0][:MAX_FACTS_IN_CONTEXT]
 
-    # ถ้ายังไม่เต็มโควต้า เติมด้วย fact ล่าสุด (เผื่อข้อมูลพื้นฐานที่ไม่ได้ตรงคำ)
+    # ถ้ายังไม่เต็มโควต้า เติมด้วย fact ตามลำดับ priority เดียวกัน (เผื่อข้อมูล
+    # พื้นฐานที่ไม่ได้ตรงคำ) — ใช้ scored ตัวเดิม ไม่ไล่ all_texts แยก กัน fallback
+    # เพิกเฉย root/recency tie-breaker ที่เพิ่งจัดลำดับไว้ข้างบน
     if len(relevant) < MAX_FACTS_IN_CONTEXT:
-        all_texts = [_fact_text(f) for f in facts]
-        for text in reversed(all_texts):
+        for _, _, _, text in scored:
             if text not in relevant:
                 relevant.append(text)
             if len(relevant) >= MAX_FACTS_IN_CONTEXT:

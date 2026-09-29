@@ -5,16 +5,35 @@ Run: pytest tests/test_intimacy.py -v
 from datetime import date, timedelta
 
 import intimacy
+import memory
+
+USER = 111
+OTHER_USER = 222
 
 
 def _mem():
     return {"name": "", "facts": [], "history": [], "summaries": []}
 
 
+def _roste_mem():
+    return {"name": "", "preferred_name": "", "facts": [], "history": [], "summaries": []}
+
+
 def _talk_days(mem, days: list[date], messages_per_day: int = 2):
     for d in days:
         for _ in range(messages_per_day):
             intimacy.record_interaction(mem, message_count_today=1, today=d)
+
+
+def _give_depth(roste_mem, user_id, n_facts: int, chain: bool = False):
+    """เติม roste fact ให้ user_id มี depth_component > 0 — chain=True สร้าง parent
+    chain ยาวขึ้นเรื่อยๆ (depth เพิ่มทีละชั้น) chain=False สร้าง root แยกกัน n อัน"""
+    parent = None
+    for i in range(n_facts):
+        memory.add_roste_fact(roste_mem, f"เรื่องที่ {i}", user_id, category=None,
+                               parent=parent if chain else None)
+        if chain:
+            parent = roste_mem["facts"][-1]["id"]
 
 
 class TestRecordInteraction:
@@ -42,141 +61,161 @@ class TestRecordInteraction:
         assert today.isoformat() in mem["intimacy"]["daily_counts"]
 
 
+class TestFrequencyComponent:
+    def test_no_history_is_zero(self):
+        mem = _mem()
+        assert intimacy._frequency_component(mem, today=date(2026, 1, 1)) == 0.0
+
+    def test_full_window_caps_at_one(self):
+        mem = _mem()
+        today = date(2026, 6, 1)
+        _talk_days(mem, [today - timedelta(days=i) for i in range(intimacy.WINDOW_DAYS + 5)])
+        assert intimacy._frequency_component(mem, today=today) == 1.0
+
+    def test_partial_window_is_proportional(self):
+        mem = _mem()
+        today = date(2026, 3, 1)
+        n = 10
+        _talk_days(mem, [today - timedelta(days=i) for i in range(n)])
+        expected = n / intimacy.WINDOW_DAYS
+        assert abs(intimacy._frequency_component(mem, today=today) - expected) < 1e-9
+
+
+class TestDepthComponent:
+    def test_no_facts_for_user_is_zero(self):
+        """"ไม่มีข้อมูล = ไม่เปิดเผย" — ตัดสินใจไว้ตรงๆ ตอนออกแบบ"""
+        roste_mem = _roste_mem()
+        assert intimacy._depth_component(roste_mem, USER) == 0.0
+
+    def test_facts_from_other_user_dont_count(self):
+        roste_mem = _roste_mem()
+        _give_depth(roste_mem, OTHER_USER, 3)
+        assert intimacy._depth_component(roste_mem, USER) == 0.0
+
+    def test_root_only_facts_give_low_depth(self):
+        """root ทุกอัน (depth=0 ทั้งหมด) — เฉลี่ย depth = 0 แม้มีหลายเรื่อง (breadth
+        อย่างเดียวไม่ได้แปลว่า depth สูง — คนละมิติกัน)"""
+        roste_mem = _roste_mem()
+        _give_depth(roste_mem, USER, 5, chain=False)
+        assert intimacy._depth_component(roste_mem, USER) == 0.0
+
+    def test_deep_chain_gives_higher_depth_than_shallow(self):
+        roste_mem = _roste_mem()
+        _give_depth(roste_mem, USER, intimacy.MAX_MEANINGFUL_DEPTH + 1, chain=True)
+        assert intimacy._depth_component(roste_mem, USER) > 0.0
+
+    def test_capped_at_one(self):
+        roste_mem = _roste_mem()
+        _give_depth(roste_mem, USER, intimacy.MAX_MEANINGFUL_DEPTH * 3, chain=True)
+        assert intimacy._depth_component(roste_mem, USER) <= 1.0
+
+    def test_superseded_fact_excluded(self):
+        """roste facts ไม่ควร superseded เลยตามดีไซน์ (allow_supersede=False เสมอ) แต่
+        เผื่อ fact ในระบบ (import จากที่อื่น/แก้มือ) ถูก mark ไว้ — ต้องไม่นับ"""
+        roste_mem = _roste_mem()
+        memory.add_roste_fact(roste_mem, "เรื่องทดสอบ", USER)
+        roste_mem["facts"][0]["superseded"] = True
+        assert intimacy._depth_component(roste_mem, USER) == 0.0
+
+
 class TestGetTier:
     def test_no_history_is_tier_1(self):
         mem = _mem()
-        assert intimacy.get_tier(mem) == 1
+        roste_mem = _roste_mem()
+        assert intimacy.get_tier(mem, roste_mem, USER) == 1
 
-    def test_single_day_below_min_messages_stays_tier_1(self):
-        """1 ข้อความในวันเดียว ไม่ถึงเกณฑ์กันสแปม (MIN_MESSAGES_PER_DAY=2) — ไม่นับ"""
+    def test_frequency_alone_without_depth_stays_tier_1(self):
+        """คุย 61 วันติด (frequency=1.0) แต่ไม่มี roste fact เลย (depth=0) —
+        score = freq*depth = 0 เสมอ ไม่ว่าจะคุยนานแค่ไหน (SPT: breadth x depth
+        ทั้งคู่ต้อง > 0 ถึงจะได้ intimacy จริง)"""
         mem = _mem()
-        today = date(2026, 1, 5)
-        intimacy.record_interaction(mem, message_count_today=1, today=today)
-        assert intimacy.get_tier(mem, today=today) == 1
+        roste_mem = _roste_mem()
+        today = date(2026, 6, 1)
+        _talk_days(mem, [today - timedelta(days=i) for i in range(61)])
+        assert intimacy.get_tier(mem, roste_mem, USER, today=today) == 1
 
-    def test_few_days_within_threshold_is_experimenting(self):
+    def test_deep_talk_single_day_stays_low_tier(self):
+        """เคสที่คุยกันออกแบบไว้: คุยลึกมาก (depth เต็ม) แต่แค่วันเดียว (freq ต่ำมาก)
+        — ไม่ควรกระโดดไป tier สูง เพราะ SPT ต้องการทั้งสองมิติพร้อมกัน"""
         mem = _mem()
-        today = date(2026, 1, 10)
-        _talk_days(mem, [today - timedelta(days=i) for i in range(5)])
-        assert intimacy.get_tier(mem, today=today) == 2
-
-    def test_many_days_is_intensifying(self):
-        mem = _mem()
+        roste_mem = _roste_mem()
         today = date(2026, 3, 1)
-        _talk_days(mem, [today - timedelta(days=i) for i in range(20)])
-        assert intimacy.get_tier(mem, today=today) == 3
+        _talk_days(mem, [today])   # แค่ 1 วัน
+        _give_depth(roste_mem, USER, intimacy.MAX_MEANINGFUL_DEPTH + 2, chain=True)
+        assert intimacy.get_tier(mem, roste_mem, USER, today=today) == 1
 
-    def test_very_many_days_is_integrating(self):
+    def test_long_but_shallow_talk_does_not_exceed_tier_2(self):
+        """เคสที่คุยกันออกแบบไว้: คุยกันนาน (freq สูง) แต่ตื้นตลอด (depth ต่ำมาก —
+        มีแต่ root กว้างๆ หลายเรื่อง ไม่เคยลงลึกเป็นลูกเลยสักครั้ง) — ไม่ควรเกิน tier 2
+        (breadth เยอะไม่ได้แปลว่า depth สูง — คนละมิติกันตาม SPT)"""
         mem = _mem()
+        roste_mem = _roste_mem()
         today = date(2026, 6, 1)
-        _talk_days(mem, [today - timedelta(days=i) for i in range(61)])   # 61 วัน > threshold 60
-        assert intimacy.get_tier(mem, today=today) == 4
+        _talk_days(mem, [today - timedelta(days=i) for i in range(90)])
+        _give_depth(roste_mem, USER, 5, chain=False)   # 5 root แยกกัน depth=0 ทุกอัน
+        tier = intimacy.get_tier(mem, roste_mem, USER, today=today)
+        assert tier <= 2
 
-    def test_days_outside_window_dont_count(self):
-        """คุยถี่มากแต่ 61+ วันก่อน (นอก WINDOW_DAYS=60) ไม่ควรถูกนับเข้ามาช่วยดันระดับปัจจุบัน"""
+    def test_moderate_frequency_and_depth_reaches_tier_4(self):
+        """เคสที่คุยกันออกแบบไว้: freq≈1.0 + depth กลางๆ → tier 4 (ใกล้เคียงพฤติกรรม
+        เดิมที่ใช้ days เพียวๆ)"""
         mem = _mem()
+        roste_mem = _roste_mem()
         today = date(2026, 6, 1)
-        old_days = [today - timedelta(days=70 + i) for i in range(20)]
-        _talk_days(mem, old_days)
-        # peak_tier ที่เคยได้จากรอบเก่าจะยังให้พื้นอยู่ (tier 3 - 1 = 2) แต่ไม่ใช่ tier 3
-        # ของ "ตอนนี้" ตรงๆ — ทดสอบว่า raw computed ปัจจุบัน (ไม่มีวันคุยใน window เลย)
-        # ไม่ถูกดันขึ้นไปเป็น tier 3 ทั้งที่ไม่มีการคุยใน 60 วันหลังสุดเลย
-        assert intimacy.get_tier(mem, today=today) <= 3
+        _talk_days(mem, [today - timedelta(days=i) for i in range(60)])
+        _give_depth(roste_mem, USER, intimacy.MAX_MEANINGFUL_DEPTH + 1, chain=True)
+        tier = intimacy.get_tier(mem, roste_mem, USER, today=today)
+        assert tier == 4
 
 
 class TestPeakFloor:
     def test_tier_never_drops_below_peak_minus_one(self):
         """roste-plan.md: decay ต้องมีพื้น ห้าม reset กลับ tier 1 ทั้งที่เคยสนิทมาก"""
         mem = _mem()
+        roste_mem = _roste_mem()
         peak_day = date(2026, 3, 1)
-        _talk_days(mem, [peak_day - timedelta(days=i) for i in range(20)])
-        assert intimacy.get_tier(mem, today=peak_day) == 3   # ยืนยันว่าขึ้นถึง tier 3 จริง
+        _talk_days(mem, [peak_day - timedelta(days=i) for i in range(60)])
+        _give_depth(roste_mem, USER, intimacy.MAX_MEANINGFUL_DEPTH + 1, chain=True)
+        peak_tier = intimacy.get_tier(mem, roste_mem, USER, today=peak_day)
+        assert peak_tier == 4   # ยืนยันว่าขึ้นถึง tier 4 จริง
 
-        # หายไปนานมาก (เกิน window ไปมาก) ไม่คุยเลย
+        # หายไปนานมาก (เกิน window ไปมาก) ไม่คุยเลย — frequency กลับไป 0
         much_later = peak_day + timedelta(days=200)
-        tier_after_absence = intimacy.get_tier(mem, today=much_later)
-        assert tier_after_absence >= 3 - 1   # ลดได้สูงสุด 1 ขั้นจาก peak
+        tier_after_absence = intimacy.get_tier(mem, roste_mem, USER, today=much_later)
+        assert tier_after_absence >= peak_tier - 1   # ลดได้สูงสุด 1 ขั้นจาก peak
 
     def test_peak_updates_when_new_high_reached(self):
         mem = _mem()
+        roste_mem = _roste_mem()
         d1 = date(2026, 1, 20)
         _talk_days(mem, [d1 - timedelta(days=i) for i in range(5)])
-        intimacy.get_tier(mem, today=d1)   # บันทึก peak = 2
-        assert mem["intimacy"]["peak_tier"] == 2
+        intimacy.get_tier(mem, roste_mem, USER, today=d1)   # ยังไม่มี depth เลย → tier 1
+        assert mem["intimacy"]["peak_tier"] == 1
 
         d2 = date(2026, 4, 1)
-        _talk_days(mem, [d2 - timedelta(days=i) for i in range(20)])
-        intimacy.get_tier(mem, today=d2)   # ควรขยับ peak ขึ้นเป็น 3
-        assert mem["intimacy"]["peak_tier"] == 3
+        _talk_days(mem, [d2 - timedelta(days=i) for i in range(60)])
+        _give_depth(roste_mem, USER, intimacy.MAX_MEANINGFUL_DEPTH + 1, chain=True)
+        intimacy.get_tier(mem, roste_mem, USER, today=d2)   # ควรขยับ peak ขึ้น
+        assert mem["intimacy"]["peak_tier"] == 4
 
 
 class TestToneInstruction:
     def test_returns_tier_1_tone_for_new_user(self):
         mem = _mem()
-        tone = intimacy.tone_instruction(mem)
+        roste_mem = _roste_mem()
+        tone = intimacy.tone_instruction(mem, roste_mem, USER)
         assert tone == intimacy.TIER_TONE[1]
 
     def test_returns_matching_tone_for_tier(self):
-        """สร้าง tier 3 จริงจาก daily_counts (ไม่ใช่ยัด peak_tier ตรงๆ) — peak_tier บอก
-        แค่ "เคยถึงสูงสุดเท่าไหร่" ไม่ใช่ tier ปัจจุบัน คนละความหมายกัน (ดู floor logic
-        ใน get_tier: ไม่มีวันคุยเลยแต่ peak=3 จะได้ tier 2 ไม่ใช่ 3 — tested แยกใน
-        TestPeakFloor แล้ว)"""
         mem = _mem()
-        today = date(2026, 3, 1)
-        _talk_days(mem, [today - timedelta(days=i) for i in range(20)])
-        tone = intimacy.tone_instruction(mem, today=today)
-        assert tone == intimacy.TIER_TONE[3]
+        roste_mem = _roste_mem()
+        today = date(2026, 6, 1)
+        _talk_days(mem, [today - timedelta(days=i) for i in range(60)])
+        _give_depth(roste_mem, USER, intimacy.MAX_MEANINGFUL_DEPTH + 1, chain=True)
+        tone = intimacy.tone_instruction(mem, roste_mem, USER, today=today)
+        assert tone == intimacy.TIER_TONE[4]
 
     def test_all_tiers_have_tone_defined(self):
         for tier in intimacy.TIER_NAMES:
             assert tier in intimacy.TIER_TONE
             assert isinstance(intimacy.TIER_TONE[tier], str) and intimacy.TIER_TONE[tier]
-
-
-class TestBreadthCount:
-    def test_no_summaries_is_zero(self):
-        mem = _mem()
-        assert intimacy.breadth_count(mem) == 0
-
-    def test_counts_me_pref_and_me_fact_from_tagged_summary(self):
-        mem = _mem()
-        mem["summaries"] = [
-            "คุยแนวนิยาย | user_pref:ชอบนิยายสืบสวน me_pref:ชอบแนวแฟนตาซี",
-        ]
-        assert intimacy.breadth_count(mem) == 1
-
-    def test_ignores_user_pref_and_user_fact(self):
-        """breadth นับแค่ฝั่งรอสเต้ (me_*) — ไม่ใช่จำนวนเรื่องที่ user เล่าให้ฟัง"""
-        mem = _mem()
-        mem["summaries"] = [
-            "คุยเรื่องงาน | user_pref:ชอบงานอิสระ user_fact:ทำงานไอที",
-        ]
-        assert intimacy.breadth_count(mem) == 0
-
-    def test_dedupes_same_me_fact_across_summaries(self):
-        mem = _mem()
-        mem["summaries"] = [
-            "คุยเรื่องหนังสือ | me_pref:ชอบแนวแฟนตาซี",
-            "คุยเรื่องเวทมนตร์ | me_pref:ชอบแนวแฟนตาซี",   # พูดซ้ำเรื่องเดิม ไม่ควรนับซ้ำ
-        ]
-        assert intimacy.breadth_count(mem) == 1
-
-    def test_counts_distinct_topics_separately(self):
-        mem = _mem()
-        mem["summaries"] = [
-            "คุยเรื่องหนังสือ | me_pref:ชอบแนวแฟนตาซี",
-            "คุยเรื่องงาน | me_fact:ดูแลห้องสมุดเวทมนตร์",
-        ]
-        assert intimacy.breadth_count(mem) == 2
-
-    def test_untagged_legacy_summary_contributes_zero(self):
-        """summary เก่าไม่มี tag เลย (ก่อนมีระบบแยกเจ้าของ) — ต้องไม่ error ไม่ใช่นับมั่ว"""
-        mem = _mem()
-        mem["summaries"] = ["23 ก.ค.: คุยเรื่องความแตกต่างระหว่างเจลาโต้และไอศกรีม"]
-        assert intimacy.breadth_count(mem) == 0
-
-    def test_handles_dict_shaped_summary_entries(self):
-        """summaries บางจุดในระบบเก็บเป็น {"text": ...} ไม่ใช่ string ตรงๆ"""
-        mem = _mem()
-        mem["summaries"] = [{"text": "คุยเรื่องหนังสือ | me_pref:ชอบแนวแฟนตาซี"}]
-        assert intimacy.breadth_count(mem) == 1

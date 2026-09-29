@@ -2,12 +2,9 @@
 #  💞 intimacy.py — ค่าความสนิทสนม (ร่างตาม docs/roste-plan.md)
 #
 #  คุมแค่ "สำเนียง" ที่รอสเต้ใช้คุย ไม่คุมข้อมูล/สิทธิ์ tool ใดๆ ทั้งสิ้น (ข้อห้ามตรงๆ
-#  ในแผน) — input เดียวที่ใช้คือ "วันที่คุยจริง" (ผ่านเกณฑ์กันสแปม) ไม่วัดเนื้อหา/
-#  ความลึกของบทสนทนาเลย แม้จะมีงานวิจัยรองรับเรื่อง partner responsiveness
-#  (Manne et al. 2004, Laurenceau et al. 1998) ก็ตาม — ตั้งใจไม่ทำ เพราะ:
-#    1. ต้องมี pipeline วิเคราะห์เนื้อหาเพิ่ม ชนเพดาน tool schema ~3,700 ตัวอักษร
-#       ที่วัดไว้แล้วว่าเป็นจุดพัง (ดู README หัวข้อ "ระบบเลือกเครื่องมือ")
-#    2. ขัดกับกฎ "ค่าความสนิทคุมแค่สำเนียง ไม่ใช่ข้อมูล" ตรงๆ
+#  ในแผน) ไม่ให้ LLM ประเมิน "ลึกแค่ไหน" ตรงๆ เพราะจะกลายเป็นการวัดเนื้อหาบทสนทนา —
+#  แทนที่ด้วย fact hierarchy ใน memory.py (roste facts + mentioned_by) ที่มีอยู่แล้ว
+#  เป็น proxy ของความลึกโดยไม่ต้อง compute เพิ่ม (ดู memory.fact_depth/roste_fact_credit)
 #
 #  ที่มาของโมเดล 4 ระดับ (คุยออกแบบร่วมกับเจ้าของ repo ก่อนเขียน — ดูสรุปงานวิจัย
 #  ในบทสนทนา Claude Code วันที่ออกแบบไฟล์นี้):
@@ -15,12 +12,38 @@
 #      + Girme, Overall & Simpson (2022) — ยืนยันว่าความสัมพันธ์ระหว่างความถี่
 #      ปฏิสัมพันธ์กับความสนิทสนมเป็น non-linear (inverted-U / diminishing returns)
 #      ไม่ใช่เส้นตรง → เหตุผลที่แบ่งเป็นระดับ (tier) ไม่ใช่ตัวเลขต่อเนื่อง
-#    - Altman & Taylor, Social Penetration Theory — ความสัมพันธ์พัฒนาเป็น stage
+#    - Altman & Taylor, Social Penetration Theory — intimacy = breadth × depth
+#      (ไม่ใช่แค่ breadth หรือแค่ depth เดี่ยวๆ) ความสัมพันธ์พัฒนาเป็น stage
 #    - Knapp's Relational Development Model — ให้ชื่อ+นิยามของ 4 ใน 5 stage แรก
 #      (ตัด "Bonding" ทิ้งเพราะเป็น public commitment ซึ่งไม่มีทางเกิดกับ AI)
 #      "Intensifying" ของ Knapp นิยามไว้ว่ามี "verbal shortcuts" เกิดขึ้น — ตรงกับ
 #      นิยามของ "สำเนียง" ที่แผนต้องการเป๊ะ (ใช้ชื่อเล่น/มุกที่เคยคุยได้ ไม่ต้อง
 #      อธิบายบริบทซ้ำ) ไม่ใช่แค่ "พูดเป็นกันเองมากขึ้น" ลอยๆ
+#
+#  ── score = frequency × depth (ไม่ใช่ max()) ──────────────────────────────────
+#  เหตุผลที่ใช้ผลคูณ ไม่ใช่ max(): คุยกับเจ้าของ repo แล้วพบว่า max() มีช่องโหว่ —
+#  ถ้า breadth/depth "ลาก" tier ขึ้นได้อิสระ จะเกิดเคส "คุยลึก 2 ชม. วันเดียว ได้
+#  tier 4 ทันที" ทั้งที่ frequency ยังต่ำมาก (Bornstein/Zajonc ต้องการความถี่ที่
+#  กระจายข้ามเวลา ไม่ใช่ปริมาณมากในครั้งเดียว) การคูณทำให้ตัวใดตัวหนึ่งต่ำ ผลลัพธ์
+#  ก็ต่ำตาม ตรงกับนิยาม intimacy = breadth × depth ของ SPT ตรงๆ ด้วย
+#
+#  threshold (0.00-0.02/0.02-0.15/0.15-0.35/0.35+) กำหนดเองแบบสมเหตุสมผล ไม่มี
+#  paper รองรับตรงๆ (ไม่มีงานวิจัยไหนให้ threshold ของสูตรคูณแบบนี้) — คัดเลือกจาก
+#  การ test กับ 3 เคสที่คุยกันไว้:
+#    1. คุยลึก 2 ชม. วันเดียว (freq=1/60≈0.017, depth=1.0) → score=0.017 → tier 1
+#    2. คุย 90 วันติดแต่ตื้นตลอด (freq=1.0, depth≈0.1) → score=0.1 → tier 2
+#       (ไม่ควรเกิน 2 — "คุยกันนานแต่ตื้น ไม่ควรเกิน tier 2")
+#    3. คุย 60 วัน + depth กลางๆ (freq≈1.0, depth≈0.5) → score=0.5 → tier 4
+#       (ใกล้เคียงพฤติกรรมเดิมที่ใช้ days เพียวๆ)
+#
+#  depth_component = 0 เมื่อ user คนนั้นไม่เคยมี roste fact ที่เกี่ยวข้องเลย (ตัดสินใจ
+#  ไว้ตรงๆ: "ไม่มีข้อมูล = ไม่เปิดเผย") — ผลคือ deploy สูตรนี้ครั้งแรก user เก่าทุกคน
+#  จะร่วงกลับ tier 1 หมด (ยอมรับผลกระทบนี้แล้ว ไม่ทำ migration พิเศษ เพราะยังไม่เคยมี
+#  roste facts มาก่อนในระบบเดิมเลย ไม่มีอะไรให้ migrate จริงๆ)
+#
+#  first-mover credit (memory.roste_fact_credit): "คนที่ทำให้ fact นั้นเกิดขึ้นเป็น
+#  คนแรกต่างหากที่สำคัญ" ไม่ใช่หารแต้มเท่ากันทุกคน (จะทำให้คนแรกเสียเปรียบ) และไม่ใช่
+#  ทุกคนได้เต็ม 100% เท่ากันหมด (จะทำให้ "first-mover" ไม่มีความหมายอะไรเลย)
 #
 #  decay: ลดได้สูงสุด 1 tier จาก peak_tier ไม่ reset กลับ tier 1 (ตาม roste-plan.md
 #  ตรงๆ: "หายไปเดือนนึงกลับมาแล้วทำเป็นไม่รู้จัก แย่กว่าไม่มีระบบนี้") สอดคล้องกับ
@@ -51,15 +74,23 @@ TIER_NAMES = {
     4: "integrating",
 }
 
-# ช่วงวัน (นับจากจำนวน "วันคุยจริง" แยกกันใน WINDOW_DAYS) → tier
-# อิง mere exposure curve (Zajonc 1968 / Bornstein 1989 meta-analysis) — ช่วงแรกชันสุด
-# แล้วค่อยๆ แบนลง ไม่ใช่ช่วงเท่ากันทุกขั้น
-_TIER_THRESHOLDS = (
-    (2, 1),    # 0-2 วัน   → initiating
-    (14, 2),   # 3-14 วัน  → experimenting
-    (60, 3),   # 15-60 วัน → intensifying
+# score = frequency_component * depth_component → tier (ดู comment บนสุดของไฟล์
+# เรื่องที่มาของ threshold แต่ละช่วง — test กับ 3 เคสที่คุยออกแบบไว้แล้ว)
+_SCORE_THRESHOLDS = (
+    (0.02, 1),   # initiating
+    (0.15, 2),   # experimenting
+    (0.35, 3),   # intensifying
 )
 _MAX_TIER = 4  # เกิน threshold บนสุด → integrating
+
+# ความลึกสูงสุดที่ถือว่า "เต็มสเกล" (fact_depth หน่วยเป็นจำนวนชั้น parent) — ตัวอย่าง
+# ที่คุยกันไว้ (หนังสือ→นิยาย→นิยายไซไฟ→ตัวละคร) ลึกสุดจริงไม่เกิน 3-4 ชั้น ลึกกว่านี้
+# ก็ยัง cap ที่ 1.0 ไม่ใช่ยิ่งลึกยิ่งได้คะแนนไม่จำกัด
+MAX_MEANINGFUL_DEPTH = 3
+
+# credit ขั้นต่ำที่ user คนหนึ่งต้องมีกับ roste fact ถึงจะถูกนับเข้า depth_component
+# (>0 เท่านั้น — fact ที่ user คนนั้นไม่เคยพูดถึงเลยได้ credit 0.0 จาก
+# memory.roste_fact_credit อยู่แล้ว กรองออกตรงนี้กันหารด้วย 0/ค่าเฉลี่ยเพี้ยน)
 
 # คำสั่งโทน 1 บรรทัดต่อ tier — ห้ามส่งตัวเลข tier เข้า prompt ตรงๆ (สเปกในแผน) แปลง
 # เป็นประโยคคำสั่งโทนแทนเสมอ วางในส่วนคงที่ของ system prompt (รักษา KV cache)
@@ -71,11 +102,47 @@ TIER_TONE = {
 }
 
 
-def _tier_from_day_count(n_days: int) -> int:
-    for threshold, tier in _TIER_THRESHOLDS:
-        if n_days <= threshold:
+def _tier_from_score(score: float) -> int:
+    for threshold, tier in _SCORE_THRESHOLDS:
+        if score <= threshold:
             return tier
     return _MAX_TIER
+
+
+def _frequency_component(mem: dict, *, today: date) -> float:
+    """0.0-1.0 — normalize จากจำนวน "วันคุยจริง" ใน WINDOW_DAYS (ของเดิมก่อนมีสูตร
+    คูณ เคยเป็น output ตรงๆ ของ tier ทั้งก้อน ตอนนี้เป็นแค่ตัวคูณตัวหนึ่ง)"""
+    state = mem.get("intimacy")
+    if not state:
+        return 0.0
+    cutoff = today - timedelta(days=WINDOW_DAYS)
+    n_days = sum(
+        1 for d, c in state.get("daily_counts", {}).items()
+        if c >= MIN_MESSAGES_PER_DAY and cutoff <= date.fromisoformat(d) <= today
+    )
+    return min(n_days / WINDOW_DAYS, 1.0)
+
+
+def _depth_component(roste_mem: dict, user_id) -> float:
+    """0.0-1.0 — เฉลี่ยถ่วงน้ำหนักของ fact_depth ทุก roste fact ที่ user_id เคยพูดถึง
+    จริง (credit > 0 จาก memory.roste_fact_credit) normalize ด้วย MAX_MEANINGFUL_DEPTH
+
+    ไม่มี roste fact ที่เกี่ยวข้องกับ user คนนี้เลย → 0.0 ("ไม่มีข้อมูล = ไม่เปิดเผย"
+    — ตัดสินใจไว้ตรงๆ ตอนออกแบบ ดู comment บนสุดของไฟล์)"""
+    facts = roste_mem.get("facts", [])
+    weighted = []
+    for f in facts:
+        if not isinstance(f, dict) or f.get("superseded"):
+            continue
+        credit = memory.roste_fact_credit(f, user_id)
+        if credit <= 0:
+            continue
+        depth = memory.fact_depth(roste_mem, f["id"])
+        weighted.append(depth * credit)
+    if not weighted:
+        return 0.0
+    avg = sum(weighted) / len(weighted)
+    return min(avg / MAX_MEANINGFUL_DEPTH, 1.0)
 
 
 def record_interaction(mem: dict, *, message_count_today: int, today: date | None = None) -> None:
@@ -98,23 +165,24 @@ def record_interaction(mem: dict, *, message_count_today: int, today: date | Non
     state["daily_counts"] = {d: c for d, c in state["daily_counts"].items() if d >= cutoff}
 
 
-def get_tier(mem: dict, *, today: date | None = None) -> int:
-    """คืน tier ปัจจุบัน (1-4) — คำนวณจาก daily_counts ใน window + บังคับพื้นจาก peak_tier
+def get_tier(mem: dict, roste_mem: dict, user_id, *, today: date | None = None) -> int:
+    """คืน tier ปัจจุบัน (1-4) — score = frequency_component * depth_component
+    (ดู comment บนสุดของไฟล์เรื่องที่มาของสูตร) + บังคับพื้นจาก peak_tier
 
-    เรียกได้ทุกครั้งที่ต้องใช้ (ไม่แพง — นับ dict ใน window ล้วนๆ ไม่มี I/O) ไม่ cache
-    เพราะ mem เปลี่ยนได้ทุกข้อความ cache ไว้จะเสี่ยง stale
+    mem: ความจำของ user คนเดียว (มี intimacy.daily_counts/peak_tier)
+    roste_mem: ความจำของรอสเต้เอง (memory.load_roste_memory()) — ใช้คำนวณ depth
+    user_id: ของ user คนเดียวกับ mem — ใช้หา credit ใน roste facts
+
+    เรียกได้ทุกครั้งที่ต้องใช้ (ไม่แพง — นับ dict ใน window + ไล่ fact list ล้วนๆ
+    ไม่มี I/O เพิ่ม) ไม่ cache เพราะ mem/roste_mem เปลี่ยนได้ทุกข้อความ
     """
     today = today or datetime.now().date()
-    state = mem.get("intimacy")
-    if not state:
-        return 1
+    state = mem.setdefault("intimacy", {"daily_counts": {}, "peak_tier": 1})
 
-    cutoff = today - timedelta(days=WINDOW_DAYS)
-    n_days = sum(
-        1 for d, c in state.get("daily_counts", {}).items()
-        if c >= MIN_MESSAGES_PER_DAY and cutoff <= date.fromisoformat(d) <= today
-    )
-    computed = _tier_from_day_count(n_days)
+    freq = _frequency_component(mem, today=today)
+    depth = _depth_component(roste_mem, user_id)
+    score = freq * depth
+    computed = _tier_from_score(score)
 
     peak = state.get("peak_tier", 1)
     if computed > peak:
@@ -125,44 +193,10 @@ def get_tier(mem: dict, *, today: date | None = None) -> int:
     return max(computed, peak - 1)
 
 
-# ── breadth signal (เสริม ไม่ใช่ input หลัก) ───────────────────────────────────
-#
-# Social Penetration Theory นิยาม intimacy = breadth (จำนวนหัวข้อ) × depth (ความลึก
-# ของแต่ละหัวข้อ) — tier หลักด้านบนวัดแค่ "ความถี่การคุย" (proxy คร่าวๆ ของภาพรวม)
-# ไม่ได้แตะ breadth/depth เลย
-#
-# ทำไมไม่ให้ LLM ประเมิน "ลึกแค่ไหน" ตรงๆ: จะกลายเป็นการวัดเนื้อหาบทสนทนา ขัดกับ
-# ข้อห้ามในแผนที่ว่า "ค่าความสนิทคุมแค่สำเนียง ไม่ใช่ข้อมูล" ตรงๆ (ต้องมี pipeline
-# วิเคราะห์ความหมายเพิ่ม ไม่ใช่แค่กันสแปมด้วย timestamp เหมือน tier หลัก)
-#
-# แทนที่ด้วย breadth proxy ที่ไม่ต้อง compute เพิ่มเลย: นับจำนวน me_pref/me_fact
-# ที่ไม่ซ้ำกันซึ่ง auto-remember (memory.build_summary_prompt) สกัดไว้แล้วต่อ user
-# คนนี้อยู่แล้ว — เรื่องที่รอสเต้ "เผยตัวตน" ให้ user คนนี้ฟังหลายเรื่อง มากกว่า user
-# อื่น เป็นสัญญาณทางอ้อมว่าบทสนทนากับคนนี้ลึกกว่า ไม่ใช่การให้ LLM ตัดสินคะแนนเอง
-#
-# ⚠️ เนื้อหา me_pref/me_fact มาจาก persona.py (SYSTEM_PROMPT+few-shot) ที่กำหนด
-# บุคลิกรอสเต้ไว้แล้ว ระบบสรุปแค่ "จับสิ่งที่รอสเต้พูดไปจริงในบทนั้น" มาเก็บ — ไม่ได้
-# สร้างความชอบ/lore ใหม่ขึ้นมาลอยๆ (ดู memory.py build_summary_prompt docstring)
-#
-# ⚠️ เป็นแค่สัญญาณเสริม ไม่ใช้เปลี่ยน tier ที่คำนวณจาก get_tier() — Bornstein/Zajonc
-# ให้หลักฐานเรื่อง "ความถี่" หนักแน่นกว่ามาก breadth signal นี้ยังไม่มีงานวิจัยรองรับ
-# โดยตรงว่าควรถ่วงน้ำหนักเท่าไหร่ จึงเก็บไว้แค่เป็นตัวเลขให้ debug/ดูเฉยๆ ก่อน
-def breadth_count(mem: dict) -> int:
-    """จำนวนเรื่อง (me_pref/me_fact ไม่ซ้ำกัน) ที่รอสเต้เคยเผยให้ user คนนี้ฟัง
-    สะสมจาก summaries ที่มีอยู่แล้ว — ไม่ต้อง parse/คำนวณอะไรเพิ่มนอกจากนับ"""
-    seen: set[str] = set()
-    for entry in mem.get("summaries", []):
-        text = entry["text"] if isinstance(entry, dict) else entry
-        parsed = memory.split_owner_tags(text)
-        seen.update(parsed.get("me_pref", []))
-        seen.update(parsed.get("me_fact", []))
-    return len(seen)
-
-
-def tone_instruction(mem: dict, *, today: date | None = None) -> str:
+def tone_instruction(mem: dict, roste_mem: dict, user_id, *, today: date | None = None) -> str:
     """1 บรรทัดพร้อมใส่ system prompt ตรงๆ — ผู้เรียกต้องเช็คคำสั่งโทนตรงจากผู้ใช้
     ก่อนเสมอ (เช่น "พูดสุภาพหน่อย") แล้วใช้ค่านั้นแทนถ้ามี — คำสั่งผู้ใช้ชนะค่าที่
     คำนวณเสมอ (สเปกในแผน) ฟังก์ชันนี้ไม่รู้จักคำสั่ง override เอง ผู้เรียกต้อง
     จัดการ precedence เอง
     """
-    return TIER_TONE[get_tier(mem, today=today)]
+    return TIER_TONE[get_tier(mem, roste_mem, user_id, today=today)]

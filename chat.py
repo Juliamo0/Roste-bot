@@ -556,9 +556,93 @@ async def summarize_and_verify(user_id: int, pairs: list):
         await vectormemory.add_conversation_memory(user_id, entry["text"])
         if dropped:
             await vectormemory.delete_conversation_memory(user_id, dropped)
+        # 💞 promote me_pref/me_fact เข้า roste facts (ตัวตนกลาง เหมือนกันทุก user)
+        # อยู่นอก get_user_lock ของ user ข้างบนโดยตั้งใจ — คนละ mem คนละไฟล์ ไม่ต้อง
+        # ใช้ lock เดียวกัน (ดู _promote_roste_facts docstring เรื่อง lock ของตัวเอง)
+        await _promote_roste_facts(final_text, user_id)
     except Exception as e:
         # logger.exception() แนบ traceback ให้อัตโนมัติ + เข้าไฟล์ log (เดิม print_exc() ไป stderr เฉยๆ)
         logger.exception(f"   ⚠️ สรุปบทพลาด (ไม่กระทบการตอบ): {type(e).__name__}: {e}")
+
+
+_roste_fact_lock = asyncio.Lock()   # กัน promote พร้อมกันจากหลาย user summarize task ชนกัน
+                                     # (roste_mem เป็นไฟล์เดียวใช้ร่วม ต่างจาก user mem ที่แยกไฟล์)
+
+
+async def _promote_roste_facts(tagged_summary_text: str, user_id: int) -> None:
+    """ดึง me_pref/me_fact จาก summary ที่เพิ่ง tag เสร็จ (build_summary_prompt) มา
+    เพิ่มเข้า roste facts (memory.ROSTE_SELF_ID) — ตัวตนที่เหมือนกันทุก user
+
+    allow_supersede=False เสมอ (ผ่าน add_roste_fact): "สิ่งที่รอสเต้เคยพูดว่าชอบ/เกลียด
+    ไม่ควรเปลี่ยนแปลงไปตามเวลา" (ตัดสินใจคุยกับเจ้าของ repo ไว้แล้ว — ดู docs/ROADMAP.md)
+
+    user_id: ใครทำให้ fact นี้เกิดขึ้น/พูดถึงในรอบนี้ — track ผ่าน mentioned_by
+    (memory.add_roste_fact) เพื่อคำนวณ credit ทีหลัง (ดู memory.roste_fact_credit —
+    "คนที่ทำให้ fact นั้นเกิดขึ้นเป็นคนแรกต่างหากที่สำคัญ" ไม่ใช่หารแต้มเท่ากันทุกคน)
+
+    parent สกัดด้วย LLM call แยก (ไม่รวมกับ summarize/verify 2 รอบข้างบน — ตัดสินใจ
+    แยกไว้ชัดเจน เพราะงานคนละอย่างกัน: อันนั้นสรุปบทสนทนา อันนี้จัดหมวดหมู่ตัวตน)
+    ถ้า LLM call พลาด (timeout/parse ไม่ผ่าน) → เก็บเป็น root (parent=None) แทนที่จะ
+    ทิ้งทั้ง fact ไป (เก็บผิดที่ยังดีกว่าไม่เก็บเลย — เหตุผลเดียวกับ category ที่ไม่
+    เข้าเกณฑ์ใน memory.add_fact ที่ลดเป็น category=None แทนทิ้ง)
+
+    LLM call หา parent ยิงเฉพาะตอน fact เป็นเรื่องใหม่จริงๆ (ไม่เคยมีข้อความนี้มาก่อน
+    เลยไม่ว่า user ไหน) — fact ซ้ำจาก user คนละคนไม่ต้องหา parent ใหม่ (มี parent อยู่
+    แล้วจากตอนที่ถูกสร้างครั้งแรก) แค่ต้อง track เพิ่มว่า user คนนี้ก็พูดถึงเหมือนกัน
+
+    ล้มเหลวได้อย่างเงียบๆ (except ครอบทั้งฟังก์ชัน) — ไม่กระทบ summary ของ user ที่
+    เพิ่ง save ไปแล้วก่อนเรียกมาถึงตรงนี้"""
+    parsed = memory.split_owner_tags(tagged_summary_text)
+    me_texts = parsed.get("me_pref", []) + parsed.get("me_fact", [])
+    if not me_texts:
+        return
+    try:
+        async with _roste_fact_lock:
+            roste_mem = memory.load_roste_memory()
+            added = 0
+            for text in me_texts:
+                # fact นี้เคยมีอยู่แล้วไหม (ไม่ว่า user ไหนพูดไว้) — ถ้าเคยมีแล้ว ไม่ต้อง
+                # เรียก LLM หา parent ซ้ำ (มันมี parent จากตอนสร้างครั้งแรกอยู่แล้ว)
+                # add_roste_fact() จะจัดการ track mentioned_by ให้เอง ไม่ว่าจะเป็น fact
+                # ใหม่หรือซ้ำ — เรียกครั้งเดียวพอ ไม่ต้องแยก branch ก่อนเรียก
+                already_exists = any(
+                    memory._fact_text(f) == text and not f.get("superseded")
+                    for f in roste_mem.get("facts", []))
+
+                parent_id = None
+                if not already_exists:
+                    # category=None เสมอ — me_pref/me_fact ไม่มีแนวคิด category แบบเดียวกับ
+                    # user facts (ชื่อ/ที่อยู่/งาน) ตั้งใจปล่อยว่าง ให้ fact_root_id เป็นตัว
+                    # จัดกลุ่มทางอ้อมผ่าน parent chain แทน
+                    existing = memory.facts_in_category(roste_mem, None)
+                    if existing:
+                        try:
+                            prompt = memory.build_parent_prompt(text, existing)
+                            payload = {
+                                "model": EXTRACT_MODEL,
+                                "messages": [{"role": "user", "content": prompt}],
+                                "stream": False, "think": False,
+                                "format": memory.PARENT_JSON_SCHEMA,
+                                "options": {"temperature": 0.1},
+                            }
+                            data = await _get_json_post(payload, timeout=60)
+                            raw = _strip_think(data.get("message", {}).get("content", ""))
+                            valid_ids = {f["id"] for f in existing}
+                            parent_id = memory.parse_parent_response(raw, valid_ids)
+                        except Exception:
+                            logger.debug("   💞 สกัด parent ไม่สำเร็จ — เก็บเป็น root แทน",
+                                         exc_info=True)
+                            parent_id = None
+
+                if memory.add_roste_fact(roste_mem, text, user_id,
+                                          category=None, parent=parent_id):
+                    added += 1
+            if added:
+                memory.save_roste_memory(roste_mem)
+                logger.info(f"   💞 roste facts เพิ่ม {added} เรื่อง")
+                logger.debug(f"   💞 เนื้อหาที่เพิ่ม: {me_texts}")
+    except Exception as e:
+        logger.exception(f"   ⚠️ promote roste facts พลาด (ไม่กระทบการตอบ): {type(e).__name__}: {e}")
 
 
 async def flush_user_history(user_id: int):

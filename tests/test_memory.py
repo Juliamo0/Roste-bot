@@ -2025,3 +2025,303 @@ class TestTransientRequestNotStored:
         """⚠️ procedural จริงต้องไม่ถูกตัดตอน parse"""
         raw = '{"summary":"คุยเรื่องภาษา","tags":["user_pref:ต้องการคำพูดเป็นทางการ"]}'
         assert "ต้องการคำพูดเป็นทางการ" in memory.parse_summary_json(raw)
+
+
+# ── fact hierarchy (roste-plan.md: ค่าความสนิทสนม — มิติความลึก) ───────────────
+# id/parent, allow_supersede, fact_depth/fact_root_id, facts_in_category,
+# ROSTE_SELF_ID, migration ของ fact เก่าที่ไม่มี id/parent
+
+class TestFactIdAndParent:
+    def test_add_fact_assigns_id(self):
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชอบหนังสือ", category="ความชอบ")
+        assert mem["facts"][0]["id"]
+        assert isinstance(mem["facts"][0]["id"], str)
+
+    def test_add_fact_defaults_parent_to_none(self):
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชอบหนังสือ", category="ความชอบ")
+        assert mem["facts"][0]["parent"] is None
+
+    def test_add_fact_stores_given_parent(self):
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชอบหนังสือ", category="ความชอบ")
+        root_id = mem["facts"][0]["id"]
+        memory.add_fact(mem, "ชอบนิยายไซไฟ", category="ความชอบ", parent=root_id)
+        assert mem["facts"][1]["parent"] == root_id
+
+    def test_each_fact_gets_distinct_id(self):
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชอบหนังสือ", category="ความชอบ")
+        memory.add_fact(mem, "ชอบดนตรี", category="ความชอบ")
+        ids = [f["id"] for f in mem["facts"]]
+        assert len(ids) == len(set(ids))
+
+
+class TestAllowSupersede:
+    def test_false_blocks_category_supersede(self):
+        """category-supersede (single-value) ต้องไม่ทำงานเมื่อ allow_supersede=False"""
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชื่อจูเลีย", category="ชื่อ", allow_supersede=False)
+        memory.add_fact(mem, "ชื่อแคท", category="ชื่อ", allow_supersede=False)
+        # ปกติ category="ชื่อ" (single-value) จะ supersede อันแรกทิ้ง — ตอนนี้ต้องไม่ทำ
+        assert not memory._fact_superseded(mem["facts"][0])
+
+    def test_false_blocks_negation_supersede(self):
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชอบหนังสือ", allow_supersede=False)
+        memory.add_fact(mem, "ไม่ชอบหนังสือ", allow_supersede=False)
+        assert not memory._fact_superseded(mem["facts"][0])
+
+    def test_true_still_supersedes_as_before(self):
+        """regression guard — ค่า default ต้องไม่เปลี่ยนพฤติกรรมเดิมของ user facts"""
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชื่อจูเลีย", category="ชื่อ")
+        memory.add_fact(mem, "ชื่อแคท", category="ชื่อ")
+        assert memory._fact_superseded(mem["facts"][0])
+
+
+class TestFactDepthAndRoot:
+    def _chain(self):
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชอบหนังสือ", category="ความชอบ")
+        root_id = mem["facts"][0]["id"]
+        memory.add_fact(mem, "ชอบนิยาย", category="ความชอบ", parent=root_id)
+        mid_id = mem["facts"][1]["id"]
+        memory.add_fact(mem, "ชอบนิยายไซไฟ", category="ความชอบ", parent=mid_id)
+        leaf_id = mem["facts"][2]["id"]
+        return mem, root_id, mid_id, leaf_id
+
+    def test_root_has_depth_zero(self):
+        mem, root_id, _, _ = self._chain()
+        assert memory.fact_depth(mem, root_id) == 0
+
+    def test_leaf_depth_matches_chain_length(self):
+        mem, _, _, leaf_id = self._chain()
+        assert memory.fact_depth(mem, leaf_id) == 2
+
+    def test_unknown_id_returns_zero(self):
+        mem = {"facts": []}
+        assert memory.fact_depth(mem, "ไม่มีจริง") == 0
+
+    def test_root_id_of_leaf_is_the_top_ancestor(self):
+        mem, root_id, _, leaf_id = self._chain()
+        assert memory.fact_root_id(mem, leaf_id) == root_id
+
+    def test_root_id_of_root_is_itself(self):
+        mem, root_id, _, _ = self._chain()
+        assert memory.fact_root_id(mem, root_id) == root_id
+
+    def test_cycle_does_not_infinite_loop(self):
+        """ไฟล์ json ถูกแก้มือ/บั๊กอื่นทำ parent ชี้วนกัน — ต้อง terminate ไม่ hang"""
+        mem = {"facts": [
+            {"id": "a", "parent": "b", "text": "x", "category": None, "superseded": False},
+            {"id": "b", "parent": "a", "text": "y", "category": None, "superseded": False},
+        ]}
+        assert memory.fact_depth(mem, "a") < memory._MAX_FACT_DEPTH + 1
+        assert memory.fact_root_id(mem, "a") in ("a", "b")
+
+    def test_parent_pointing_to_missing_fact_does_not_crash(self):
+        mem = {"facts": [
+            {"id": "a", "parent": "ไม่มีจริง", "text": "x", "category": None, "superseded": False},
+        ]}
+        assert memory.fact_root_id(mem, "a") == "a"
+
+
+class TestFactsInCategory:
+    def test_returns_only_matching_category(self):
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชอบหนังสือ", category="ความชอบ")
+        memory.add_fact(mem, "ทำงานเป็นวิศวกร", category="งาน")
+        result = memory.facts_in_category(mem, "ความชอบ")
+        assert len(result) == 1
+        assert memory._fact_text(result[0]) == "ชอบหนังสือ"
+
+    def test_excludes_superseded(self):
+        mem = {"facts": []}
+        memory.add_fact(mem, "ชื่อจูเลีย", category="ชื่อ")
+        memory.add_fact(mem, "ชื่อแคท", category="ชื่อ")   # supersede อันแรก
+        result = memory.facts_in_category(mem, "ชื่อ")
+        assert len(result) == 1
+        assert memory._fact_text(result[0]) == "ชื่อแคท"
+
+    def test_empty_category_returns_empty_list(self):
+        mem = {"facts": []}
+        assert memory.facts_in_category(mem, "ความชอบ") == []
+
+
+class TestRosteSelfMemory:
+    def test_roste_self_id_is_non_numeric(self):
+        """กัน Discord user_id (ตัวเลขล้วน) ชนกับ ROSTE_SELF_ID โดยบังเอิญ"""
+        assert not memory.ROSTE_SELF_ID.isdigit()
+
+    def test_load_roste_memory_returns_same_shape_as_user_memory(self):
+        mem = memory.load_roste_memory()
+        assert set(["name", "preferred_name", "facts", "history", "summaries"]) <= set(mem.keys())
+
+    def test_save_and_reload_roundtrip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        mem = memory.load_roste_memory()
+        memory.add_fact(mem, "ชอบแนวแฟนตาซี", allow_supersede=False)
+        memory.save_roste_memory(mem)
+
+        reloaded = memory.load_roste_memory()
+        assert any(memory._fact_text(f) == "ชอบแนวแฟนตาซี" for f in reloaded["facts"])
+
+    def test_does_not_collide_with_real_user_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        roste_mem = memory.load_roste_memory()
+        memory.add_fact(roste_mem, "ชอบแฟนตาซี", allow_supersede=False)
+        memory.save_roste_memory(roste_mem)
+
+        user_mem = memory.load_memory(123456)   # user_id ตัวเลขล้วนทั่วไป
+        assert user_mem["facts"] == []
+
+
+class TestFactMigration:
+    def test_old_fact_without_id_gets_one_on_load(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        path = tmp_path / "999.json"
+        path.write_text(json.dumps({
+            "name": "", "preferred_name": "", "history": [], "summaries": [],
+            "facts": [{"category": "ความชอบ", "text": "ชอบหนังสือ", "created": "2026-01-01",
+                       "superseded": False, "superseded_at": None, "superseded_by": None}],
+        }), encoding="utf-8")
+
+        mem = memory.load_memory(999)
+        assert mem["facts"][0]["id"]
+        assert mem["facts"][0]["parent"] is None
+        assert mem["facts"][0]["text"] == "ชอบหนังสือ"   # เนื้อหาเดิมไม่เปลี่ยน
+
+    def test_migration_is_idempotent_across_loads(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        path = tmp_path / "999.json"
+        path.write_text(json.dumps({
+            "name": "", "preferred_name": "", "history": [], "summaries": [],
+            "facts": [{"category": None, "text": "ชอบดนตรี", "created": "2026-01-01",
+                       "superseded": False, "superseded_at": None, "superseded_by": None}],
+        }), encoding="utf-8")
+
+        first = memory.load_memory(999)
+        memory.save_memory(999, first)
+        second = memory.load_memory(999)
+        assert first["facts"][0]["id"] == second["facts"][0]["id"]   # id ไม่เปลี่ยนซ้ำทุกครั้งที่ load
+
+
+class TestRecallFactsRootTieBreaker:
+    def test_root_wins_tie_over_leaf(self):
+        """คะแนน keyword เท่ากัน (คนละคำที่ตรงกับ user_message เลย ทั้งคู่คะแนน 0 แต่ยังถูก
+        เติมเป็น fallback) — root ต้องมาก่อน leaf เมื่อคะแนนเท่ากัน"""
+        mem = {"facts": []}
+        # เกิน MAX_FACTS_IN_CONTEXT เพื่อบังคับให้เข้า scoring path ไม่ใช่ return-all path
+        for i in range(memory.MAX_FACTS_IN_CONTEXT + 2):
+            memory.add_fact(mem, f"เรื่องกลางๆ {i}", category="เรื่องที่สนใจ")
+        root_id = mem["facts"][0]["id"]
+        memory.add_fact(mem, "ชอบหนังสือ", category="ความชอบ")
+        root_fact_id = mem["facts"][-1]["id"]
+        memory.add_fact(mem, "ชอบนิยายไซไฟ", category="ความชอบ", parent=root_fact_id)
+
+        result = memory.recall_facts(mem, "ไม่มีคำที่ตรงเลยสักคำ")
+        # ทั้ง root และ leaf คะแนน 0 เท่ากัน (ไม่มีคำตรง) — ถ้า root ถูกเลือกก่อนจะอยู่ใน
+        # ลิสต์ผลลัพธ์ก่อน leaf เสมอเมื่อทั้งคู่ผ่านเข้ามาใน fallback
+        if "ชอบหนังสือ" in result and "ชอบนิยายไซไฟ" in result:
+            assert result.index("ชอบหนังสือ") < result.index("ชอบนิยายไซไฟ")
+
+
+# ── add_roste_fact / roste_fact_credit (mentioned_by, first-mover credit) ─────
+# ดู docs/ROADMAP.md หัวข้อค่าความสนิทสนม — มิติความลึก: "คนที่ทำให้ fact นั้นเกิดขึ้น
+# เป็นคนแรกต่างหากที่สำคัญ" ไม่ใช่หารแต้มเท่ากันทุกคน และไม่ใช่ทุกคนได้เต็มเท่ากันหมด
+
+class TestAddRosteFactNewFact:
+    def test_creates_fact_with_mentioned_by(self):
+        mem = {"facts": []}
+        added = memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=111, category="ความชอบ")
+        assert added is True
+        assert mem["facts"][0]["mentioned_by"] == [111]
+
+    def test_new_fact_never_superseded(self):
+        """allow_supersede=False เสมอ — เหมือน add_fact(..., allow_supersede=False) เป๊ะ"""
+        mem = {"facts": []}
+        memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=111)
+        memory.add_roste_fact(mem, "ไม่ชอบหนังสือ", user_id=222)
+        assert not mem["facts"][0]["superseded"]
+        assert not mem["facts"][1]["superseded"]
+
+    def test_stores_parent_when_given(self):
+        mem = {"facts": []}
+        memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=111, category="ความชอบ")
+        root_id = mem["facts"][0]["id"]
+        memory.add_roste_fact(mem, "ชอบนิยายไซไฟ", user_id=111,
+                               category="ความชอบ", parent=root_id)
+        assert mem["facts"][1]["parent"] == root_id
+
+
+class TestAddRosteFactDuplicate:
+    def test_same_user_repeats_text_no_change(self):
+        mem = {"facts": []}
+        memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=111)
+        added_again = memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=111)
+        assert added_again is False
+        assert mem["facts"][0]["mentioned_by"] == [111]   # ไม่เพิ่มซ้ำ
+
+    def test_different_user_repeats_text_appends_to_mentioned_by(self):
+        mem = {"facts": []}
+        memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=111)
+        added_again = memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=222)
+        assert added_again is True   # มีการเปลี่ยนแปลงจริง (เพิ่ม user เข้า mentioned_by)
+        assert mem["facts"][0]["mentioned_by"] == [111, 222]
+        assert len(mem["facts"]) == 1   # ไม่สร้าง fact ซ้ำอีกอัน
+
+    def test_third_user_appends_in_order(self):
+        mem = {"facts": []}
+        memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=111)
+        memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=222)
+        memory.add_roste_fact(mem, "ชอบหนังสือ", user_id=333)
+        assert mem["facts"][0]["mentioned_by"] == [111, 222, 333]
+
+
+class TestRosteFactCredit:
+    def test_first_mentioner_gets_full_credit(self):
+        fact = {"mentioned_by": [111, 222, 333]}
+        assert memory.roste_fact_credit(fact, 111) == 1.0
+
+    def test_second_mentioner_gets_half(self):
+        fact = {"mentioned_by": [111, 222]}
+        assert memory.roste_fact_credit(fact, 222) == 0.5
+
+    def test_never_mentioned_gets_zero(self):
+        fact = {"mentioned_by": [111, 222]}
+        assert memory.roste_fact_credit(fact, 999) == 0.0
+
+    def test_empty_mentioned_by_gets_zero(self):
+        fact = {"mentioned_by": []}
+        assert memory.roste_fact_credit(fact, 111) == 0.0
+
+    def test_missing_mentioned_by_key_gets_zero(self):
+        """fact เก่าก่อน migration (ไม่ควรเกิดจริงเพราะ _migrate_facts_in_place เติมให้
+        เสมอ) — กันเหนียวไม่ crash ถ้าเจอ fact ที่ไม่มี key นี้เลย"""
+        fact = {}
+        assert memory.roste_fact_credit(fact, 111) == 0.0
+
+    def test_floor_applies_with_many_mentioners(self):
+        """1/6 = 0.1667 ต่ำกว่า floor 0.2 — ต้องถูกยกขึ้นเป็น floor ไม่ปล่อยต่ำกว่านั้น"""
+        fact = {"mentioned_by": list(range(6))}   # user ที่ 2 (index 1) ไม่ใช่คนแรก
+        assert memory.roste_fact_credit(fact, 1) == memory.MENTION_CREDIT_FLOOR
+
+    def test_floor_does_not_apply_to_first_mentioner_even_with_many(self):
+        fact = {"mentioned_by": list(range(10))}
+        assert memory.roste_fact_credit(fact, 0) == 1.0   # คนแรกได้เต็มเสมอ ไม่ลดตาม count
+
+
+class TestFactMigrationIncludesMentionedBy:
+    def test_old_fact_without_mentioned_by_gets_empty_list(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(memory, "MEMORY_DIR", str(tmp_path))
+        path = tmp_path / "999.json"
+        path.write_text(json.dumps({
+            "name": "", "preferred_name": "", "history": [], "summaries": [],
+            "facts": [{"category": None, "text": "ชอบหนังสือ", "created": "2026-01-01",
+                       "superseded": False, "superseded_at": None, "superseded_by": None}],
+        }), encoding="utf-8")
+
+        mem = memory.load_memory(999)
+        assert mem["facts"][0]["mentioned_by"] == []
