@@ -305,12 +305,25 @@ def fact_root_id(mem, fact_id):
     return current["id"]
 
 
+# จำนวน fact สูงสุดที่ส่งให้ LLM ดูตอนหา parent — roste facts ไม่มีเพดานจำนวนรวม
+# (max_facts=None ใน add_roste_fact) แต่ category เดียวยังโตไม่จำกัดได้ถ้าเป็นหัวข้อ
+# ยอดนิยม (เช่น "ความชอบ") ถ้าส่งทั้งหมดให้ LLM ดูทุกครั้งจะชนเพดาน prompt ~3,700
+# ตัวอักษรที่วัดไว้แล้วว่าเป็นจุดพังจริงในโปรเจกต์นี้ (จาก tool schema — ดู README
+# หัวข้อ "ระบบเลือกเครื่องมือ") จึงตัดเหลือ N ล่าสุดต่อ category แทน — fact เก่ากว่า
+# นั้นจะไม่ถูกเสนอเป็น parent ให้ fact ใหม่ (แต่ตัวมันเองยังอยู่ในระบบถาวร ไม่ได้ถูกลบ)
+_MAX_FACTS_FOR_PARENT_PROMPT = 20
+
+
 def facts_in_category(mem, category):
     """fact ที่ยัง valid (ไม่ superseded) ใน category เดียวกัน — ใช้จำกัด scope ตอนขอให้
     LLM สกัดว่า fact ใหม่เป็นลูกของอันไหน (ดู docs/ROADMAP.md เหตุผลที่จำกัดแค่
-    category เดียวกัน: กันขนาด prompt บวม + กัน LLM hallucinate parent ข้าม category)"""
-    return [f for f in mem.get("facts", [])
-            if isinstance(f, dict) and f.get("category") == category and not f.get("superseded")]
+    category เดียวกัน: กันขนาด prompt บวม + กัน LLM hallucinate parent ข้าม category)
+
+    คืนแค่ N ล่าสุด (_MAX_FACTS_FOR_PARENT_PROMPT) ไม่ใช่ทั้งหมด — คุม prompt ไม่ให้โต
+    ไม่จำกัดตามจำนวน fact สะสม (ดู comment เหนือ _MAX_FACTS_FOR_PARENT_PROMPT)"""
+    matched = [f for f in mem.get("facts", [])
+               if isinstance(f, dict) and f.get("category") == category and not f.get("superseded")]
+    return matched[-_MAX_FACTS_FOR_PARENT_PROMPT:]
 
 
 PARENT_JSON_SCHEMA = {
@@ -319,29 +332,86 @@ PARENT_JSON_SCHEMA = {
     "required": ["parent_id"],
 }
 
+CATEGORY_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {"category": {"type": "string"}},
+    "required": ["category"],
+}
+
+
+def build_roste_category_prompt(text: str) -> str:
+    """สร้าง prompt ให้ LLM ตั้ง category ของ roste fact ใหม่ 1 คำ — คนละ LLM call
+    กับ build_parent_prompt โดยตั้งใจ เพราะต้องรู้ category ก่อนถึงจะกรอง
+    facts_in_category ให้ build_parent_prompt เห็นแค่กลุ่มเดียวกันได้ (ไก่กับไข่:
+    parent ต้องใช้ category กรอง scope ก่อน แต่ category ต้องมาจาก LLM เหมือนกัน)
+
+    prompt นี้**ไม่เห็น existing facts เลย** (ต่างจาก build_parent_prompt) — ขนาดจึง
+    คงที่ ไม่โตตามจำนวน roste facts ที่สะสมมา (ดู docs/ROADMAP.md เหตุผลที่ roste
+    facts ไม่มีเพดานจำนวน แต่ prompt ต้องคุมขนาดแยกต่างหาก)
+
+    เปิดกว้างให้ LLM ตั้งชื่อเอง ไม่ผูกกับ SINGLE_VALUE_CATEGORIES/MULTI_VALUE_CATEGORIES
+    ของ user facts (คนละความหมาย: category ของ user facts ผูกกับ supersede rule,
+    ของ roste facts เป็นแค่ป้ายจัดกลุ่มเพราะ allow_supersede=False บล็อกไว้อยู่แล้ว
+    เสมอ — วัดแล้วจาก build_extract_prompt ว่า open schema สกัดได้ดีกว่า fixed
+    taxonomy ชัดเจน (8% → 56%, arXiv 2604.11610) ใช้หลักการเดียวกันตรงนี้)"""
+    return (
+        "ข้อความต่อไปนี้เป็นสิ่งที่ตัวละครหนึ่ง (รอสเต้) พูดถึงตัวเอง จงตั้งหมวดหมู่สั้นๆ "
+        "1-2 คำ ที่อธิบายว่าเรื่องนี้เกี่ยวกับอะไร (เช่น หนังสือ, ดนตรี, ตัวละคร, อาหาร, "
+        "งานอดิเรก) — ตั้งเองได้อิสระ ไม่ต้องเลือกจากลิสต์ที่กำหนดไว้ล่วงหน้า\n\n"
+        f"ข้อความ: {text}\n\n"
+        'ตอบเป็น JSON เท่านั้น: {"category": "<คำ 1-2 คำ>"}'
+    )
+
+
+def parse_roste_category_response(raw: str) -> str | None:
+    """แกะผลตอบจาก build_roste_category_prompt — คืน category (string ที่ strip แล้ว)
+    หรือ None ถ้า parse ไม่ผ่าน/ว่างเปล่า (ผู้เรียกควร fallback เป็น category=None)"""
+    try:
+        data = json.loads(raw.strip())
+    except (json.JSONDecodeError, AttributeError):
+        return None
+    category = data.get("category")
+    if not isinstance(category, str) or not category.strip():
+        return None
+    return category.strip()
+
 
 def build_parent_prompt(new_text: str, existing_facts: list) -> str:
-    """สร้าง prompt ให้ LLM ตัดสินว่า fact ใหม่เป็น "ลูก" (specialization) ของ fact
-    ไหนใน existing_facts ไหม — คืน prompt ล้วน ผู้เรียกส่งไป Ollama เอง (pattern เดียวกับ
+    """สร้าง prompt ให้ LLM ตัดสินว่า fact ใหม่ "เกิดขึ้นในบริบทเดียวกัน" กับ fact ไหน
+    ใน existing_facts ไหม — คืน prompt ล้วน ผู้เรียกส่งไป Ollama เอง (pattern เดียวกับ
     build_summary_prompt/build_extract_prompt ในไฟล์นี้)
+
+    ⚠️ parent **ไม่ใช่** ความสัมพันธ์แบบ "สืบทอดคุณสมบัติ" (is-a-subset-of) — เดิม
+    prompt ใช้คำว่า "specialization" (เช่น "ชอบนิยายไซไฟ" เจาะจงกว่า "ชอบนิยาย") ซึ่ง
+    implied ผิดว่าลูกต้องสืบทอดความหมายของแม่เสมอ พิสูจน์ผิดจริงจากเคส: "ชอบตัวละคร X
+    ในเรื่อง Y" ไม่ได้แปลว่า "ชอบเรื่อง Y" เสมอไป (อาจชอบตัวละครเพราะมุก/การออกแบบ
+    โดยไม่ชอบภาพรวมพล็อตเลยก็ได้) — parent ที่ถูกต้องคือ "เกิดจากบริบทเดียวกัน" หรือ
+    "เป็นรายละเอียดที่เล่าเพิ่มในหัวข้อเดียวกัน" เท่านั้น ไม่ใช่ logical subset
 
     existing_facts: list ของ fact dict ที่ยัง valid ใน category เดียวกัน (จาก
     facts_in_category) — จำกัด scope ตรงนี้ ไม่ใช่ใน prompt เอง กันขนาด prompt บวม +
     กัน LLM เห็น fact ข้าม category แล้ว hallucinate ความเกี่ยวข้องที่ไม่มีจริง
 
-    ตอบ parent_id=null ถ้า new_text เป็นเรื่องใหม่ ไม่ใช่ specialization ของอันไหนเลย
-    (เช่น "ชอบหนังสือ" กับ "ชอบดนตรี" เป็นคนละเรื่อง ไม่ใช่ parent-child กัน)"""
+    ตอบ parent_id=null ถ้า new_text ไม่ได้เกิดจากบริบทเดียวกับอันไหนเลย (รวมถึงกรณี
+    ไม่แน่ใจ — ปลอดภัยกว่าเดาผูกผิด เพราะ parent ผิดจะทำให้ fact_depth/roste_fact_credit
+    คำนวณความสัมพันธ์เพี้ยนไปด้วย)"""
     if not existing_facts:
         return ""   # ไม่มีอะไรให้เทียบ — ผู้เรียกควรข้าม LLM call นี้ไปเลย ไม่ใช่ยิงเปล่า
     listing = "\n".join(f'{f["id"]}: {_fact_text(f)}' for f in existing_facts)
     return (
-        "ข้อความใหม่ต่อไปนี้อาจเป็น \"เรื่องที่เจาะจงกว่า\" (specialization) ของข้อเท็จจริง"
-        "ที่มีอยู่แล้วข้อใดข้อหนึ่ง หรือเป็นเรื่องใหม่ที่ไม่เกี่ยวกันเลยก็ได้\n\n"
+        "ข้อความใหม่ต่อไปนี้อาจ \"เกิดขึ้นในบริบทเดียวกัน\" กับข้อเท็จจริงที่มีอยู่แล้ว"
+        "ข้อใดข้อหนึ่ง (เช่น เล่ารายละเอียดเพิ่มเติมของเรื่องเดิม) หรือเป็นเรื่องใหม่ที่"
+        "ไม่เกี่ยวกันเลยก็ได้\n\n"
+        "⚠️ ระวัง: การชอบสิ่งหนึ่งไม่ได้แปลว่าชอบสิ่งที่มันสังกัดอยู่เสมอไป เช่น "
+        "\"ชอบตัวละคร X ในเรื่อง Y\" ไม่ได้แปลว่า \"ชอบเรื่อง Y\" เสมอ (อาจชอบตัวละคร"
+        "เพราะเหตุผลอื่นที่ไม่เกี่ยวกับภาพรวมของเรื่องเลยก็ได้) ตัดสินจาก \"พูดถึงในบท"
+        "สนทนาเดียวกัน/บริบทเดียวกันจริงไหม\" ไม่ใช่เดาความสัมพันธ์เชิงตรรกะเอง\n\n"
         f"ข้อความใหม่: {new_text}\n\n"
         "ข้อเท็จจริงที่มีอยู่แล้ว (รูปแบบ id: ข้อความ):\n"
         f"{listing}\n\n"
-        "ถ้าข้อความใหม่เจาะจงกว่าข้อใดข้อหนึ่งชัดเจน (เช่น \"ชอบนิยายไซไฟ\" เจาะจงกว่า "
-        "\"ชอบนิยาย\") ตอบ id ของข้อนั้น ถ้าไม่เกี่ยวกับข้อไหนเลย หรือไม่แน่ใจ ตอบ null\n"
+        "ถ้าข้อความใหม่เกิดจากบริบท/หัวข้อสนทนาเดียวกับข้อใดข้อหนึ่งชัดเจน (เช่น คุยเรื่อง"
+        "หนังสือเล่มหนึ่งแล้วมีการเล่ารายละเอียดเพิ่มในบทสนทนาเดียวกัน) ตอบ id ของข้อนั้น "
+        "ถ้าไม่เกี่ยวกับข้อไหนเลย หรือไม่แน่ใจ ตอบ null\n"
         'ตอบเป็น JSON เท่านั้น: {"parent_id": "<id>"} หรือ {"parent_id": null}'
     )
 
@@ -365,7 +435,7 @@ def parse_parent_response(raw: str, valid_ids: set) -> str | None:
     return parent_id
 
 
-def add_fact(mem, text, category=None, *, allow_supersede=True, parent=None):
+def add_fact(mem, text, category=None, *, allow_supersede=True, parent=None, max_facts=MAX_FACTS):
     """เพิ่ม fact เข้าความจำ พร้อมกันซ้ำ + คุมเพดาน
 
     ถ้า category อยู่ในกลุ่ม single-value (เช่น "ที่อยู่") และมี fact เดิมหมวดเดียวกันที่ยัง
@@ -373,7 +443,15 @@ def add_fact(mem, text, category=None, *, allow_supersede=True, parent=None):
     เทียบแค่ category ตรงกันไหม (rule-based ล้วน ไม่เรียก LLM)
 
     category ที่ไม่อยู่ใน FACT_CATEGORIES (หรือไม่ระบุ) → เก็บเป็น category=None
-    fact แบบนี้จะไม่ถูก supersede อัตโนมัติ (ไม่มี key ให้เทียบ) แต่ยัง evict ได้ตาม MAX_FACTS ปกติ
+    fact แบบนี้จะไม่ถูก supersede อัตโนมัติ (ไม่มี key ให้เทียบ) แต่ยัง evict ได้ตาม max_facts ปกติ
+
+    max_facts: เพดานจำนวน fact — เกินแล้วตัดอันเก่าสุดทิ้งจริง (ไม่ใช่ supersede)
+    ส่ง None เพื่อปิด eviction ทั้งหมด — ใช้กับ roste facts (ตัวตนของรอสเต้เอง) เพราะ
+    ตัดสินใจแล้วว่า "roste facts ไม่มีเพดาน สะสมตลอดกาล" ต่างจาก user facts ที่มีเพดาน
+    MAX_FACTS ปกติ (ตัดของเก่าทิ้งสมเหตุสมผลสำหรับความจำเกี่ยวกับ "คนคนเดียว" แต่ไม่
+    สมเหตุสมผลสำหรับ roste facts ที่มาจากการคุยกับ**ทุก user รวมกัน** — ตัดของเก่าทิ้ง
+    จะลบความทรงจำของ user คนแรกๆ ทิ้งเมื่อมี user ใหม่มาคุยเพิ่มเรื่อยๆ ขัดกับหลักการ
+    ที่ตกลงไว้ว่าตัวตนไม่เปลี่ยนแปลงตามเวลา — ดู docs/ROADMAP.md)
 
     allow_supersede=False: ปิดทั้ง category-supersede และ negation-supersede ทั้งคู่ —
     ใช้กับ roste facts (ตัวตนของรอสเต้เอง ผ่าน memory.ROSTE_SELF_ID) เพราะตัดสินใจแล้วว่า
@@ -382,9 +460,10 @@ def add_fact(mem, text, category=None, *, allow_supersede=True, parent=None):
     ผลพลอยได้: ปิด supersede แล้ว fact ลูก (parent ชี้มาหา fact นี้) จะไม่มีวันกำพร้า
     เพราะ root ไม่มีวันถูก mark superseded เลย
 
-    parent: id ของ fact แม่ (ถ้า fact นี้เป็น specialization ของอันที่มีอยู่แล้ว เช่น
-    "ชอบนิยายไซไฟ" เป็นลูกของ "ชอบนิยาย") None = เป็น root ของสายตัวเอง — ไม่ต้อง
-    เก็บ "ความลึก" แยก คำนวณจากการไล่ parent ได้เสมอ (ดู fact_depth/fact_root)
+    parent: id ของ fact ที่ fact นี้เกิดขึ้นในบริบท/หัวข้อสนทนาเดียวกัน (ไม่ใช่ความ
+    สัมพันธ์เชิง "สืบทอดคุณสมบัติ" — "ชอบตัวละคร X ในเรื่อง Y" ไม่ได้แปลว่า "ชอบเรื่อง
+    Y" เสมอไป ดู build_parent_prompt) None = เป็น root ของสายตัวเอง — ไม่ต้องเก็บ
+    "ความลึก" แยก คำนวณจากการไล่ parent ได้เสมอ (ดู fact_depth/fact_root)
 
     คืน True ถ้าเพิ่มจริง, False ถ้าซ้ำ (ไม่ได้เพิ่ม)"""
     text = text.strip()
@@ -464,9 +543,10 @@ def add_fact(mem, text, category=None, *, allow_supersede=True, parent=None):
         "superseded_by": None,
     })
 
-    # คุมเพดาน — เกิน MAX_FACTS ตัดอันเก่าสุด (ต้นลิสต์) ทิ้งจริง (self-heal ของ fact เก่า/ไม่มีหมวดด้วย)
-    if len(facts) > MAX_FACTS:
-        del facts[: len(facts) - MAX_FACTS]
+    # คุมเพดาน — เกิน max_facts ตัดอันเก่าสุด (ต้นลิสต์) ทิ้งจริง (self-heal ของ fact เก่า/
+    # ไม่มีหมวดด้วย) max_facts=None = ไม่มีเพดาน (roste facts) — ข้ามส่วนนี้ไปเลย
+    if max_facts is not None and len(facts) > max_facts:
+        del facts[: len(facts) - max_facts]
     return True
 
 
@@ -520,9 +600,11 @@ def add_roste_fact(mem, text, user_id, category=None, *, parent=None) -> bool:
         mentioned_by.append(user_id)
         return True
 
-    added = add_fact(mem, text, category, allow_supersede=False, parent=parent)
+    # max_facts=None — roste facts ไม่มีเพดาน สะสมตลอดกาล (ดู add_fact docstring)
+    added = add_fact(mem, text, category, allow_supersede=False, parent=parent, max_facts=None)
     if added:
         facts[-1]["mentioned_by"] = [user_id]   # fact ที่เพิ่ง append เป็นตัวสุดท้ายเสมอ
+        # (max_facts=None แปลว่าไม่มี eviction เกิดขึ้นเลย index นี้จึงชี้ถูกที่เสมอ)
     return added
 
 

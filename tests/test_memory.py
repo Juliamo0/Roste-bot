@@ -2149,6 +2149,35 @@ class TestFactsInCategory:
         mem = {"facts": []}
         assert memory.facts_in_category(mem, "ความชอบ") == []
 
+    def test_limits_to_n_most_recent(self):
+        """category เดียวโตเกิน _MAX_FACTS_FOR_PARENT_PROMPT — คืนแค่ N ล่าสุด กัน
+        prompt ตอนหา parent บวมไม่จำกัดตามจำนวน fact สะสม (roste facts ไม่มีเพดาน
+        รวมแล้ว แต่ category เดียวยังต้องคุมขนาดตรงนี้)"""
+        mem = {"facts": []}
+        n = memory._MAX_FACTS_FOR_PARENT_PROMPT
+        for i in range(n + 10):
+            memory.add_fact(mem, f"เรื่องที่ {i}", category="ความชอบ", max_facts=None)
+        result = memory.facts_in_category(mem, "ความชอบ")
+        assert len(result) == n
+        # ต้องเป็น N อันล่าสุด (ท้ายลิสต์) ไม่ใช่ N อันแรก
+        assert memory._fact_text(result[-1]) == f"เรื่องที่ {n + 9}"
+
+
+class TestAddFactMaxFactsParam:
+    def test_default_still_evicts_at_max_facts(self):
+        """regression guard — user facts (ไม่ส่ง max_facts) ต้องยังถูก evict เหมือนเดิม"""
+        mem = {"facts": []}
+        for i in range(memory.MAX_FACTS + 10):
+            memory.add_fact(mem, f"เรื่องที่ {i}")
+        assert len(mem["facts"]) == memory.MAX_FACTS
+
+    def test_none_disables_eviction(self):
+        mem = {"facts": []}
+        n = memory.MAX_FACTS + 50
+        for i in range(n):
+            memory.add_fact(mem, f"เรื่องที่ {i}", max_facts=None)
+        assert len(mem["facts"]) == n   # ไม่ถูกตัดทิ้งเลยแม้เกิน MAX_FACTS ปกติมาก
+
 
 class TestRosteSelfMemory:
     def test_roste_self_id_is_non_numeric(self):
@@ -2255,6 +2284,15 @@ class TestAddRosteFactNewFact:
                                category="ความชอบ", parent=root_id)
         assert mem["facts"][1]["parent"] == root_id
 
+    def test_no_eviction_even_past_max_facts(self):
+        """roste facts ไม่มีเพดาน (max_facts=None) — ต่างจาก user facts ที่ evict ที่
+        MAX_FACTS ตัดสินใจไว้ตรงๆ: "เฉพาะรอสเต้ fact ไม่มีเพดาน" (ดู docs/ROADMAP.md)"""
+        mem = {"facts": []}
+        n = memory.MAX_FACTS + 50
+        for i in range(n):
+            memory.add_roste_fact(mem, f"เรื่องที่ {i}", user_id=111)
+        assert len(mem["facts"]) == n
+
 
 class TestAddRosteFactDuplicate:
     def test_same_user_repeats_text_no_change(self):
@@ -2325,3 +2363,41 @@ class TestFactMigrationIncludesMentionedBy:
 
         mem = memory.load_memory(999)
         assert mem["facts"][0]["mentioned_by"] == []
+
+
+# ── build_roste_category_prompt / parse_roste_category_response ───────────────
+# category ของ roste facts เป็นแค่ป้ายจัดกลุ่ม (ไม่ผูก supersede เหมือน user facts
+# เพราะ allow_supersede=False บล็อกไว้อยู่แล้ว) เปิดกว้างให้ LLM ตั้งเอง ไม่ผูกกับ
+# SINGLE_VALUE_CATEGORIES/MULTI_VALUE_CATEGORIES ของ user facts
+
+class TestBuildRosteCategoryPrompt:
+    def test_includes_the_text(self):
+        prompt = memory.build_roste_category_prompt("ชอบหนังสือแนวแฟนตาซี")
+        assert "ชอบหนังสือแนวแฟนตาซี" in prompt
+
+    def test_does_not_reference_closed_category_set(self):
+        """ต้องไม่ชี้นำให้เลือกจาก SINGLE_VALUE_CATEGORIES/MULTI_VALUE_CATEGORIES —
+        เปิดกว้างเหมือน build_extract_prompt ของ user facts"""
+        prompt = memory.build_roste_category_prompt("ชอบหนังสือ")
+        for fixed_category in memory.FACT_CATEGORIES:
+            assert f"เลือกจาก{fixed_category}" not in prompt   # ไม่มีการบังคับ enum
+
+
+class TestParseRosteCategoryResponse:
+    def test_valid_json_returns_stripped_category(self):
+        assert memory.parse_roste_category_response('{"category": "หนังสือ"}') == "หนังสือ"
+
+    def test_strips_whitespace(self):
+        assert memory.parse_roste_category_response('{"category": "  ตัวละคร  "}') == "ตัวละคร"
+
+    def test_malformed_json_returns_none(self):
+        assert memory.parse_roste_category_response("ไม่ใช่ JSON เลย") is None
+
+    def test_empty_category_returns_none(self):
+        assert memory.parse_roste_category_response('{"category": ""}') is None
+
+    def test_missing_category_key_returns_none(self):
+        assert memory.parse_roste_category_response('{}') is None
+
+    def test_non_string_category_returns_none(self):
+        assert memory.parse_roste_category_response('{"category": 123}') is None

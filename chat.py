@@ -592,14 +592,19 @@ async def _promote_roste_facts(tagged_summary_text: str, user_id: int) -> None:
     (memory.add_roste_fact) เพื่อคำนวณ credit ทีหลัง (ดู memory.roste_fact_credit —
     "คนที่ทำให้ fact นั้นเกิดขึ้นเป็นคนแรกต่างหากที่สำคัญ" ไม่ใช่หารแต้มเท่ากันทุกคน)
 
-    parent สกัดด้วย LLM call แยก (ไม่รวมกับ summarize/verify 2 รอบข้างบน — ตัดสินใจ
-    แยกไว้ชัดเจน เพราะงานคนละอย่างกัน: อันนั้นสรุปบทสนทนา อันนี้จัดหมวดหมู่ตัวตน)
-    ถ้า LLM call พลาด (timeout/parse ไม่ผ่าน) → เก็บเป็น root (parent=None) แทนที่จะ
-    ทิ้งทั้ง fact ไป (เก็บผิดที่ยังดีกว่าไม่เก็บเลย — เหตุผลเดียวกับ category ที่ไม่
-    เข้าเกณฑ์ใน memory.add_fact ที่ลดเป็น category=None แทนทิ้ง)
+    category + parent สกัดด้วย LLM call แยกจาก summarize/verify 2 รอบข้างบน (งานคนละ
+    อย่างกัน: อันนั้นสรุปบทสนทนา อันนี้จัดหมวดหมู่ตัวตน) — 2 รอบแยกกันโดยตั้งใจ ไม่ใช่
+    รวมเป็นรอบเดียว เพราะเป็นไก่กับไข่: ต้องรู้ category ก่อนถึงจะกรอง facts_in_category
+    ให้ build_parent_prompt เห็นแค่กลุ่มเดียวกัน (ไม่งั้น roste facts ที่โตไม่มีเพดาน
+    จะทำให้ prompt หา parent บวมไม่จำกัดตามจำนวน fact สะสม — ดู docs/ROADMAP.md)
+    รอบหา category ไม่เห็น existing facts เลย ขนาดจึงคงที่เสมอ
 
-    LLM call หา parent ยิงเฉพาะตอน fact เป็นเรื่องใหม่จริงๆ (ไม่เคยมีข้อความนี้มาก่อน
-    เลยไม่ว่า user ไหน) — fact ซ้ำจาก user คนละคนไม่ต้องหา parent ใหม่ (มี parent อยู่
+    ถ้า LLM call พลาด (timeout/parse ไม่ผ่าน) ไม่ว่ารอบไหน → เก็บเป็น category=None/
+    parent=None แทนที่จะทิ้งทั้ง fact ไป (เก็บผิดที่ยังดีกว่าไม่เก็บเลย — เหตุผลเดียวกับ
+    category ที่ไม่เข้าเกณฑ์ใน memory.add_fact ที่ลดเป็น category=None แทนทิ้ง)
+
+    LLM call ทั้งสองรอบยิงเฉพาะตอน fact เป็นเรื่องใหม่จริงๆ (ไม่เคยมีข้อความนี้มาก่อน
+    เลยไม่ว่า user ไหน) — fact ซ้ำจาก user คนละคนไม่ต้องหา category/parent ใหม่ (มีอยู่
     แล้วจากตอนที่ถูกสร้างครั้งแรก) แค่ต้อง track เพิ่มว่า user คนนี้ก็พูดถึงเหมือนกัน
 
     ล้มเหลวได้อย่างเงียบๆ (except ครอบทั้งฟังก์ชัน) — ไม่กระทบ summary ของ user ที่
@@ -614,19 +619,34 @@ async def _promote_roste_facts(tagged_summary_text: str, user_id: int) -> None:
             added = 0
             for text in me_texts:
                 # fact นี้เคยมีอยู่แล้วไหม (ไม่ว่า user ไหนพูดไว้) — ถ้าเคยมีแล้ว ไม่ต้อง
-                # เรียก LLM หา parent ซ้ำ (มันมี parent จากตอนสร้างครั้งแรกอยู่แล้ว)
+                # เรียก LLM หา category/parent ซ้ำ (มันมีอยู่แล้วจากตอนสร้างครั้งแรก)
                 # add_roste_fact() จะจัดการ track mentioned_by ให้เอง ไม่ว่าจะเป็น fact
                 # ใหม่หรือซ้ำ — เรียกครั้งเดียวพอ ไม่ต้องแยก branch ก่อนเรียก
                 already_exists = any(
                     memory._fact_text(f) == text and not f.get("superseded")
                     for f in roste_mem.get("facts", []))
 
+                category = None
                 parent_id = None
                 if not already_exists:
-                    # category=None เสมอ — me_pref/me_fact ไม่มีแนวคิด category แบบเดียวกับ
-                    # user facts (ชื่อ/ที่อยู่/งาน) ตั้งใจปล่อยว่าง ให้ fact_root_id เป็นตัว
-                    # จัดกลุ่มทางอ้อมผ่าน parent chain แทน
-                    existing = memory.facts_in_category(roste_mem, None)
+                    try:
+                        cat_prompt = memory.build_roste_category_prompt(text)
+                        cat_payload = {
+                            "model": EXTRACT_MODEL,
+                            "messages": [{"role": "user", "content": cat_prompt}],
+                            "stream": False, "think": False,
+                            "format": memory.CATEGORY_JSON_SCHEMA,
+                            "options": {"temperature": 0.1},
+                        }
+                        cat_data = await _get_json_post(cat_payload, timeout=60)
+                        cat_raw = _strip_think(cat_data.get("message", {}).get("content", ""))
+                        category = memory.parse_roste_category_response(cat_raw)
+                    except Exception:
+                        logger.debug("   💞 สกัด category ไม่สำเร็จ — เก็บเป็น category=None แทน",
+                                     exc_info=True)
+                        category = None
+
+                    existing = memory.facts_in_category(roste_mem, category)
                     if existing:
                         try:
                             prompt = memory.build_parent_prompt(text, existing)
@@ -647,7 +667,7 @@ async def _promote_roste_facts(tagged_summary_text: str, user_id: int) -> None:
                             parent_id = None
 
                 if memory.add_roste_fact(roste_mem, text, user_id,
-                                          category=None, parent=parent_id):
+                                          category=category, parent=parent_id):
                     added += 1
             if added:
                 memory.save_roste_memory(roste_mem)
