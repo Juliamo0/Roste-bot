@@ -522,6 +522,18 @@ async def summarize_and_verify(user_id: int, pairs: list):
             if not memory._OWNER_TAG_RE.search(fixed):
                 logger.info("   🗑️ verify แก้สรุปจนไม่เหลือ tag เจ้าของ — ทิ้งรอบนี้")
                 return
+            # 🔒 verify pass เป็น LLM call อีกตัวที่เขียนข้อความอิสระกลับมา — ต้องกรอง
+            # sensitive-data ซ้ำเหมือน summary_text เดิม (บรรทัดบนสุดของฟังก์ชันนี้)
+            # ไม่งั้น fixed ที่หลุดมาจาก verify model จะไม่เคยผ่าน filter เลย ก่อนไปอยู่
+            # ทั้งใน summary ของ user เองและ _promote_roste_facts (ไฟล์กลาง
+            # memory/_roste_self.json ที่ทุก user เห็นร่วมกัน — หลุดที่นี่กระทบกว้างกว่า)
+            fixed, fixed_dropped = memory.strip_sensitive_tags(fixed)
+            if fixed_dropped:
+                logger.info(f"   🔒 ไม่เก็บข้อมูลอ่อนไหวลงความจำ (จาก verify): "
+                            f"{', '.join(sorted(set(fixed_dropped)))}")
+            if not fixed:
+                logger.info("   🔒 สรุปที่ verify แก้มีข้อมูลอ่อนไหวในหัวเรื่อง — ไม่เก็บทั้งอัน")
+                return
             final_text = fixed
             # เนื้อหาสรุปที่แก้จริง (PII) แยกไป DEBUG
             logger.info("   🔧 ตรวจแล้วแก้สรุปบทสนทนา")
