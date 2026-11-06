@@ -42,7 +42,9 @@ logger = logging.getLogger("roste.stt")
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 _ROOT          = Path(__file__).parent
-_STT_VENV_PY   = _ROOT / "typhoon_asr_venv" / "Scripts" / "python.exe"
+# Windows: Scripts\python.exe / Linux (RunPod): bin/python — เหตุผลเดียวกับ voice._VENV_PY_REL
+_VENV_PY_REL   = ("Scripts", "python.exe") if sys.platform == "win32" else ("bin", "python")
+_STT_VENV_PY   = _ROOT.joinpath("typhoon_asr_venv", *_VENV_PY_REL)
 _STT_WORKER_PY = _ROOT / "stt_worker.py"
 
 _WORKER_READ_TIMEOUT_SEC = 60   # กัน worker subprocess ค้าง (GPU stall/driver hang) ทำ caller ค้างตลอดไป

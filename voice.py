@@ -145,12 +145,15 @@ VOXCPM_THEN_RVC = False
 # VOXCPM_REF_AUDIO ประกาศหลัง _ROOT (ดูหมวด VoxCPM2 constants ด้านล่าง)
 
 _ROOT        = Path(__file__).parent
-_RVC_VENV_PY = _ROOT / "rvc_venv" / "Scripts" / "python.exe"
+# venv บน Windows เก็บ python ไว้ที่ Scripts\python.exe ส่วน Linux (RunPod) อยู่ที่ bin/python
+# — เดิม hardcode แบบ Windows ไว้ บน Linux worker ทุกตัวจะหา python ไม่เจอแล้วตกไป fallback เงียบๆ
+_VENV_PY_REL = ("Scripts", "python.exe") if sys.platform == "win32" else ("bin", "python")
+_RVC_VENV_PY = _ROOT.joinpath("rvc_venv", *_VENV_PY_REL)
 _WORKER_PY   = _ROOT / "voice_rvc_worker.py"
 _OUT_DIR     = _ROOT / "rvc_out"
 
 # ── VoxCPM2 constants ──────────────────────────────────────────────────────────
-_VOXCPM_VENV_PY   = _ROOT / "voxcpm_venv" / "Scripts" / "python.exe"
+_VOXCPM_VENV_PY   = _ROOT.joinpath("voxcpm_venv", *_VENV_PY_REL)
 _VOXCPM_WORKER_PY = _ROOT / "voxcpm_worker.py"
 # ref = เสียงรอสเต้เอง (F5 + pitch108 ที่ผู้ใช้คัด) ไม่ใช่เสียงคนต้นฉบับ
 # หมายเหตุ: start() ตรวจแค่ venv กับตัว worker script — *ไม่* ตรวจไฟล์ ref
@@ -159,7 +162,7 @@ _VOXCPM_WORKER_PY = _ROOT / "voxcpm_worker.py"
 VOXCPM_REF_AUDIO  = str(_ROOT / "ref_audio" / "roste_v2" / "roste_pitch108_long.wav")
 
 # ── F5-TTS constants ───────────────────────────────────────────────────────────
-_F5_VENV_PY   = _ROOT / "f5_venv" / "Scripts" / "python.exe"
+_F5_VENV_PY   = _ROOT.joinpath("f5_venv", *_VENV_PY_REL)
 _F5_WORKER_PY = _ROOT / "f5_worker.py"
 F5_REF_AUDIO  = str(_ROOT / "ref_audio" / "lai_seg4_160s.wav")
 # เดิมชี้เข้า f5_out/ref_test/ ซึ่งอยู่ใน .gitignore (โฟลเดอร์ output ชั่วคราว) — clone ใหม่จะ

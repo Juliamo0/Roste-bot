@@ -6,7 +6,12 @@ import random
 import time
 import asyncio
 import logging
-import msvcrt
+# singleton lock — msvcrt มีแค่บน Windows, Linux (RunPod) ใช้ fcntl แทน
+# เดิม import msvcrt ตรงๆ บรรทัดบนสุด บน Linux บอทพังตั้งแต่ import ไม่ถึง client.run() เลย
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 from logging.handlers import RotatingFileHandler
 import discord
 import aiohttp
@@ -80,7 +85,11 @@ def _acquire_singleton_lock() -> None:
         _lock_file_handle.flush()
     _lock_file_handle.seek(0)
     try:
-        msvcrt.locking(_lock_file_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        if sys.platform == "win32":
+            msvcrt.locking(_lock_file_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            # flock ปล่อยเองเมื่อ process ตาย (รวม kill -9) เหมือน msvcrt — ไม่มี stale lock
+            fcntl.flock(_lock_file_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         _lock_file_handle.close()
         logger.error(f"❌ บอทกำลังรันอยู่แล้ว (PID เดิม: {old_pid}) — ปิดตัวเก่าก่อนค่อยรันใหม่")

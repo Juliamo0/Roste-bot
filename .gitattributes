@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# สคริปต์ runpod/*.sh รันบน Linux — ถ้าเป็น CRLF bash จะพัง ($'\r': command not found)
+# autocrlf=true บน Windows จะแปลงเป็น CRLF ตอน checkout ถ้าไม่บังคับไว้ตรงนี้
+*.sh text eol=lf
